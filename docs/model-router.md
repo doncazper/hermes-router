@@ -138,10 +138,12 @@ python -m hermes.plugins.model_router.cli setup wizard \
 The wizard is a guided configurator. It asks whether you want local LLMs,
 API-backed engines, or a mixed setup, then walks each main routing category:
 simple, balanced, reasoning, coding, research, vision, and image generation.
-You can accept the suggested default for each route or type another known engine
-name, such as `claude_code`, `codex`, `openai_api`, `anthropic_api`,
-`balanced_local`, or `reasoning_local`. It still asks for final confirmation
-before writing the local YAML file.
+For each route, it shows numbered local models discovered on your machine and
+numbered recommended downloads for missing local roles. You can type a number,
+accept the default engine, or type another known engine name such as
+`claude_code`, `codex`, `openai_api`, `anthropic_api`, `balanced_local`, or
+`reasoning_local`. It still asks for final confirmation before writing the local
+YAML file.
 
 Write a generated config:
 

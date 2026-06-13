@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass, field
 import json
 from pathlib import Path
+from typing import Any
 
 from hermes.plugins.model_router.availability import validate_router_availability
 from hermes.plugins.model_router.config import RouterConfigError, load_router_config
 from hermes.plugins.model_router.policy import route_prompt
 from hermes.plugins.model_router.receipts import decision_to_receipt, receipt_to_json
 from hermes.plugins.model_router.setup_assistant import (
+    DiscoveredModel,
+    DownloadSuggestion,
     SetupRecommendation,
+    engine_override_for_download,
+    engine_override_for_local_model,
     execute_download_plan,
     plan_model_downloads,
     recommend_setup,
@@ -29,6 +35,31 @@ ROUTE_WIZARD_LABELS = (
     ("vision", "Vision, screenshots, OCR"),
     ("image_generation", "Image generation"),
 )
+
+ROUTE_LOCAL_ENGINES = {
+    "simple": "fast_local",
+    "balanced": "balanced_local",
+    "reasoning": "reasoning_local",
+    "coding": "code_agent",
+    "research": "web_research",
+    "vision": "multimodal_vision",
+    "image_generation": "image_generation",
+}
+
+
+@dataclass(frozen=True)
+class WizardChoice:
+    label: str
+    engine: str
+    engine_override: dict[str, Any] | None = None
+    download_suggestion: DownloadSuggestion | None = None
+
+
+@dataclass(frozen=True)
+class WizardSelections:
+    routing_targets: dict[str, str]
+    engine_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
+    download_suggestions: tuple[DownloadSuggestion, ...] = ()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -311,7 +342,7 @@ def _cmd_setup_wizard(args: argparse.Namespace) -> int:
     print("")
     mode = _ask_setup_mode()
     known_engines = _known_engine_names()
-    routing_targets = _ask_route_targets(
+    selections = _ask_route_targets(
         mode=mode,
         recommendation=recommendation,
         discovery=discovery,
@@ -319,7 +350,7 @@ def _cmd_setup_wizard(args: argparse.Namespace) -> int:
     )
     wizard_recommendation = _build_wizard_recommendation(
         recommendation=recommendation,
-        routing_targets=routing_targets,
+        selections=selections,
         mode=mode,
     )
     print("")
@@ -424,12 +455,14 @@ def _ask_route_targets(
     recommendation: SetupRecommendation,
     discovery,
     known_engines: set[str],
-) -> dict[str, str]:
+) -> WizardSelections:
     print("")
-    print("Choose an engine for each route. Press Enter to accept the default.")
-    print("You can type any known engine name to override a route.")
+    print("Choose a model or engine for each route. Press Enter to keep the default.")
+    print("Type a number from the list, or type any known engine name directly.")
     print("Known engines: " + ", ".join(sorted(known_engines)))
     targets: dict[str, str] = {}
+    engine_overrides: dict[str, dict[str, Any]] = {}
+    download_suggestions: list[DownloadSuggestion] = []
     for route, label in ROUTE_WIZARD_LABELS:
         default = _wizard_default_engine(
             route=route,
@@ -437,14 +470,36 @@ def _ask_route_targets(
             recommendation=recommendation,
             discovery=discovery,
         )
-        answer = input(f"{label} ({route}) [{default}]: ").strip()
-        selected = answer or default
-        if selected not in known_engines:
-            print(f"Unknown engine {selected!r}; keeping {default}.")
-            selected = default
+        choices = _wizard_choices_for_route(
+            route=route,
+            discovery=discovery,
+            recommendation=recommendation,
+        )
+        print("")
+        print(f"{label} ({route})")
+        print(f"  0. Keep engine {default}")
+        for index, choice in enumerate(choices, start=1):
+            print(f"  {index}. {choice.label}")
+        answer = input(f"Select model/engine for {route} [0]: ").strip()
+        selected = default
+        choice = _resolve_wizard_choice(answer, choices, known_engines)
+        if isinstance(choice, WizardChoice):
+            selected = choice.engine
+            if choice.engine_override:
+                engine_overrides[selected] = choice.engine_override
+            if choice.download_suggestion:
+                download_suggestions.append(choice.download_suggestion)
+        elif isinstance(choice, str):
+            selected = choice
+        elif answer:
+            print(f"Unknown choice {answer!r}; keeping {default}.")
         targets[route] = selected
     targets["confirmation"] = "human_confirm"
-    return targets
+    return WizardSelections(
+        routing_targets=targets,
+        engine_overrides=engine_overrides,
+        download_suggestions=tuple(download_suggestions),
+    )
 
 
 def _wizard_default_engine(
@@ -454,20 +509,11 @@ def _wizard_default_engine(
     recommendation: SetupRecommendation,
     discovery,
 ) -> str:
-    local_defaults = {
-        "simple": "fast_local",
-        "balanced": "balanced_local",
-        "reasoning": "reasoning_local",
-        "coding": "code_agent",
-        "research": "web_research",
-        "vision": "multimodal_vision",
-        "image_generation": "image_generation",
-    }
     if mode == "local":
-        return local_defaults[route]
+        return ROUTE_LOCAL_ENGINES[route]
     if mode == "api":
-        return _api_default_engine(route, discovery) or local_defaults[route]
-    return recommendation.routing_targets.get(route, local_defaults[route])
+        return _api_default_engine(route, discovery) or ROUTE_LOCAL_ENGINES[route]
+    return recommendation.routing_targets.get(route, ROUTE_LOCAL_ENGINES[route])
 
 
 def _api_default_engine(route: str, discovery) -> str | None:
@@ -483,6 +529,110 @@ def _api_default_engine(route: str, discovery) -> str | None:
             return "anthropic_api"
         if discovery.env_vars.get("OPENAI_API_KEY"):
             return "openai_api"
+    return None
+
+
+def _wizard_choices_for_route(
+    *,
+    route: str,
+    discovery,
+    recommendation: SetupRecommendation,
+) -> tuple[WizardChoice, ...]:
+    local_engine = ROUTE_LOCAL_ENGINES[route]
+    choices: list[WizardChoice] = []
+    for model in _models_for_route(local_engine, discovery.models):
+        roles = ", ".join(model.roles) if model.roles else "unclassified"
+        model_label = (
+            "Local model" if local_engine in model.roles else "Other local model"
+        )
+        choices.append(
+            WizardChoice(
+                label=f"{model_label} {model.repo_id} ({model.source}; {roles})",
+                engine=local_engine,
+                engine_override=engine_override_for_local_model(local_engine, model),
+            )
+        )
+    suggestion = _download_suggestion_for_route(
+        local_engine,
+        recommendation.download_suggestions,
+    )
+    if suggestion is not None:
+        choices.append(
+            WizardChoice(
+                label=(
+                    f"Recommended download {suggestion.repo_id} "
+                    f"({suggestion.reason})"
+                ),
+                engine=local_engine,
+                engine_override=engine_override_for_download(suggestion),
+                download_suggestion=suggestion,
+            )
+        )
+    choices.extend(_api_and_agent_choices(route, discovery))
+    return tuple(choices)
+
+
+def _models_for_route(
+    local_engine: str,
+    models: tuple[DiscoveredModel, ...],
+) -> tuple[DiscoveredModel, ...]:
+    matching = [model for model in models if local_engine in model.roles]
+    other = [model for model in models if local_engine not in model.roles]
+    return tuple(matching + other)
+
+
+def _download_suggestion_for_route(
+    local_engine: str,
+    suggestions: tuple[DownloadSuggestion, ...],
+) -> DownloadSuggestion | None:
+    for suggestion in suggestions:
+        if suggestion.route == local_engine:
+            return suggestion
+    return None
+
+
+def _api_and_agent_choices(route: str, discovery) -> tuple[WizardChoice, ...]:
+    choices: list[WizardChoice] = []
+    if route == "coding":
+        if discovery.commands.get("claude"):
+            choices.append(WizardChoice(label="Agent tool claude_code", engine="claude_code"))
+        if discovery.commands.get("codex"):
+            choices.append(WizardChoice(label="Agent tool codex", engine="codex"))
+    if discovery.env_vars.get("OPENAI_API_KEY") and route in {
+        "simple",
+        "balanced",
+        "reasoning",
+    }:
+        choices.append(WizardChoice(label="Hosted API openai_api", engine="openai_api"))
+    if discovery.env_vars.get("ANTHROPIC_API_KEY") and route in {
+        "balanced",
+        "reasoning",
+    }:
+        choices.append(
+            WizardChoice(label="Hosted API anthropic_api", engine="anthropic_api")
+        )
+    return tuple(choices)
+
+
+def _resolve_wizard_choice(
+    answer: str,
+    choices: tuple[WizardChoice, ...],
+    known_engines: set[str],
+) -> WizardChoice | str | None:
+    if not answer or answer == "0":
+        return None
+    if answer.isdecimal():
+        index = int(answer)
+        if 1 <= index <= len(choices):
+            return choices[index - 1]
+        return None
+    if answer in known_engines:
+        return answer
+    lowered = answer.lower()
+    matches = [choice for choice in choices if lowered in choice.label.lower()]
+    if len(matches) == 1:
+        print(f"Matched {answer!r} to {matches[0].label}.")
+        return matches[0]
     return None
 
 
@@ -531,29 +681,19 @@ def _selected_command_overrides(routing_targets: dict[str, str]) -> dict[str, di
 def _build_wizard_recommendation(
     *,
     recommendation: SetupRecommendation,
-    routing_targets: dict[str, str],
+    selections: WizardSelections,
     mode: str,
 ) -> SetupRecommendation:
-    selected_engines = set(routing_targets.values())
-    engine_overrides = {
-        engine_name: patch
-        for engine_name, patch in recommendation.engine_overrides.items()
-        if engine_name in selected_engines
-    }
-    engine_overrides.update(_selected_command_overrides(routing_targets))
-    engine_overrides.update(_selected_api_overrides(routing_targets))
-    download_suggestions = tuple(
-        suggestion
-        for suggestion in recommendation.download_suggestions
-        if suggestion.route in selected_engines
-    )
+    engine_overrides = dict(selections.engine_overrides)
+    engine_overrides.update(_selected_command_overrides(selections.routing_targets))
+    engine_overrides.update(_selected_api_overrides(selections.routing_targets))
     return SetupRecommendation(
-        routing_targets=routing_targets,
+        routing_targets=selections.routing_targets,
         engine_overrides=engine_overrides,
-        download_suggestions=download_suggestions,
+        download_suggestions=selections.download_suggestions,
         notes=_wizard_notes(
             recommendation=recommendation,
-            routing_targets=routing_targets,
+            routing_targets=selections.routing_targets,
             mode=mode,
         ),
     )

@@ -432,6 +432,56 @@ def test_setup_wizard_local_mode_writes_local_routes(tmp_path):
     assert "coding route set to codex" not in result.stdout
 
 
+def test_setup_wizard_can_select_numbered_local_model(tmp_path):
+    output = tmp_path / "model_router.local.yaml"
+    hf_cache = tmp_path / "hub"
+    model_dir = hf_cache / "models--Qwen--Qwen2.5-3B-Instruct"
+    model_dir.mkdir(parents=True)
+
+    result = _run_cli_with_input(
+        "setup",
+        "wizard",
+        "--no-default-dirs",
+        "--model-dir",
+        str(hf_cache),
+        "--output",
+        str(output),
+        user_input="1\n\n1\n" + "\n" * 5 + "y\n",
+    )
+    data = yaml.safe_load(output.read_text(encoding="utf-8"))
+
+    assert result.returncode == 0
+    assert "1. Local model Qwen/Qwen2.5-3B-Instruct" in result.stdout
+    assert data["routing_targets"]["balanced"] == "balanced_local"
+    assert data["engines"]["balanced_local"]["model"] == "Qwen/Qwen2.5-3B-Instruct"
+    assert data["engines"]["balanced_local"]["availability"]["required_paths"] == [
+        str(model_dir)
+    ]
+
+
+def test_setup_wizard_can_select_numbered_recommended_download(tmp_path):
+    output = tmp_path / "model_router.local.yaml"
+
+    result = _run_cli_with_input(
+        "setup",
+        "wizard",
+        "--no-default-dirs",
+        "--output",
+        str(output),
+        user_input="1\n1\n" + "\n" * 6 + "y\n",
+    )
+    data = yaml.safe_load(output.read_text(encoding="utf-8"))
+
+    assert result.returncode == 0
+    assert "1. Recommended download Qwen/Qwen3-0.6B" in result.stdout
+    assert data["routing_targets"]["simple"] == "fast_local"
+    assert data["engines"]["fast_local"]["model"] == "Qwen/Qwen3-0.6B"
+    assert data["engines"]["fast_local"]["availability"]["required_paths"] == [
+        "models/fast_local/Qwen--Qwen3-0.6B"
+    ]
+    assert "- fast_local: Qwen/Qwen3-0.6B" in result.stdout
+
+
 def test_setup_wizard_api_mode_can_use_api_key_routes(tmp_path):
     output = tmp_path / "model_router.local.yaml"
 

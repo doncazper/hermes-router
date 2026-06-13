@@ -130,10 +130,12 @@ python -m hermes.plugins.model_router.cli setup wizard \
 The wizard asks for:
 
 - Local-only, API-only, or mixed setup.
+- Numbered local model choices discovered on your machine.
+- Numbered recommended download choices when a route has no local model yet.
 - Simple, balanced, reasoning, coding, research, vision, and image-generation
   route choices.
-- Route overrides by engine name, such as `claude_code`, `codex`, `openai_api`,
-  `anthropic_api`, `balanced_local`, or `reasoning_local`.
+- Direct route overrides by engine name, such as `claude_code`, `codex`,
+  `openai_api`, `anthropic_api`, `balanced_local`, or `reasoning_local`.
 - Final confirmation before writing `configs/model_router.local.yaml`.
 
 Write a local config:

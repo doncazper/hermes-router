@@ -338,6 +338,19 @@ def write_config_from_recommendation(
     )
 
 
+def engine_override_for_local_model(
+    role: str,
+    model: DiscoveredModel,
+) -> dict[str, Any]:
+    return _engine_override_for_model(role, model)
+
+
+def engine_override_for_download(
+    suggestion: DownloadSuggestion,
+) -> dict[str, Any]:
+    return _engine_override_for_suggestion(suggestion)
+
+
 def _api_engine_override(*, env_var: str, adapter: str) -> dict[str, Any]:
     return {
         "enabled": True,
