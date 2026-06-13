@@ -15,14 +15,15 @@ to an agent. It only decides.
 The router is implemented under `hermes/plugins/model_router/`.
 
 - `models.py` defines JSON-safe dataclass models for engines, prompt features,
-  scores, decisions, receipts, and config.
+  scoring config, alternatives, decisions, receipts, and config.
 - `config.py` loads and validates the engine catalog from
   `configs/model_router.yaml`.
 - `availability.py` validates declared engine availability without executing
   commands or calling providers.
-- `scorer.py` performs fast deterministic prompt analysis with regular
-  expressions and length heuristics.
-- `policy.py` maps scores and features to engine categories.
+- `scorer.py` performs fast deterministic prompt analysis with weighted signals,
+  saturation, regular expressions, and length heuristics.
+- `policy.py` exposes the initialized `ModelRouter` runtime and maps scores and
+  features to engine categories.
 - `receipts.py` converts routing decisions into serializable receipts.
 - `setup_assistant.py` scans local commands/model directories and produces
   setup recommendations without downloading or executing models.
@@ -46,6 +47,25 @@ The scorer inspects:
 - Ambiguity in short high-impact prompts.
 
 High-risk external actions raise risk even when the prompt is short.
+
+Scoring uses deterministic weighted signals. Public scores stay on a 0-100
+scale. The optional top-level `scoring:` YAML section can override feature
+weights and `saturation_k`; missing values use Hermes defaults. Invalid scoring
+config is treated as invalid config, so compatibility routing fails closed to
+`human_confirm`.
+
+```yaml
+scoring:
+  saturation_k: 50
+  weights:
+    complexity:
+      multi_step_reasoning: 25
+      architecture: 25
+      coding_intent: 30
+    risk:
+      destructive_action: 100
+      file_shell_github: 30
+```
 
 ## Routing Policy
 
@@ -73,6 +93,33 @@ Routing hints can add constraints without executing anything. Supported hints
 include forced engine preference, attachment modalities, maximum cost tier,
 maximum latency tier, and latency sensitivity. High-risk actions still route to
 confirmation even if a weaker engine is forced.
+
+For embedded use, initialize the router once and reuse it:
+
+```python
+from hermes.plugins.model_router import ModelRouter
+
+router = ModelRouter.from_config("configs/model_router.local.yaml")
+decision = router.route("fix the repo and run tests")
+```
+
+`ModelRouter` loads YAML, validates static config, and caches declared
+availability once. Per-prompt routing uses the in-memory config and does not run
+setup scans or parse YAML again.
+
+## Dry-Run Dispatch Plans
+
+The router can produce a dispatch plan without executing adapters:
+
+```bash
+python -m hermes.plugins.model_router.cli dispatch-plan "rewrite this text"
+python -m hermes.plugins.model_router.cli dispatch-plan --json "fix the repo and run tests"
+```
+
+Dispatch plans name the selected provider, model, and adapter and include the
+routing receipt. They never call providers, load local model weights, run tools,
+or perform external actions. The adapter boundary and lazy-loading policy are
+documented in `docs/adapter-contract.md`.
 
 ## Model Catalog And User Setup
 
@@ -296,12 +343,37 @@ strengths:
 max_context: 16384
 cost_tier: free
 latency_tier: medium
+capability: 65
+trust: 60
+cost: 0
+latency: 45
 supports_tools: false
 modalities: []
 enabled: true
 fallback: reasoning_local
 availability:
   status: auto
+```
+
+The numeric ranking fields are optional 0-100 values. If omitted, Hermes derives
+them from the tier fields and context window. They rank compatible alternatives;
+they do not override the configured route target when that target is enabled,
+available, and compatible.
+
+Example scoring override:
+
+```yaml
+scoring:
+  saturation_k: 50
+  weights:
+    complexity:
+      multi_step_reasoning: 25
+      architecture: 25
+    risk:
+      destructive_action: 100
+      sensitive_domain: 25
+    confidence:
+      ambiguous: 25
 ```
 
 The required categories are:
@@ -398,6 +470,22 @@ Example receipt:
     "max_latency_tier": null
   },
   "rejected_engines": [],
+  "alternatives": [
+    {
+      "engine": "reasoning_local",
+      "rank_score": 76,
+      "capability": 80,
+      "trust": 60,
+      "cost": 0,
+      "latency": 75,
+      "reasons": [
+        "capability 80/100",
+        "trust 60/100",
+        "cost 0/100",
+        "latency 75/100"
+      ]
+    }
+  ],
   "fallback_used": false
 }
 ```

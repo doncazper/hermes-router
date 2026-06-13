@@ -10,7 +10,8 @@ from typing import Any
 
 from hermes.plugins.model_router.availability import validate_router_availability
 from hermes.plugins.model_router.config import RouterConfigError, load_router_config
-from hermes.plugins.model_router.policy import route_prompt
+from hermes.plugins.model_router.dispatch import build_dispatch_plan, dispatch_plan_to_json
+from hermes.plugins.model_router.policy import ModelRouter, route_prompt
 from hermes.plugins.model_router.receipts import decision_to_receipt, receipt_to_json
 from hermes.plugins.model_router.setup_assistant import (
     DiscoveredModel,
@@ -111,6 +112,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     decide.add_argument("prompt", nargs="+", help="Prompt text to route")
     decide.set_defaults(func=_cmd_decide)
+
+    dispatch = subparsers.add_parser(
+        "dispatch-plan",
+        help="Build a safe dry-run dispatch plan without executing adapters",
+    )
+    _add_routing_hint_args(dispatch)
+    dispatch.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a JSON dry-run dispatch plan",
+    )
+    dispatch.add_argument("prompt", nargs="+", help="Prompt text to plan")
+    dispatch.set_defaults(func=_cmd_dispatch_plan)
 
     validate = subparsers.add_parser(
         "validate-config",
@@ -258,23 +272,78 @@ def main(argv: list[str] | None = None) -> int:
 
 def _cmd_decide(args: argparse.Namespace) -> int:
     prompt = " ".join(args.prompt)
-    decision = route_prompt(
-        prompt,
-        config_path=args.config,
-        hints={
-            "force_engine": args.force_engine,
-            "attachments": args.attachment or [],
-            "max_cost_tier": args.max_cost_tier,
-            "max_latency_tier": args.max_latency_tier,
-            "latency_sensitive": args.latency_sensitive,
-        },
-    )
+    hints = _routing_hints_from_args(args)
+    try:
+        decision = ModelRouter.from_config(args.config).route(prompt, hints=hints)
+    except RouterConfigError:
+        decision = route_prompt(prompt, config_path=args.config, hints=hints)
     receipt = decision_to_receipt(decision)
     if args.json:
         print(receipt_to_json(receipt))
     else:
         _print_readable(receipt)
     return 0
+
+
+def _cmd_dispatch_plan(args: argparse.Namespace) -> int:
+    prompt = " ".join(args.prompt)
+    hints = _routing_hints_from_args(args)
+    plan = build_dispatch_plan(
+        prompt,
+        config_path=args.config,
+        hints=hints,
+    )
+    if args.json:
+        print(dispatch_plan_to_json(plan))
+    else:
+        _print_dispatch_plan(plan)
+    return 0
+
+
+def _add_routing_hint_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Path to a model_router.yaml catalog",
+    )
+    parser.add_argument(
+        "--force-engine",
+        default=None,
+        help="Prefer a specific engine by name; high-risk actions still confirm",
+    )
+    parser.add_argument(
+        "--attachment",
+        action="append",
+        choices=("image", "pdf", "audio", "code"),
+        default=None,
+        help="Declare an attachment modality for routing constraints",
+    )
+    parser.add_argument(
+        "--max-cost-tier",
+        default=None,
+        help="Reject engines above this cost tier",
+    )
+    parser.add_argument(
+        "--max-latency-tier",
+        default=None,
+        help="Reject engines above this latency tier",
+    )
+    parser.add_argument(
+        "--latency-sensitive",
+        action="store_true",
+        help="Prefer lower-latency engines when possible",
+    )
+
+
+def _routing_hints_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "force_engine": args.force_engine,
+        "attachments": args.attachment or [],
+        "max_cost_tier": args.max_cost_tier,
+        "max_latency_tier": args.max_latency_tier,
+        "latency_sensitive": args.latency_sensitive,
+    }
 
 
 def _cmd_validate_config(args: argparse.Namespace) -> int:
@@ -835,6 +904,20 @@ def _print_download_result(result) -> None:
         print(f"- {note}")
 
 
+def _print_dispatch_plan(plan) -> None:
+    print(f"Selected engine: {plan.selected_engine}")
+    print(f"Provider: {plan.provider}")
+    print(f"Model: {plan.model}")
+    print(f"Adapter: {plan.adapter}")
+    print(f"Dry run: {str(plan.dry_run).lower()}")
+    print(f"Can dispatch: {str(plan.can_dispatch).lower()}")
+    print(f"Blocked: {str(plan.blocked).lower()}")
+    print(f"Requires confirmation: {str(plan.requires_confirmation).lower()}")
+    print("Reasons:")
+    for reason in plan.reasons:
+        print(f"- {reason}")
+
+
 def _print_readable(receipt) -> None:
     print(f"Selected engine: {receipt.selected_engine}")
     print(f"Fallback engine: {receipt.fallback_engine or 'none'}")
@@ -862,6 +945,11 @@ def _print_readable(receipt) -> None:
         print("- none")
     for rejection in receipt.rejected_engines:
         print(f"- {rejection.engine}: {rejection.reason}")
+    print("Alternatives:")
+    if not receipt.alternatives:
+        print("- none")
+    for alternative in receipt.alternatives:
+        print(f"- {alternative.engine}: rank {alternative.rank_score}/100")
     print("Availability:")
     for reason in receipt.availability_reasons:
         print(f"- {reason}")

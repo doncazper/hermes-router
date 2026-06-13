@@ -1,3 +1,4 @@
+from hermes.plugins.model_router.models import ScoringConfig
 from hermes.plugins.model_router.scorer import score_prompt
 
 
@@ -55,3 +56,47 @@ def test_image_generation_prompts_set_generation_features():
     assert analysis.features.requires_image_generation is True
     assert analysis.features.requires_tools is True
     assert any("image generation" in reason for reason in analysis.reasons)
+
+
+def test_weighted_scoring_saturates_and_preserves_zero_to_one_hundred_scale():
+    prompt = (
+        "Design a distributed architecture with backpressure, consensus, "
+        "step-by-step rollout, and tradeoff analysis."
+    )
+    analysis = score_prompt(
+        prompt,
+        scoring_config=ScoringConfig.from_dict(
+            {
+                "weights": {
+                    "complexity": {
+                        "multi_step_reasoning": 40,
+                        "architecture": 35,
+                    }
+                },
+                "saturation_k": 25,
+            }
+        ),
+    )
+
+    assert 0 <= analysis.complexity_score.value <= 100
+    assert analysis.complexity_score.value >= 80
+    assert analysis.risk_score.value == 0
+
+
+def test_scoring_config_weight_overrides_change_scores_deterministically():
+    prompt = "Design a multi-step architecture plan."
+    default = score_prompt(prompt)
+    boosted = score_prompt(
+        prompt,
+        scoring_config=ScoringConfig.from_dict(
+            {
+                "weights": {
+                    "complexity": {
+                        "multi_step_reasoning": 30,
+                    }
+                }
+            }
+        ),
+    )
+
+    assert boosted.complexity_score.value > default.complexity_score.value

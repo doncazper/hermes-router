@@ -9,11 +9,54 @@ from hermes.plugins.model_router.models import (
     ComplexityScore,
     PromptAnalysis,
     PromptFeatures,
+    PromptSignal,
     RiskScore,
+    ScoringConfig,
 )
 
+DEFAULT_SCORING_WEIGHTS: dict[str, dict[str, int]] = {
+    "complexity": {
+        "medium_prompt": 10,
+        "long_prompt": 15,
+        "very_long_prompt": 15,
+        "coding_intent": 25,
+        "research_intent": 20,
+        "current_info_intent": 20,
+        "multi_step_reasoning": 25,
+        "architecture": 25,
+        "tool_intent": 10,
+        "structured_output": 8,
+        "ambiguous": 12,
+        "long_context": 20,
+        "sensitive_domain": 8,
+        "vision_intent": 15,
+        "image_generation_intent": 18,
+    },
+    "risk": {
+        "destructive_action": 70,
+        "send_action": 60,
+        "purchase_action": 60,
+        "external_action": 40,
+        "file_shell_github": 25,
+        "sensitive_domain": 25,
+        "legal_domain": 5,
+        "medical_domain": 5,
+        "financial_domain": 5,
+        "ambiguous_high_impact": 15,
+        "production": 20,
+        "security": 15,
+        "pii": 20,
+    },
+}
 
-def score_prompt(prompt: str) -> PromptAnalysis:
+
+def score_prompt(
+    prompt: str,
+    *,
+    scoring_config: ScoringConfig | None = None,
+) -> PromptAnalysis:
+    config = scoring_config or ScoringConfig()
+    weights = _merged_weights(config)
     text = prompt or ""
     normalized = " ".join(text.lower().split())
     prompt_length = len(text)
@@ -42,6 +85,11 @@ def score_prompt(prompt: str) -> PromptAnalysis:
         r"\b(architecture|architect|design|plan|multi-step|strategy|roadmap|"
         r"trade-?offs?|edge cases?|data flow|rollout|migration|system)\b",
     )
+    architecture_intent = _matches(
+        normalized,
+        r"\b(distributed|architecture|scalab|concurren|consensus|throughput|"
+        r"backpressure|exactly-once)\b",
+    )
     file_intent = _matches(
         normalized,
         r"\b(file|files|folder|directory|write|edit|create|patch)\b",
@@ -49,7 +97,7 @@ def score_prompt(prompt: str) -> PromptAnalysis:
     email_intent = _matches(normalized, r"\b(email|emails|mail|inbox)\b")
     calendar_intent = _matches(
         normalized,
-        r"\b(calendar|meeting|invite|appointment|schedule|reschedule)\b",
+        r"\b(calendar|invite|appointment|schedule|reschedule)\b",
     )
     shell_intent = _matches(
         normalized,
@@ -85,22 +133,36 @@ def score_prompt(prompt: str) -> PromptAnalysis:
     medical_domain = _matches(
         normalized,
         r"\b(medical|doctor|diagnosis|diagnose|treatment|symptom|prescription|"
-        r"clinical|health)\b",
+        r"clinical|health|patient)\b",
     )
     financial_domain = _matches(
         normalized,
         r"\b(financial|finance|tax|taxes|investment|invest|liability|loan|"
-        r"insurance|bank|trading|stock|portfolio)\b",
+        r"insurance|bank|trading|stock|portfolio|payment|invoice|refund)\b",
     )
     sensitive_domain = legal_domain or medical_domain or financial_domain
+    production_risk = _matches(
+        normalized,
+        r"\b(production|prod|customer data|live system|main branch)\b",
+    )
+    security_risk = _matches(
+        normalized,
+        r"\b(exploit|malware|xss|csrf|breach|vulnerabilit|sql injection)\b",
+    )
+    pii_risk = _matches(
+        normalized,
+        r"\b(ssn|passport|password|secret|social security|credit card|api key|"
+        r"private key)\b",
+    )
 
     destructive_action = _matches(
         normalized,
-        r"\b(delete|remove|wipe|destroy|drop|erase|cancel|terminate|purge)\b",
+        r"\b(delete|remove|wipe|destroy|drop|erase|cancel|terminate|purge|"
+        r"truncate|shutdown|uninstall|revoke)\b",
     )
     send_action = _matches(
         normalized,
-        r"\b(send|message|post|publish|submit|reply)\b",
+        r"\b(send|message|post|publish|submit|reply|email)\b",
     )
     purchase_action = _matches(
         normalized,
@@ -124,7 +186,10 @@ def score_prompt(prompt: str) -> PromptAnalysis:
     ambiguous = (
         not simple_transform
         and word_count <= 4
-        and _matches(normalized, r"\b(handle|help|fix|manage|do|deal with|this|that|it)\b")
+        and _matches(
+            normalized,
+            r"\b(handle|help|fix|manage|do|deal with|this|that|it)\b",
+        )
     )
     long_context = estimated_tokens >= 1000 or prompt_length >= 4000
     requires_freshness = bool(research_intent and current_info_intent)
@@ -144,13 +209,15 @@ def score_prompt(prompt: str) -> PromptAnalysis:
         or requires_image_generation
     )
 
-    complexity, complexity_reasons = _complexity_score(
+    complexity_signals, complexity_reasons = _complexity_signals(
+        weights=weights["complexity"],
         estimated_tokens=estimated_tokens,
         simple_transform=simple_transform,
         coding_intent=coding_intent,
         research_intent=research_intent,
         current_info_intent=current_info_intent,
         multi_step_reasoning=multi_step_reasoning,
+        architecture_intent=architecture_intent,
         tool_intent=requires_tools,
         structured_output=structured_output,
         ambiguous=ambiguous,
@@ -159,7 +226,8 @@ def score_prompt(prompt: str) -> PromptAnalysis:
         vision_intent=requires_vision,
         image_generation_intent=requires_image_generation,
     )
-    risk, risk_reasons = _risk_score(
+    risk_signals, risk_reasons = _risk_signals(
+        weights=weights["risk"],
         destructive_action=destructive_action,
         send_action=send_action,
         purchase_action=purchase_action,
@@ -172,7 +240,21 @@ def score_prompt(prompt: str) -> PromptAnalysis:
         medical_domain=medical_domain,
         financial_domain=financial_domain,
         ambiguous=ambiguous,
+        production_risk=production_risk,
+        security_risk=security_risk,
+        pii_risk=pii_risk,
     )
+
+    complexity = min(
+        100,
+        10 + _saturate_weight_sum(complexity_signals, config.saturation_k),
+    )
+    risk = _saturate_weight_sum(risk_signals, config.saturation_k)
+    if destructive_action:
+        risk = max(risk, 70)
+    if send_action or purchase_action:
+        risk = max(risk, 60)
+
     requires_confirmation = (
         risk >= 70 or destructive_action or send_action or purchase_action
     )
@@ -245,6 +327,7 @@ def score_prompt(prompt: str) -> PromptAnalysis:
         confidence_score=confidence,
         features=features,
         reasons=reasons,
+        signals=tuple([*complexity_signals, *risk_signals]),
     )
 
 
@@ -252,98 +335,250 @@ def _matches(text: str, pattern: str) -> bool:
     return bool(re.search(pattern, text, flags=re.IGNORECASE))
 
 
-def _complexity_score(**signals: bool | int) -> tuple[int, list[str]]:
-    score = 10
+def _merged_weights(config: ScoringConfig) -> dict[str, dict[str, int]]:
+    merged = {
+        dimension: dict(weights)
+        for dimension, weights in DEFAULT_SCORING_WEIGHTS.items()
+    }
+    for dimension, overrides in config.weights.items():
+        merged.setdefault(dimension, {})
+        merged[dimension].update(overrides)
+    return merged
+
+
+def _signal(
+    *,
+    dimension: str,
+    feature: str,
+    weights: dict[str, int],
+    detail: str,
+) -> PromptSignal:
+    return PromptSignal(
+        dimension=dimension,
+        feature=feature,
+        weight=weights.get(feature, 0),
+        detail=detail,
+    )
+
+
+def _complexity_signals(
+    **signals: bool | int | dict[str, int],
+) -> tuple[list[PromptSignal], list[str]]:
+    weights = signals["weights"]
+    assert isinstance(weights, dict)
+    found: list[PromptSignal] = []
     reasons: list[str] = []
     estimated_tokens = int(signals["estimated_tokens"])
 
     if signals["simple_transform"]:
         reasons.append("simple rewrite/extraction/formatting")
     if estimated_tokens > 200:
-        score += 10
+        found.append(
+            _signal(
+                dimension="complexity",
+                feature="medium_prompt",
+                weights=weights,
+                detail="medium prompt length",
+            )
+        )
         reasons.append("medium prompt length")
     if estimated_tokens > 800:
-        score += 15
+        found.append(
+            _signal(
+                dimension="complexity",
+                feature="long_prompt",
+                weights=weights,
+                detail="long prompt",
+            )
+        )
         reasons.append("long prompt")
     if estimated_tokens > 1600:
-        score += 15
+        found.append(
+            _signal(
+                dimension="complexity",
+                feature="very_long_prompt",
+                weights=weights,
+                detail="very long prompt",
+            )
+        )
         reasons.append("very long prompt")
     if signals["coding_intent"]:
-        score += 25
+        found.append(
+            _signal(
+                dimension="complexity",
+                feature="coding_intent",
+                weights=weights,
+                detail="coding or repository intent",
+            )
+        )
         reasons.append("coding or repository intent")
     if signals["research_intent"] or signals["current_info_intent"]:
-        score += 20
+        feature = (
+            "current_info_intent"
+            if signals["current_info_intent"]
+            else "research_intent"
+        )
+        found.append(
+            _signal(
+                dimension="complexity",
+                feature=feature,
+                weights=weights,
+                detail="research or current-information intent",
+            )
+        )
         reasons.append("research or current-information intent")
     if signals["multi_step_reasoning"]:
-        score += 25
+        found.append(
+            _signal(
+                dimension="complexity",
+                feature="multi_step_reasoning",
+                weights=weights,
+                detail="multi-step planning or architecture",
+            )
+        )
         reasons.append("multi-step planning or architecture")
+    if signals["architecture_intent"]:
+        found.append(
+            _signal(
+                dimension="complexity",
+                feature="architecture",
+                weights=weights,
+                detail="architecture or distributed-systems intent",
+            )
+        )
+        reasons.append("architecture or distributed-systems intent")
     if signals["tool_intent"]:
-        score += 10
+        found.append(
+            _signal(
+                dimension="complexity",
+                feature="tool_intent",
+                weights=weights,
+                detail="tool use likely",
+            )
+        )
         reasons.append("tool use likely")
     if signals["structured_output"]:
-        score += 8
+        found.append(
+            _signal(
+                dimension="complexity",
+                feature="structured_output",
+                weights=weights,
+                detail="structured output requested",
+            )
+        )
         reasons.append("structured output requested")
     if signals["ambiguous"]:
-        score += 12
+        found.append(
+            _signal(
+                dimension="complexity",
+                feature="ambiguous",
+                weights=weights,
+                detail="ambiguous request",
+            )
+        )
         reasons.append("ambiguous request")
     if signals["long_context"]:
-        score += 20
+        found.append(
+            _signal(
+                dimension="complexity",
+                feature="long_context",
+                weights=weights,
+                detail="long-context need",
+            )
+        )
         reasons.append("long-context need")
     if signals["sensitive_domain"]:
-        score += 8
+        found.append(
+            _signal(
+                dimension="complexity",
+                feature="sensitive_domain",
+                weights=weights,
+                detail="sensitive domain",
+            )
+        )
         reasons.append("sensitive domain")
     if signals["vision_intent"]:
-        score += 15
+        found.append(
+            _signal(
+                dimension="complexity",
+                feature="vision_intent",
+                weights=weights,
+                detail="vision or OCR intent",
+            )
+        )
         reasons.append("vision or OCR intent")
     if signals["image_generation_intent"]:
-        score += 18
+        found.append(
+            _signal(
+                dimension="complexity",
+                feature="image_generation_intent",
+                weights=weights,
+                detail="image generation intent",
+            )
+        )
         reasons.append("image generation intent")
 
-    return min(score, 100), reasons
+    return found, reasons
 
 
-def _risk_score(**signals: bool) -> tuple[int, list[str]]:
-    score = 0
+def _risk_signals(**signals: bool | dict[str, int]) -> tuple[list[PromptSignal], list[str]]:
+    weights = signals["weights"]
+    assert isinstance(weights, dict)
+    found: list[PromptSignal] = []
     reasons: list[str] = []
 
+    def add(feature: str, reason: str) -> None:
+        found.append(
+            _signal(
+                dimension="risk",
+                feature=feature,
+                weights=weights,
+                detail=reason,
+            )
+        )
+        reasons.append(reason)
+
     if signals["destructive_action"]:
-        score += 70
-        reasons.append("destructive external action")
+        add("destructive_action", "destructive external action")
     if signals["send_action"]:
-        score += 60
-        reasons.append("sending or publishing action")
+        add("send_action", "sending or publishing action")
     if signals["purchase_action"]:
-        score += 60
-        reasons.append("purchase or payment action")
+        add("purchase_action", "purchase or payment action")
     if signals["external_action"] and not (
         signals["destructive_action"]
         or signals["send_action"]
         or signals["purchase_action"]
     ):
-        score += 40
-        reasons.append("external action")
+        add("external_action", "external action")
     if signals["file_intent"] or signals["shell_intent"] or signals["github_intent"]:
-        score += 25
-        reasons.append("file, shell, or GitHub operation")
+        add("file_shell_github", "file, shell, or GitHub operation")
     if signals["sensitive_domain"]:
-        score += 25
-        reasons.append("sensitive legal, medical, or financial domain")
+        add("sensitive_domain", "sensitive legal, medical, or financial domain")
     if signals["legal_domain"]:
-        score += 5
-        reasons.append("legal sensitivity")
+        add("legal_domain", "legal sensitivity")
     if signals["medical_domain"]:
-        score += 5
-        reasons.append("medical sensitivity")
+        add("medical_domain", "medical sensitivity")
     if signals["financial_domain"]:
-        score += 5
-        reasons.append("financial sensitivity")
+        add("financial_domain", "financial sensitivity")
+    if signals["production_risk"]:
+        add("production", "production or live-system risk")
+    if signals["security_risk"]:
+        add("security", "security-sensitive request")
+    if signals["pii_risk"]:
+        add("pii", "private data or credential sensitivity")
     if signals["ambiguous"] and (
         signals["sensitive_domain"] or signals["external_action"]
     ):
-        score += 15
-        reasons.append("ambiguous high-impact request")
+        add("ambiguous_high_impact", "ambiguous high-impact request")
 
-    return min(score, 100), reasons
+    return found, reasons
+
+
+def _saturate_weight_sum(signals: list[PromptSignal], saturation_k: int) -> int:
+    total = sum(signal.weight for signal in signals)
+    if total <= 0:
+        return 0
+    return round((total / (total + saturation_k)) * 100)
 
 
 def _confidence_score(

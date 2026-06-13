@@ -17,7 +17,8 @@ external model APIs, run tools, or perform user actions.
 - Routes prompts to configured engines such as local models, Claude Code,
   Codex, web/RAG research, vision, image generation, or human confirmation.
 - Validates declared engine availability before choosing an engine.
-- Emits explainable routing receipts that are safe to serialize as JSON.
+- Emits explainable routing receipts, alternatives, and rejection reasons that
+  are safe to serialize as JSON.
 - Fails closed to `human_confirm` when config is missing or invalid.
 
 ## Install
@@ -103,10 +104,58 @@ Example JSON receipt:
     "required_modalities": []
   },
   "rejected_engines": [],
+  "alternatives": [
+    {
+      "engine": "reasoning_local",
+      "rank_score": 76,
+      "capability": 80,
+      "trust": 60,
+      "cost": 0,
+      "latency": 75,
+      "reasons": [
+        "capability 80/100",
+        "trust 60/100",
+        "cost 0/100",
+        "latency 75/100"
+      ]
+    }
+  ],
   "risk_score": 25,
   "selected_engine": "code_agent"
 }
 ```
+
+## Runtime API
+
+Use the initialized router API when embedding Hermes in another process. This
+loads YAML, validates static config, and caches availability once; each
+`route(...)` call stays in memory.
+
+```python
+from hermes.plugins.model_router import ModelRouter
+
+router = ModelRouter.from_config("configs/model_router.local.yaml")
+decision = router.route("fix the repo and run tests")
+print(decision.selected_engine)
+```
+
+The older `route_prompt(...)` function remains available for one-off scripts and
+CLI-style usage.
+
+## Dry-Run Dispatch Plans
+
+Hermes can also produce a safe dispatch plan without executing anything:
+
+```bash
+python -m hermes.plugins.model_router.cli dispatch-plan "fix the repo and run tests"
+python -m hermes.plugins.model_router.cli dispatch-plan --json "rewrite this text"
+```
+
+Dispatch plans name the selected provider, model, and adapter, then say whether
+future dispatch would be allowed. They never load model weights, start Ollama or
+LM Studio, call hosted APIs, run shell commands, or perform external actions.
+See [docs/adapter-contract.md](docs/adapter-contract.md) for the future adapter
+boundary and lazy-loading guidance.
 
 ## Configure Models And Agents
 
@@ -226,6 +275,10 @@ engines:
     max_context: 200000
     cost_tier: high
     latency_tier: medium
+    capability: 90
+    trust: 90
+    cost: 80
+    latency: 45
     enabled: true
     fallback: code_agent
     availability:
@@ -243,6 +296,16 @@ If the setup assistant detects the `claude` command, it recommends
 `routing_targets.coding: claude_code`. If it detects `codex` but not `claude`,
 it recommends `routing_targets.coding: codex`. Otherwise, it keeps coding on
 the local `code_agent` fallback.
+
+Engines can optionally include numeric ranking metadata on a 0-100 scale:
+`capability`, `trust`, `cost`, and `latency`. If omitted, Hermes derives those
+values from the existing tier fields. Numeric values only affect ranked
+alternatives; the configured route target remains selected when it is enabled,
+available, and compatible.
+
+Prompt scoring is also tunable through the optional top-level `scoring:` section
+in the YAML catalog. Missing weights use Hermes defaults; invalid scoring config
+is treated as invalid config and routes fail closed.
 
 The default catalog covers these engine roles:
 
@@ -277,6 +340,9 @@ During routing, unavailable engines are skipped through their fallback chain. If
 no available fallback exists, the router fails closed to `human_confirm`.
 Receipts include rejected engines and reasons, such as missing tool support,
 missing modality support, or cost/latency tier limits.
+
+High-risk destructive, sending, purchasing, and external-action prompts always
+route to `human_confirm`; `--force-engine` cannot bypass that confirmation gate.
 
 ## Default Routes
 

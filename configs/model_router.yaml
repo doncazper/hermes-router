@@ -249,3 +249,39 @@ engines:
     fallback: null
     availability:
       status: available
+
+scoring:
+  saturation_k: 50
+  weights:
+    complexity:
+      medium_prompt: 10
+      long_prompt: 20
+      very_long_prompt: 25
+      coding_intent: 30
+      research_intent: 20
+      current_info_intent: 20
+      multi_step_reasoning: 25
+      architecture: 25
+      tool_intent: 12
+      structured_output: 10
+      ambiguous: 15
+      long_context: 35
+      sensitive_domain: 8
+      vision_intent: 20
+      image_generation_intent: 22
+    risk:
+      destructive_action: 100
+      send_action: 80
+      purchase_action: 80
+      external_action: 50
+      file_shell_github: 30
+      sensitive_domain: 25
+      legal_domain: 8
+      medical_domain: 8
+      financial_domain: 8
+      ambiguous_high_impact: 25
+    confidence:
+      ambiguous: 25
+      short_high_risk: 15
+      weak_feature_match: 10
+      empty_prompt: 40

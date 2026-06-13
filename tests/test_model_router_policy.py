@@ -13,8 +13,12 @@ def _engine(
     fallback: str | None = None,
     supports_tools: bool | None = None,
     modalities: list[str] | None = None,
+    capability: int | None = None,
+    trust: int | None = None,
+    cost: int | None = None,
+    latency: int | None = None,
 ) -> dict:
-    return {
+    data = {
         "provider": "local" if name != "human_confirm" else "human",
         "model": f"{name}-model",
         "adapter": name,
@@ -38,6 +42,15 @@ def _engine(
         },
         "modalities": modalities or [],
     }
+    if capability is not None:
+        data["capability"] = capability
+    if trust is not None:
+        data["trust"] = trust
+    if cost is not None:
+        data["cost"] = cost
+    if latency is not None:
+        data["latency"] = latency
+    return data
 
 
 def _config_path(tmp_path: Path, overrides: dict[str, dict] | None = None) -> Path:
@@ -275,6 +288,7 @@ def test_toolless_target_is_rejected_with_reason(tmp_path):
         rejection.engine == "fast_local" and "tools required" in rejection.reason
         for rejection in decision.rejected_engines
     )
+    assert all(alternative.engine != "fast_local" for alternative in decision.alternatives)
 
 
 def test_image_attachment_hint_routes_to_vision(tmp_path):
@@ -315,3 +329,93 @@ def test_latency_sensitive_hint_rejects_high_latency_target(tmp_path):
         rejection.engine == "reasoning_local" and "latency_tier" in rejection.reason
         for rejection in decision.rejected_engines
     )
+
+
+def test_ranked_alternatives_are_returned_sorted_by_rank(tmp_path):
+    decision = route_prompt(
+        "rewrite this text",
+        config_path=_config_path(
+            tmp_path,
+            {
+                "balanced_local": {
+                    "capability": 70,
+                    "trust": 70,
+                    "cost": 20,
+                    "latency": 20,
+                },
+                "reasoning_local": {
+                    "capability": 95,
+                    "trust": 85,
+                    "cost": 60,
+                    "latency": 70,
+                },
+            },
+        ),
+    )
+
+    ranks = [alternative.rank_score for alternative in decision.alternatives]
+    assert ranks == sorted(ranks, reverse=True)
+    assert decision.alternatives
+    assert all(alternative.engine != decision.selected_engine for alternative in decision.alternatives)
+    assert all(
+        alternative.engine not in {"human_confirm", "intent_router"}
+        for alternative in decision.alternatives
+    )
+
+
+def test_target_engine_remains_selected_even_when_alternative_ranks_higher(tmp_path):
+    decision = route_prompt(
+        "rewrite this text",
+        config_path=_config_path(
+            tmp_path,
+            {
+                "fast_local": {
+                    "capability": 30,
+                    "trust": 40,
+                    "cost": 5,
+                    "latency": 5,
+                },
+                "reasoning_local": {
+                    "capability": 100,
+                    "trust": 100,
+                    "cost": 50,
+                    "latency": 70,
+                },
+            },
+        ),
+    )
+
+    assert decision.selected_engine == "fast_local"
+    assert decision.alternatives[0].engine == "reasoning_local"
+
+
+def test_latency_sensitive_hint_changes_alternative_order(tmp_path):
+    path = _config_path(
+        tmp_path,
+        {
+            "balanced_local": {
+                "capability": 80,
+                "trust": 80,
+                "cost": 30,
+                "latency": 70,
+            },
+            "reasoning_local": {
+                "capability": 70,
+                "trust": 70,
+                "cost": 30,
+                "latency": 10,
+            },
+        },
+    )
+
+    normal = route_prompt("rewrite this text", config_path=path)
+    fast = route_prompt(
+        "rewrite this text",
+        config_path=path,
+        hints={"latency_sensitive": True},
+    )
+
+    assert normal.selected_engine == "fast_local"
+    assert fast.selected_engine == "fast_local"
+    assert normal.alternatives[0].engine == "balanced_local"
+    assert fast.alternatives[0].engine == "reasoning_local"

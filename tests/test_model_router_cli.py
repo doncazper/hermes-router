@@ -34,6 +34,7 @@ def test_json_cli_emits_parseable_receipt():
     assert payload["selected_engine"] == "code_agent"
     assert payload["requires_code_execution"] is True
     assert payload["requires_tools"] is True
+    assert "alternatives" in payload
 
 
 def test_json_cli_accepts_force_engine_hint():
@@ -90,3 +91,10 @@ def test_validate_config_json_emits_availability_report():
     assert payload["config_valid"] is True
     assert "engines" in payload
     assert "code_agent" in payload["engines"]
+
+
+def test_readable_cli_emits_ranked_alternatives():
+    result = _run_cli("decide", "rewrite this text")
+
+    assert result.returncode == 0
+    assert "Alternatives:" in result.stdout

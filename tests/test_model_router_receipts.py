@@ -31,6 +31,7 @@ def test_receipt_fields_match_routing_decision():
     assert receipt.availability_reasons == decision.availability_reasons
     assert receipt.requirements == decision.requirements
     assert receipt.rejected_engines == decision.rejected_engines
+    assert receipt.alternatives == decision.alternatives
 
 
 def test_receipt_does_not_serialize_raw_prompt():
@@ -52,3 +53,21 @@ def test_receipt_serializes_constraints_and_rejections():
 
     assert payload["requirements"]["required_modalities"] == ["image"]
     assert "rejected_engines" in payload
+
+
+def test_receipt_serializes_ranked_alternatives():
+    decision = route_prompt("rewrite this text")
+    receipt = decision_to_receipt(decision)
+
+    payload = json.loads(receipt_to_json(receipt))
+
+    assert payload["alternatives"]
+    assert {
+        "engine",
+        "rank_score",
+        "capability",
+        "trust",
+        "cost",
+        "latency",
+        "reasons",
+    } <= set(payload["alternatives"][0])
