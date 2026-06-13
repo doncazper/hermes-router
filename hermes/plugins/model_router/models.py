@@ -242,15 +242,20 @@ class RoutingReceipt:
 @dataclass(frozen=True)
 class RouterConfig:
     engines: dict[str, ModelEngine]
+    routing_targets: dict[str, str]
     source_path: str | None = None
 
     def get_engine(self, name: str) -> ModelEngine | None:
         return self.engines.get(name)
+
+    def target_engine(self, target: str) -> str | None:
+        return self.routing_targets.get(target)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "engines": {
                 name: engine.to_dict() for name, engine in sorted(self.engines.items())
             },
+            "routing_targets": dict(sorted(self.routing_targets.items())),
             "source_path": self.source_path,
         }

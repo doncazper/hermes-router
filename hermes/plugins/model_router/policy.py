@@ -28,8 +28,8 @@ def route_prompt(
     except RouterConfigError as exc:
         return _fail_closed(analysis, f"fail-closed: {exc}")
 
-    target, target_reason = _target_engine(analysis)
-    selected, fallback_engine, fallback_reason = _resolve_enabled_engine(
+    target, target_reason = _target_route(analysis)
+    selected, fallback_engine, fallback_reason = _resolve_enabled_route(
         target,
         router_config,
     )
@@ -56,39 +56,53 @@ def route_prompt(
     )
 
 
-def _target_engine(analysis: PromptAnalysis) -> tuple[str, str]:
+def _target_route(analysis: PromptAnalysis) -> tuple[str, str]:
     features = analysis.features
     if features.requires_confirmation:
-        return FAIL_CLOSED_ENGINE, "high-risk action requires human confirmation"
+        return "confirmation", "high-risk action requires human confirmation"
     if features.ambiguous and features.sensitive_domain:
-        return FAIL_CLOSED_ENGINE, "ambiguous high-impact request"
+        return "confirmation", "ambiguous high-impact request"
     if features.requires_code_execution or features.coding_intent:
-        return "codex", "coding or repository work"
+        return "coding", "coding or repository work"
     if features.requires_freshness:
-        return "web_research", "fresh research or current information required"
+        return "research", "fresh research or current information required"
     if (
         analysis.complexity_score.value >= 60
         or features.multi_step_reasoning
         or features.long_context
     ):
-        return "reasoning_local", "complex planning or long-context reasoning"
+        return "reasoning", "complex planning or long-context reasoning"
     if analysis.confidence_score < 60:
-        return "reasoning_local", "low confidence routes upward"
+        return "reasoning", "low confidence routes upward"
     if (
         features.simple_transform
         and analysis.complexity_score.value < 35
         and analysis.risk_score.value < 20
     ):
-        return "fast_local", "simple rewrite/extraction/formatting"
-    return "balanced_local", "general task"
+        return "simple", "simple rewrite/extraction/formatting"
+    return "balanced", "general task"
 
 
-def _resolve_enabled_engine(
+def _resolve_enabled_route(
     target: str,
     router_config: RouterConfig,
 ) -> tuple[str, str | None, str | None]:
+    engine_name = router_config.target_engine(target)
+    if engine_name is None:
+        return (
+            FAIL_CLOSED_ENGINE,
+            FAIL_CLOSED_ENGINE,
+            f"fallback to {FAIL_CLOSED_ENGINE}: route {target!r} is undefined",
+        )
+    return _resolve_enabled_engine(engine_name, router_config)
+
+
+def _resolve_enabled_engine(
+    target_engine: str,
+    router_config: RouterConfig,
+) -> tuple[str, str | None, str | None]:
     visited: set[str] = set()
-    current = target
+    current = target_engine
 
     while current and current not in visited:
         visited.add(current)
@@ -100,8 +114,12 @@ def _resolve_enabled_engine(
                 f"fallback to {FAIL_CLOSED_ENGINE}: engine {current!r} is undefined",
             )
         if engine.enabled:
-            if current != target:
-                return current, current, f"fallback to {current}: {target} disabled"
+            if current != target_engine:
+                return (
+                    current,
+                    current,
+                    f"fallback to {current}: {target_engine} disabled",
+                )
             return current, engine.fallback, None
         if engine.fallback is None:
             return (

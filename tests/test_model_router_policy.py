@@ -30,7 +30,7 @@ def _config_path(tmp_path: Path, overrides: dict[str, dict] | None = None) -> Pa
         "fast_local": "balanced_local",
         "balanced_local": "reasoning_local",
         "reasoning_local": "human_confirm",
-        "codex": "reasoning_local",
+        "code_agent": "reasoning_local",
         "web_research": "reasoning_local",
         "human_confirm": None,
     }
@@ -39,9 +39,27 @@ def _config_path(tmp_path: Path, overrides: dict[str, dict] | None = None) -> Pa
         for name in REQUIRED_ENGINE_CATEGORIES
     }
     for name, patch in (overrides or {}).items():
-        engines[name].update(patch)
+        if name in engines:
+            engines[name].update(patch)
+        else:
+            engines[name] = _engine(name, fallback="code_agent") | patch
     path = tmp_path / "model_router.yaml"
-    path.write_text(yaml.safe_dump({"engines": engines}), encoding="utf-8")
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "routing_targets": {
+                    "simple": "fast_local",
+                    "balanced": "balanced_local",
+                    "reasoning": "reasoning_local",
+                    "coding": "code_agent",
+                    "research": "web_research",
+                    "confirmation": "human_confirm",
+                },
+                "engines": engines,
+            }
+        ),
+        encoding="utf-8",
+    )
     return path
 
 
@@ -71,15 +89,42 @@ def test_complex_architecture_prompt_routes_to_reasoning_local(tmp_path):
     assert decision.selected_engine == "reasoning_local"
 
 
-def test_repo_coding_implementation_routes_to_codex(tmp_path):
+def test_repo_coding_implementation_routes_to_code_agent(tmp_path):
     decision = route_prompt(
         "Fix the repo, edit the Python files, and run tests.",
         config_path=_config_path(tmp_path),
     )
 
-    assert decision.selected_engine == "codex"
+    assert decision.selected_engine == "code_agent"
     assert decision.requires_code_execution is True
     assert decision.requires_tools is True
+
+
+def test_user_can_route_coding_to_claude_code(tmp_path):
+    path = _config_path(
+        tmp_path,
+        {
+            "claude_code": {
+                "provider": "anthropic",
+                "model": "claude-code",
+                "adapter": "claude_code",
+                "strengths": ["repository edits", "tests"],
+                "enabled": True,
+                "fallback": "code_agent",
+            }
+        },
+    )
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data["routing_targets"]["coding"] = "claude_code"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    decision = route_prompt(
+        "Implement the feature in this repository and run tests.",
+        config_path=path,
+    )
+
+    assert decision.selected_engine == "claude_code"
+    assert decision.fallback_engine == "code_agent"
 
 
 def test_current_research_routes_to_web_research(tmp_path):
@@ -113,7 +158,7 @@ def test_disabled_engine_follows_fallback_chain(tmp_path):
         "Fix the repo and run tests.",
         config_path=_config_path(
             tmp_path,
-            {"codex": {"enabled": False, "fallback": "reasoning_local"}},
+            {"code_agent": {"enabled": False, "fallback": "reasoning_local"}},
         ),
     )
 

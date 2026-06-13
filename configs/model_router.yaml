@@ -1,3 +1,10 @@
+routing_targets:
+  simple: fast_local
+  balanced: balanced_local
+  reasoning: reasoning_local
+  coding: code_agent
+  research: web_research
+  confirmation: human_confirm
 engines:
   fast_local:
     provider: local
@@ -38,19 +45,45 @@ engines:
     latency_tier: high
     enabled: true
     fallback: balanced_local
-  codex:
+  code_agent:
     provider: local
-    model: hermes-codex
-    adapter: codex
+    model: hermes-local-code-agent
+    adapter: local_code
     strengths:
       - code modification
       - repository inspection
       - tests
     max_context: 65536
-    cost_tier: medium
+    cost_tier: free
     latency_tier: medium
     enabled: true
     fallback: reasoning_local
+  claude_code:
+    provider: anthropic
+    model: claude-code
+    adapter: claude_code
+    strengths:
+      - code modification
+      - repository inspection
+      - tests
+    max_context: 200000
+    cost_tier: high
+    latency_tier: medium
+    enabled: false
+    fallback: code_agent
+  codex:
+    provider: openai
+    model: codex
+    adapter: codex
+    strengths:
+      - code modification
+      - repository inspection
+      - tests
+    max_context: 200000
+    cost_tier: high
+    latency_tier: medium
+    enabled: false
+    fallback: code_agent
   web_research:
     provider: local
     model: hermes-web-research

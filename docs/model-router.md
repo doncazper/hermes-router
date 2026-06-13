@@ -49,7 +49,7 @@ The default engine categories are:
 - `balanced_local`: ordinary summarization and general tasks.
 - `reasoning_local`: architecture, deep planning, long-context, or uncertain
   prompts.
-- `codex`: code, repository, shell, tests, Git, or implementation work.
+- `code_agent`: code, repository, shell, tests, Git, or implementation work.
 - `web_research`: current/fresh research and citation-heavy prompts.
 - `human_confirm`: high-risk, destructive, sending, purchasing, or fail-closed
   decisions.
@@ -57,10 +57,49 @@ The default engine categories are:
 When the router is uncertain, it routes upward to a safer or stronger category.
 When config is missing or invalid, it fails closed to `human_confirm`.
 
-## Model Catalog
+## Model Catalog And User Setup
 
 The model catalog lives at `configs/model_router.yaml`. It defines engine
-categories rather than hardcoding provider model names throughout the code.
+categories and semantic routing targets rather than hardcoding provider model
+names throughout the code.
+
+Users choose which model or agent handles each task class by editing
+`routing_targets`. For example, coding work can point to a local code engine,
+Claude Code, Codex, or any other configured engine:
+
+```yaml
+routing_targets:
+  simple: fast_local
+  balanced: balanced_local
+  reasoning: reasoning_local
+  coding: claude_code
+  research: web_research
+  confirmation: human_confirm
+```
+
+Then define or enable the referenced engine:
+
+```yaml
+engines:
+  claude_code:
+    provider: anthropic
+    model: claude-code
+    adapter: claude_code
+    strengths:
+      - repository edits
+      - tests
+    max_context: 200000
+    cost_tier: high
+    latency_tier: medium
+    enabled: true
+    fallback: code_agent
+```
+
+The built-in catalog also includes disabled examples for `claude_code` and
+`codex`. To use one, set `enabled: true` on that engine and set
+`routing_targets.coding` to its engine name. Local coding can stay on
+`code_agent`, whose provider/model/adapter fields can be changed to match the
+user's local runtime.
 
 Each engine supports:
 
@@ -83,9 +122,20 @@ The required categories are:
 fast_local
 balanced_local
 reasoning_local
-codex
+code_agent
 web_research
 human_confirm
+```
+
+The required routing targets are:
+
+```text
+simple
+balanced
+reasoning
+coding
+research
+confirmation
 ```
 
 Fallbacks are followed only for decision routing. They do not execute any
@@ -115,7 +165,7 @@ Example receipt:
 
 ```json
 {
-  "selected_engine": "codex",
+  "selected_engine": "code_agent",
   "complexity_score": 45,
   "risk_score": 25,
   "confidence_score": 90,

@@ -13,10 +13,28 @@ REQUIRED_ENGINE_CATEGORIES = (
     "fast_local",
     "balanced_local",
     "reasoning_local",
-    "codex",
+    "code_agent",
     "web_research",
     "human_confirm",
 )
+
+REQUIRED_ROUTING_TARGETS = (
+    "simple",
+    "balanced",
+    "reasoning",
+    "coding",
+    "research",
+    "confirmation",
+)
+
+DEFAULT_ROUTING_TARGETS = {
+    "simple": "fast_local",
+    "balanced": "balanced_local",
+    "reasoning": "reasoning_local",
+    "coding": "code_agent",
+    "research": "web_research",
+    "confirmation": "human_confirm",
+}
 
 
 class RouterConfigError(ValueError):
@@ -72,7 +90,48 @@ def load_router_config(config_path: str | Path | None = None) -> RouterConfig:
                 f"engine {engine.name!r} fallback {engine.fallback!r} is not defined"
             )
 
-    return RouterConfig(engines=engines, source_path=str(path))
+    routing_targets = _load_routing_targets(data, engines)
+
+    return RouterConfig(
+        engines=engines,
+        routing_targets=routing_targets,
+        source_path=str(path),
+    )
+
+
+def _load_routing_targets(
+    data: dict[str, Any],
+    engines: dict[str, ModelEngine],
+) -> dict[str, str]:
+    raw_targets = data.get("routing_targets", DEFAULT_ROUTING_TARGETS)
+    if not isinstance(raw_targets, dict):
+        raise RouterConfigError("model router config routing_targets must be a mapping")
+
+    targets = {**DEFAULT_ROUTING_TARGETS}
+    for key, value in raw_targets.items():
+        if not isinstance(key, str) or not key.strip():
+            raise RouterConfigError("routing target names must be non-empty strings")
+        if not isinstance(value, str) or not value.strip():
+            raise RouterConfigError(f"routing target {key!r} must name an engine")
+        targets[key] = value
+
+    missing = [key for key in REQUIRED_ROUTING_TARGETS if key not in targets]
+    if missing:
+        raise RouterConfigError(
+            "model router config missing routing targets: " + ", ".join(missing)
+        )
+
+    undefined = [
+        f"{target} -> {engine}"
+        for target, engine in targets.items()
+        if engine not in engines
+    ]
+    if undefined:
+        raise RouterConfigError(
+            "routing targets reference undefined engines: " + ", ".join(undefined)
+        )
+
+    return targets
 
 
 def _require_mapping(value: Any) -> dict[str, Any]:

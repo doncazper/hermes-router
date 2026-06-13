@@ -31,7 +31,7 @@ def test_json_cli_emits_parseable_receipt():
 
     assert result.returncode == 0
     payload = json.loads(result.stdout)
-    assert payload["selected_engine"] == "codex"
+    assert payload["selected_engine"] == "code_agent"
     assert payload["requires_code_execution"] is True
     assert payload["requires_tools"] is True
 
