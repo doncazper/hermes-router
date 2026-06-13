@@ -100,3 +100,62 @@ def test_invalid_scoring_config_fails_closed_through_compatibility_wrapper(tmp_p
     assert decision.requires_confirmation is True
     assert decision.config_valid is False
     assert any("scoring" in reason for reason in decision.reasons)
+
+
+def test_route_fast_matches_rich_route_for_golden_engine_selection(tmp_path):
+    path = _config_path(tmp_path)
+    router = ModelRouter.from_config(path)
+    prompts = (
+        "rewrite this text",
+        "Summarize the attached meeting notes into three bullets.",
+        "Design a distributed task scheduler architecture with backpressure.",
+        "fix the repo and run tests",
+        "search the web for the latest TypeScript release notes",
+        "Extract text from this screenshot.",
+        "Generate an image of a Hermes router dashboard.",
+        "drop the production database",
+    )
+
+    for prompt in prompts:
+        assert router.route_fast(prompt) == router.route(prompt).selected_engine
+
+
+def test_route_fast_does_not_allow_force_engine_to_bypass_confirmation(tmp_path):
+    router = ModelRouter.from_config(_config_path(tmp_path))
+
+    selected = router.route_fast(
+        "delete all my emails",
+        hints={"force_engine": "fast_local"},
+    )
+
+    assert selected == "human_confirm"
+
+
+def test_route_fast_requires_confirmation_for_punctuated_destructive_prompt(tmp_path):
+    router = ModelRouter.from_config(_config_path(tmp_path))
+
+    selected = router.route_fast("please delete.")
+
+    assert selected == "human_confirm"
+
+
+def test_route_fast_resolves_disabled_target_through_safe_fallback(tmp_path):
+    path = _config_path(tmp_path)
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data["engines"]["code_agent"]["enabled"] = False
+    data["engines"]["code_agent"]["fallback"] = "web_research"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    router = ModelRouter.from_config(path)
+
+    selected = router.route_fast("fix the repo and run tests")
+
+    assert selected == "web_research"
+
+
+def test_route_can_skip_ranked_alternatives_for_latency_sensitive_callers(tmp_path):
+    router = ModelRouter.from_config(_config_path(tmp_path))
+
+    decision = router.route("rewrite this text", include_alternatives=False)
+
+    assert decision.selected_engine == "fast_local"
+    assert decision.alternatives == ()

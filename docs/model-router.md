@@ -100,12 +100,20 @@ For embedded use, initialize the router once and reuse it:
 from hermes.plugins.model_router import ModelRouter
 
 router = ModelRouter.from_config("configs/model_router.local.yaml")
+engine = router.route_fast("fix the repo and run tests")
 decision = router.route("fix the repo and run tests")
 ```
 
 `ModelRouter` loads YAML, validates static config, and caches declared
 availability once. Per-prompt routing uses the in-memory config and does not run
 setup scans or parse YAML again.
+
+Use `route_fast(...)` when the runtime only needs an engine choice. It returns
+the selected engine string through a precompiled in-memory path and still keeps
+the hard safety rule that high-risk actions route to `human_confirm`. Use
+`route(...)` when callers need scores, reasons, rejected engines, alternatives,
+or receipt serialization. For a lighter rich decision, pass
+`include_alternatives=False` to skip candidate ranking on that call.
 
 ## Dry-Run Dispatch Plans
 

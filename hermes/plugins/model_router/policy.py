@@ -39,6 +39,183 @@ LATENCY_TIER_ORDER = {
     "high": 3,
     "manual": 4,
 }
+_FAST_CONFIRMATION_PREFIXES = (
+    "delete",
+    "remove",
+    "wipe",
+    "destroy",
+    "drop",
+    "erase",
+    "cancel",
+    "terminate",
+    "purge",
+    "truncate",
+    "shutdown",
+    "uninstall",
+    "revoke",
+    "send",
+    "message",
+    "post",
+    "publish",
+    "submit",
+    "reply",
+    "email",
+    "buy",
+    "purchase",
+    "order",
+    "pay",
+    "transfer",
+    "wire",
+    "book",
+    "subscribe",
+)
+_FAST_CONFIRMATION_WORDS = frozenset(_FAST_CONFIRMATION_PREFIXES)
+_FAST_PUNCTUATION_STRIP = ".,!?;:"
+_FAST_CODING_MARKERS = (
+    " code ",
+    " coding ",
+    " repo ",
+    " repository ",
+    " implement ",
+    " implementation ",
+    " pytest ",
+    " ruff ",
+    " unit test",
+    " tests",
+    " debug ",
+    " bug ",
+    " fix the repo",
+    " edit ",
+    " pull request",
+    " pr ",
+)
+_FAST_RESEARCH_MARKERS = (
+    " research ",
+    " look up ",
+    " search ",
+    " browse ",
+    " cite ",
+    " citation",
+    " source",
+    " trend",
+    " web ",
+)
+_FAST_CURRENT_MARKERS = (
+    " current ",
+    " latest ",
+    " recent ",
+    " today ",
+    " yesterday ",
+    " now ",
+    " news ",
+    " up-to-date ",
+    " fresh ",
+)
+_FAST_REASONING_MARKERS = (
+    " architecture",
+    " architect",
+    " design ",
+    " plan ",
+    " multi-step",
+    " strategy ",
+    " roadmap ",
+    " tradeoff",
+    " trade-off",
+    " edge case",
+    " data flow",
+    " rollout",
+    " migration",
+    " system",
+    " distributed",
+    " scalable",
+    " consensus",
+    " throughput",
+    " backpressure",
+    " exactly-once",
+)
+_FAST_SIMPLE_MARKERS = (
+    " rewrite ",
+    " rephrase ",
+    " format ",
+    " extract ",
+    " clean up ",
+    " copyedit ",
+    " proofread ",
+)
+_FAST_SIMPLE_PREFIXES = (
+    "rewrite",
+    "rephrase",
+    "format",
+    "clean up",
+    "copyedit",
+    "proofread",
+)
+_FAST_VISION_MARKERS = (
+    " image ",
+    " picture ",
+    " photo ",
+    " screenshot",
+    " screen shot",
+    " chart ",
+    " diagram ",
+    " graph ",
+    " ocr ",
+    " vision ",
+    " visual ",
+    " scan ",
+)
+_FAST_IMAGE_NOUN_MARKERS = (
+    " image ",
+    " picture ",
+    " photo ",
+    " illustration ",
+    " logo ",
+    " icon ",
+    " wallpaper ",
+    " poster ",
+    " diffusion",
+    " stable diffusion",
+)
+_FAST_IMAGE_VERB_MARKERS = (
+    " generate ",
+    " create ",
+    " make ",
+    " draw ",
+    " render ",
+    " produce ",
+    " design ",
+)
+_FAST_TOOL_TARGETS = frozenset(
+    {"coding", "research", "vision", "image_generation", "confirmation"}
+)
+_FAST_TARGET_NAMES = (
+    "simple",
+    "balanced",
+    "reasoning",
+    "coding",
+    "research",
+    "vision",
+    "image_generation",
+    "confirmation",
+)
+_FAST_SIMPLE_INDEX = 0
+_FAST_BALANCED_INDEX = 1
+_FAST_REASONING_INDEX = 2
+_FAST_CODING_INDEX = 3
+_FAST_RESEARCH_INDEX = 4
+_FAST_VISION_INDEX = 5
+_FAST_IMAGE_GENERATION_INDEX = 6
+_FAST_CONFIRMATION_INDEX = 7
+_FAST_TARGET_REQUIREMENTS = {
+    "simple": RoutingRequirements(),
+    "balanced": RoutingRequirements(),
+    "reasoning": RoutingRequirements(),
+    "coding": RoutingRequirements(needs_tools=True),
+    "research": RoutingRequirements(needs_tools=True),
+    "vision": RoutingRequirements(needs_tools=True),
+    "image_generation": RoutingRequirements(needs_tools=True),
+    "confirmation": RoutingRequirements(),
+}
 
 
 class ModelRouter:
@@ -54,6 +231,20 @@ class ModelRouter:
         self._availability_results = (
             availability_report.engines if availability_report is not None else None
         )
+        self._fast_target_engines = self._compile_fast_target_engines()
+        self._fast_engine_data = {
+            name: (
+                engine.enabled,
+                engine.fallback,
+                engine.supports_tools,
+                engine.modalities,
+                engine.cost_tier,
+                engine.latency_tier,
+                self._fast_engine_available(name),
+            )
+            for name, engine in config.engines.items()
+        }
+        self._fast_engine_count = len(self._fast_engine_data)
 
     @classmethod
     def from_config(
@@ -83,6 +274,8 @@ class ModelRouter:
         self,
         prompt: str,
         hints: dict | RoutingHints | None = None,
+        *,
+        include_alternatives: bool = True,
     ) -> RoutingDecision:
         analysis = score_prompt(prompt, scoring_config=self.config.scoring)
         try:
@@ -113,6 +306,7 @@ class ModelRouter:
                     routing_hints.force_engine,
                     routing_hints,
                     self._availability_results,
+                    include_alternatives=include_alternatives,
                 )
         else:
             target, target_reason = _target_route(analysis, requirements)
@@ -131,14 +325,18 @@ class ModelRouter:
             requirements,
             self._availability_results,
         )
-        alternatives, alternative_rejections = _rank_alternatives(
-            self.config,
-            selected,
-            analysis,
-            requirements,
-            routing_hints,
-            self._availability_results,
-        )
+        if include_alternatives:
+            alternatives, alternative_rejections = _rank_alternatives(
+                self.config,
+                selected,
+                analysis,
+                requirements,
+                routing_hints,
+                self._availability_results,
+            )
+        else:
+            alternatives = ()
+            alternative_rejections = ()
         reasons = [*analysis.reasons, target_reason]
         if fallback_reason:
             reasons.append(fallback_reason)
@@ -173,6 +371,141 @@ class ModelRouter:
             fallback_used=fallback_used,
         )
 
+    def route_fast(
+        self,
+        prompt: str,
+        hints: dict | RoutingHints | None = None,
+    ) -> str:
+        """Return only the selected engine through the precompiled hot path.
+
+        This path is for latency-sensitive callers that need a safe engine choice,
+        not a scored receipt. It still sends high-risk prompts to human_confirm.
+        """
+        target_index = _fast_target_route_index(prompt)
+        if hints is None:
+            return self._fast_target_engines[target_index]
+
+        target = _FAST_TARGET_NAMES[target_index]
+
+        try:
+            routing_hints = _coerce_hints(hints)
+        except ValueError:
+            return FAIL_CLOSED_ENGINE
+
+        required_modalities = tuple(
+            attachment
+            for attachment in routing_hints.attachments
+            if attachment != "code"
+        )
+        if target != "confirmation" and required_modalities:
+            target = "vision"
+
+        max_latency_tier = routing_hints.max_latency_tier
+        if max_latency_tier is None and routing_hints.latency_sensitive:
+            max_latency_tier = "medium"
+
+        if routing_hints.force_engine:
+            if (
+                target == "confirmation"
+                and routing_hints.force_engine != FAIL_CLOSED_ENGINE
+            ):
+                return FAIL_CLOSED_ENGINE
+            return self._resolve_engine_fast(
+                routing_hints.force_engine,
+                needs_tools=target in _FAST_TOOL_TARGETS or bool(required_modalities),
+                required_modalities=required_modalities,
+                max_cost_tier=routing_hints.max_cost_tier,
+                max_latency_tier=max_latency_tier,
+            )
+
+        return self._resolve_target_fast(
+            target,
+            needs_tools=target in _FAST_TOOL_TARGETS or bool(required_modalities),
+            required_modalities=required_modalities,
+            max_cost_tier=routing_hints.max_cost_tier,
+            max_latency_tier=max_latency_tier,
+        )
+
+    def _compile_fast_target_engines(self) -> tuple[str, ...]:
+        return tuple(
+            _resolve_enabled_route(
+                target,
+                self.config,
+                _FAST_TARGET_REQUIREMENTS.get(target, RoutingRequirements()),
+                self._availability_results,
+            )[0]
+            for target in _FAST_TARGET_NAMES
+        )
+
+    def _fast_engine_available(self, engine_name: str) -> bool:
+        if self._availability_results is None:
+            return True
+        result = self._availability_results.get(engine_name)
+        return bool(result is not None and result.available)
+
+    def _resolve_target_fast(
+        self,
+        target: str,
+        *,
+        needs_tools: bool,
+        required_modalities: tuple[str, ...],
+        max_cost_tier: str | None,
+        max_latency_tier: str | None,
+    ) -> str:
+        engine_name = self.config.routing_targets.get(target)
+        if engine_name is None:
+            return FAIL_CLOSED_ENGINE
+        return self._resolve_engine_fast(
+            engine_name,
+            needs_tools=needs_tools,
+            required_modalities=required_modalities,
+            max_cost_tier=max_cost_tier,
+            max_latency_tier=max_latency_tier,
+        )
+
+    def _resolve_engine_fast(
+        self,
+        engine_name: str,
+        *,
+        needs_tools: bool,
+        required_modalities: tuple[str, ...],
+        max_cost_tier: str | None,
+        max_latency_tier: str | None,
+    ) -> str:
+        current = engine_name
+        for _ in range(self._fast_engine_count + 1):
+            data = self._fast_engine_data.get(current)
+            if data is None:
+                return FAIL_CLOSED_ENGINE
+            (
+                enabled,
+                fallback,
+                supports_tools,
+                modalities,
+                cost_tier,
+                latency_tier,
+                available,
+            ) = data
+            if (
+                enabled
+                and available
+                and not (needs_tools and not supports_tools)
+                and not any(
+                    modality not in modalities for modality in required_modalities
+                )
+                and not _tier_exceeds(cost_tier, max_cost_tier, COST_TIER_ORDER)
+                and not _tier_exceeds(
+                    latency_tier,
+                    max_latency_tier,
+                    LATENCY_TIER_ORDER,
+                )
+            ):
+                return current
+            if fallback is None:
+                return FAIL_CLOSED_ENGINE
+            current = fallback
+        return FAIL_CLOSED_ENGINE
+
 
 def route_prompt(
     prompt: str,
@@ -200,6 +533,67 @@ def route_prompt(
             requirements=requirements,
         )
     return router.route(prompt, hints=hints)
+
+
+def _fast_target_route_index(prompt: str) -> int:
+    raw_text = (prompt or "").lower()
+    prompt_length = len(prompt or "")
+
+    if _fast_has_confirmation_word(raw_text):
+        return _FAST_CONFIRMATION_INDEX
+
+    if raw_text.startswith(_FAST_SIMPLE_PREFIXES):
+        return _FAST_SIMPLE_INDEX
+    if (
+        "repo" in raw_text
+        or "run tests" in raw_text
+        or "pytest" in raw_text
+        or "ruff" in raw_text
+        or "fix the repo" in raw_text
+    ):
+        return _FAST_CODING_INDEX
+
+    text = f" {raw_text} "
+    image_request = _fast_has_any(text, _FAST_IMAGE_NOUN_MARKERS)
+    if image_request and _fast_has_any(text, _FAST_IMAGE_VERB_MARKERS):
+        return _FAST_IMAGE_GENERATION_INDEX
+    if _fast_has_any(text, _FAST_VISION_MARKERS):
+        return _FAST_VISION_INDEX
+    if _fast_has_any(text, _FAST_CODING_MARKERS):
+        return _FAST_CODING_INDEX
+    if (
+        "latest" in raw_text
+        or "current" in raw_text
+        or "today" in raw_text
+        or "news" in raw_text
+    ) and _fast_has_any(text, _FAST_RESEARCH_MARKERS):
+        return _FAST_RESEARCH_INDEX
+    if _fast_has_any(text, _FAST_RESEARCH_MARKERS) and _fast_has_any(
+        text,
+        _FAST_CURRENT_MARKERS,
+    ):
+        return _FAST_RESEARCH_INDEX
+    if prompt_length >= 4000 or _fast_has_any(text, _FAST_REASONING_MARKERS):
+        return _FAST_REASONING_INDEX
+    if _fast_has_any(text, _FAST_SIMPLE_MARKERS):
+        return _FAST_SIMPLE_INDEX
+    return _FAST_BALANCED_INDEX
+
+
+def _fast_has_any(text: str, markers: tuple[str, ...]) -> bool:
+    for marker in markers:
+        if marker in text:
+            return True
+    return False
+
+
+def _fast_has_confirmation_word(text: str) -> bool:
+    if text.startswith(_FAST_CONFIRMATION_PREFIXES):
+        return True
+    for token in text.split():
+        if token.strip(_FAST_PUNCTUATION_STRIP) in _FAST_CONFIRMATION_WORDS:
+            return True
+    return False
 
 
 def _coerce_hints(hints: dict | RoutingHints | None) -> RoutingHints:
@@ -231,6 +625,8 @@ def _route_forced_engine(
     force_engine: str,
     hints: RoutingHints,
     availability_results: dict[str, EngineAvailabilityResult] | None,
+    *,
+    include_alternatives: bool = True,
 ) -> RoutingDecision:
     (
         selected,
@@ -246,14 +642,18 @@ def _route_forced_engine(
         requirements,
         availability_results,
     )
-    alternatives, alternative_rejections = _rank_alternatives(
-        router_config,
-        selected,
-        analysis,
-        requirements,
-        hints,
-        availability_results,
-    )
+    if include_alternatives:
+        alternatives, alternative_rejections = _rank_alternatives(
+            router_config,
+            selected,
+            analysis,
+            requirements,
+            hints,
+            availability_results,
+        )
+    else:
+        alternatives = ()
+        alternative_rejections = ()
     reasons = [*analysis.reasons, f"forced engine {force_engine}"]
     if selected == FAIL_CLOSED_ENGINE and router_config.get_engine(force_engine) is None:
         reasons.append(f"unknown forced engine {force_engine}")

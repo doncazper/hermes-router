@@ -129,15 +129,25 @@ Example JSON receipt:
 
 Use the initialized router API when embedding Hermes in another process. This
 loads YAML, validates static config, and caches availability once; each
-`route(...)` call stays in memory.
+call stays in memory.
 
 ```python
 from hermes.plugins.model_router import ModelRouter
 
 router = ModelRouter.from_config("configs/model_router.local.yaml")
+
+# Fast hot path: selected engine only.
+engine = router.route_fast("fix the repo and run tests")
+
+# Rich path: scores, reasons, fallbacks, alternatives, and receipt fields.
 decision = router.route("fix the repo and run tests")
-print(decision.selected_engine)
 ```
+
+Use `route_fast(...)` for live routing loops, UI responsiveness, and high-volume
+classification. It returns only the selected engine string, never parses YAML
+per call, and still routes high-risk actions to `human_confirm`. Use
+`route(...)` when you need a receipt or explanation. If you need a rich decision
+but not ranked alternatives, call `router.route(prompt, include_alternatives=False)`.
 
 The older `route_prompt(...)` function remains available for one-off scripts and
 CLI-style usage.
@@ -376,6 +386,14 @@ With `uv` and Python 3.11:
 ```bash
 uv run --python 3.11 --with pytest --with PyYAML python -m pytest
 uv run --python 3.11 --with ruff --with PyYAML python -m ruff check .
+```
+
+Benchmark the initialized hot path:
+
+```bash
+python scripts/benchmark_route_fast.py
+python scripts/benchmark_route_fast.py --json
+uv run --python 3.11 --with PyYAML python scripts/benchmark_route_fast.py --json
 ```
 
 ## Project Layout
