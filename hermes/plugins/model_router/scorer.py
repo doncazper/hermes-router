@@ -59,6 +59,18 @@ def score_prompt(prompt: str) -> PromptAnalysis:
         normalized,
         r"\b(github|pull request|pr|issue|branch|commit|merge|git)\b",
     )
+    image_generation_intent = _matches(
+        normalized,
+        r"\b(generate|create|make|draw|render|produce|design)\b"
+        r".*\b(image|picture|photo|illustration|logo|icon|wallpaper|poster|"
+        r"diffusion|stable diffusion)\b",
+    )
+    vision_intent = _matches(
+        normalized,
+        r"\b(image|picture|photo|screenshot|screen shot|chart|diagram|graph|"
+        r"ocr|vision|visual|scan|extract text from|describe .*image|"
+        r"look at .*screenshot)\b",
+    )
     tool_intent = _matches(
         normalized,
         r"\b(run|execute|open|browse|search|send|schedule|download|upload|"
@@ -117,6 +129,8 @@ def score_prompt(prompt: str) -> PromptAnalysis:
     long_context = estimated_tokens >= 1000 or prompt_length >= 4000
     requires_freshness = bool(research_intent and current_info_intent)
     requires_code_execution = bool(coding_intent and (shell_intent or file_intent))
+    requires_vision = bool(vision_intent and not image_generation_intent)
+    requires_image_generation = bool(image_generation_intent)
     requires_tools = bool(
         tool_intent
         or file_intent
@@ -126,6 +140,8 @@ def score_prompt(prompt: str) -> PromptAnalysis:
         or github_intent
         or requires_freshness
         or requires_code_execution
+        or requires_vision
+        or requires_image_generation
     )
 
     complexity, complexity_reasons = _complexity_score(
@@ -140,6 +156,8 @@ def score_prompt(prompt: str) -> PromptAnalysis:
         ambiguous=ambiguous,
         long_context=long_context,
         sensitive_domain=sensitive_domain,
+        vision_intent=requires_vision,
+        image_generation_intent=requires_image_generation,
     )
     risk, risk_reasons = _risk_score(
         destructive_action=destructive_action,
@@ -169,6 +187,8 @@ def score_prompt(prompt: str) -> PromptAnalysis:
                 research_intent,
                 multi_step_reasoning,
                 requires_tools,
+                requires_vision,
+                requires_image_generation,
                 sensitive_domain,
                 external_action,
                 structured_output,
@@ -190,6 +210,8 @@ def score_prompt(prompt: str) -> PromptAnalysis:
         calendar_intent=calendar_intent,
         shell_intent=shell_intent,
         github_intent=github_intent,
+        vision_intent=vision_intent,
+        image_generation_intent=image_generation_intent,
         legal_domain=legal_domain,
         medical_domain=medical_domain,
         financial_domain=financial_domain,
@@ -204,6 +226,8 @@ def score_prompt(prompt: str) -> PromptAnalysis:
         requires_tools=requires_tools,
         requires_freshness=requires_freshness,
         requires_code_execution=requires_code_execution,
+        requires_vision=requires_vision,
+        requires_image_generation=requires_image_generation,
         requires_confirmation=requires_confirmation,
     )
     reasons = tuple(dict.fromkeys([*complexity_reasons, *risk_reasons]))
@@ -268,6 +292,12 @@ def _complexity_score(**signals: bool | int) -> tuple[int, list[str]]:
     if signals["sensitive_domain"]:
         score += 8
         reasons.append("sensitive domain")
+    if signals["vision_intent"]:
+        score += 15
+        reasons.append("vision or OCR intent")
+    if signals["image_generation_intent"]:
+        score += 18
+        reasons.append("image generation intent")
 
     return min(score, 100), reasons
 

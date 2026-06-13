@@ -25,6 +25,8 @@ def test_receipt_fields_match_routing_decision():
     assert receipt.requires_freshness == decision.requires_freshness
     assert receipt.requires_tools == decision.requires_tools
     assert receipt.requires_code_execution == decision.requires_code_execution
+    assert receipt.requires_vision == decision.requires_vision
+    assert receipt.requires_image_generation == decision.requires_image_generation
     assert receipt.availability_valid == decision.availability_valid
     assert receipt.availability_reasons == decision.availability_reasons
 

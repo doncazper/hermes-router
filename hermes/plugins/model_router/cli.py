@@ -111,6 +111,11 @@ def _print_readable(receipt) -> None:
     print(f"Requires tools: {str(receipt.requires_tools).lower()}")
     print(f"Requires freshness: {str(receipt.requires_freshness).lower()}")
     print(f"Requires code execution: {str(receipt.requires_code_execution).lower()}")
+    print(f"Requires vision: {str(receipt.requires_vision).lower()}")
+    print(
+        "Requires image generation: "
+        f"{str(receipt.requires_image_generation).lower()}"
+    )
     print(f"Config valid: {str(receipt.config_valid).lower()}")
     print(f"Availability valid: {str(receipt.availability_valid).lower()}")
     print("Availability:")

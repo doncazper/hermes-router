@@ -37,3 +37,21 @@ def test_short_destructive_prompts_require_confirmation():
     assert analysis.features.external_action is True
     assert analysis.features.destructive_action is True
     assert analysis.features.requires_confirmation is True
+
+
+def test_vision_prompts_set_multimodal_features():
+    analysis = score_prompt("Extract the text from this screenshot and describe the chart.")
+
+    assert analysis.features.vision_intent is True
+    assert analysis.features.requires_vision is True
+    assert analysis.features.requires_tools is True
+    assert any("vision" in reason for reason in analysis.reasons)
+
+
+def test_image_generation_prompts_set_generation_features():
+    analysis = score_prompt("Generate an image of a clean Hermes router dashboard.")
+
+    assert analysis.features.image_generation_intent is True
+    assert analysis.features.requires_image_generation is True
+    assert analysis.features.requires_tools is True
+    assert any("image generation" in reason for reason in analysis.reasons)

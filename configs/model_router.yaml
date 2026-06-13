@@ -4,8 +4,25 @@ routing_targets:
   reasoning: reasoning_local
   coding: code_agent
   research: web_research
+  vision: multimodal_vision
+  image_generation: image_generation
   confirmation: human_confirm
 engines:
+  intent_router:
+    provider: local
+    model: hermes-intent-router
+    adapter: heuristic_router
+    strengths:
+      - intent classification
+      - routing decisions
+      - low-latency prompt analysis
+    max_context: 8192
+    cost_tier: free
+    latency_tier: low
+    enabled: true
+    fallback: fast_local
+    availability:
+      status: auto
   fast_local:
     provider: local
     model: hermes-fast-local
@@ -44,6 +61,7 @@ engines:
       - architecture
       - planning
       - long-context reasoning
+      - complex logic
     max_context: 65536
     cost_tier: free
     latency_tier: high
@@ -56,6 +74,7 @@ engines:
     model: hermes-local-code-agent
     adapter: local_code
     strengths:
+      - deep reasoning and coding
       - code modification
       - repository inspection
       - tests
@@ -108,11 +127,45 @@ engines:
       - current information
       - citations
       - source-grounded research
+      - local RAG
+      - HTML extraction
     max_context: 32768
     cost_tier: medium
     latency_tier: high
     enabled: true
     fallback: reasoning_local
+    availability:
+      status: auto
+  multimodal_vision:
+    provider: local
+    model: hermes-vision-local
+    adapter: local_vision
+    strengths:
+      - screenshots
+      - image description
+      - OCR
+      - charts
+      - diagrams
+    max_context: 32768
+    cost_tier: medium
+    latency_tier: medium
+    enabled: true
+    fallback: reasoning_local
+    availability:
+      status: auto
+  image_generation:
+    provider: local
+    model: hermes-local-diffusion
+    adapter: local_image_generation
+    strengths:
+      - image generation
+      - local diffusion
+      - visual asset creation
+    max_context: 4096
+    cost_tier: medium
+    latency_tier: high
+    enabled: true
+    fallback: human_confirm
     availability:
       status: auto
   human_confirm:

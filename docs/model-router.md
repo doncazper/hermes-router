@@ -33,6 +33,8 @@ The scorer inspects:
 - Prompt length and estimated token count.
 - Coding and repository intent.
 - Current-information or citation-backed research intent.
+- Multimodal vision, screenshots, OCR, charts, and image-description intent.
+- Image generation or local diffusion intent.
 - Multi-step reasoning, planning, architecture, and long-context needs.
 - Tool, file, shell, GitHub, email, and calendar intent.
 - Legal, medical, and financial sensitivity.
@@ -47,12 +49,19 @@ High-risk external actions raise risk even when the prompt is short.
 
 The default engine categories are:
 
+- `intent_router`: the router/classifier role itself; the MVP uses fast
+  heuristics and catalogs this role for future second-pass classifiers.
 - `fast_local`: simple rewrite, extraction, copyediting, and formatting.
 - `balanced_local`: ordinary summarization and general tasks.
 - `reasoning_local`: architecture, deep planning, long-context, or uncertain
   prompts.
-- `code_agent`: code, repository, shell, tests, Git, or implementation work.
-- `web_research`: current/fresh research and citation-heavy prompts.
+- `code_agent`: deep coding, repository, shell, tests, Git, or implementation
+  work.
+- `web_research`: current/fresh research, citation-heavy prompts, local RAG,
+  and HTML extraction.
+- `multimodal_vision`: screenshots, charts, OCR, diagrams, and image
+  description.
+- `image_generation`: local diffusion or image-generation adapter requests.
 - `human_confirm`: high-risk, destructive, sending, purchasing, or fail-closed
   decisions.
 
@@ -76,6 +85,8 @@ routing_targets:
   reasoning: reasoning_local
   coding: claude_code
   research: web_research
+  vision: multimodal_vision
+  image_generation: image_generation
   confirmation: human_confirm
 ```
 
@@ -106,6 +117,17 @@ The built-in catalog also includes disabled examples for `claude_code` and
 `routing_targets.coding` to its engine name. Local coding can stay on
 `code_agent`, whose provider/model/adapter fields can be changed to match the
 user's local runtime.
+
+The example engine roles from the design map to the catalog like this:
+
+| Role | Catalog Coverage |
+| --- | --- |
+| Intent classifier/router | `intent_router`, plus the deterministic router code in this MVP |
+| Deep reasoning/coding | `reasoning_local` for planning and `code_agent` for repo/code execution |
+| Fast response/summarization | `fast_local` and `balanced_local` |
+| Web research/RAG | `web_research` |
+| Multimodal/vision | `multimodal_vision` |
+| Image generation | `image_generation` |
 
 ## Availability Validation
 
@@ -164,11 +186,14 @@ availability:
 The required categories are:
 
 ```text
+intent_router
 fast_local
 balanced_local
 reasoning_local
 code_agent
 web_research
+multimodal_vision
+image_generation
 human_confirm
 ```
 
@@ -180,6 +205,8 @@ balanced
 reasoning
 coding
 research
+vision
+image_generation
 confirmation
 ```
 
@@ -225,6 +252,8 @@ Example receipt:
   "requires_tools": true,
   "requires_freshness": false,
   "requires_code_execution": true,
+  "requires_vision": false,
+  "requires_image_generation": false,
   "availability_valid": true,
   "availability_reasons": [
     "code_agent: no availability requirements declared"

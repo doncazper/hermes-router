@@ -6,7 +6,7 @@ from hermes.plugins.model_router.availability import (
     validate_engine_availability,
     validate_router_availability,
 )
-from hermes.plugins.model_router.config import load_router_config
+from hermes.plugins.model_router.config import REQUIRED_ENGINE_CATEGORIES, load_router_config
 from hermes.plugins.model_router.models import RouterAvailabilityReport
 from hermes.plugins.model_router.policy import route_prompt
 
@@ -34,6 +34,22 @@ def _engine(
 
 
 def _config_path(tmp_path: Path, engines: dict[str, dict]) -> Path:
+    fallbacks = {
+        "intent_router": "fast_local",
+        "fast_local": "balanced_local",
+        "balanced_local": "reasoning_local",
+        "reasoning_local": "human_confirm",
+        "code_agent": "reasoning_local",
+        "web_research": "reasoning_local",
+        "multimodal_vision": "reasoning_local",
+        "image_generation": "human_confirm",
+        "human_confirm": None,
+    }
+    base_engines = {
+        name: _engine(name, fallback=fallbacks[name])
+        for name in REQUIRED_ENGINE_CATEGORIES
+    }
+    base_engines.update(engines)
     data = {
         "routing_targets": {
             "simple": "fast_local",
@@ -41,17 +57,11 @@ def _config_path(tmp_path: Path, engines: dict[str, dict]) -> Path:
             "reasoning": "reasoning_local",
             "coding": "claude_code",
             "research": "web_research",
+            "vision": "multimodal_vision",
+            "image_generation": "image_generation",
             "confirmation": "human_confirm",
         },
-        "engines": {
-            "fast_local": _engine("fast_local", fallback="balanced_local"),
-            "balanced_local": _engine("balanced_local", fallback="reasoning_local"),
-            "reasoning_local": _engine("reasoning_local", fallback="human_confirm"),
-            "code_agent": _engine("code_agent", fallback="reasoning_local"),
-            "web_research": _engine("web_research", fallback="reasoning_local"),
-            "human_confirm": _engine("human_confirm", fallback=None),
-            **engines,
-        },
+        "engines": base_engines,
     }
     path = tmp_path / "model_router.yaml"
     path.write_text(yaml.safe_dump(data), encoding="utf-8")

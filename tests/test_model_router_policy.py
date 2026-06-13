@@ -27,11 +27,14 @@ def _engine(
 
 def _config_path(tmp_path: Path, overrides: dict[str, dict] | None = None) -> Path:
     fallbacks = {
+        "intent_router": "fast_local",
         "fast_local": "balanced_local",
         "balanced_local": "reasoning_local",
         "reasoning_local": "human_confirm",
         "code_agent": "reasoning_local",
         "web_research": "reasoning_local",
+        "multimodal_vision": "reasoning_local",
+        "image_generation": "human_confirm",
         "human_confirm": None,
     }
     engines = {
@@ -53,6 +56,8 @@ def _config_path(tmp_path: Path, overrides: dict[str, dict] | None = None) -> Pa
                     "reasoning": "reasoning_local",
                     "coding": "code_agent",
                     "research": "web_research",
+                    "vision": "multimodal_vision",
+                    "image_generation": "image_generation",
                     "confirmation": "human_confirm",
                 },
                 "engines": engines,
@@ -135,6 +140,28 @@ def test_current_research_routes_to_web_research(tmp_path):
 
     assert decision.selected_engine == "web_research"
     assert decision.requires_freshness is True
+
+
+def test_screenshot_ocr_routes_to_multimodal_vision(tmp_path):
+    decision = route_prompt(
+        "Extract the text from this screenshot and summarize the chart.",
+        config_path=_config_path(tmp_path),
+    )
+
+    assert decision.selected_engine == "multimodal_vision"
+    assert decision.requires_vision is True
+    assert decision.requires_tools is True
+
+
+def test_image_generation_routes_to_image_generation_engine(tmp_path):
+    decision = route_prompt(
+        "Generate an image of a Hermes router dashboard.",
+        config_path=_config_path(tmp_path),
+    )
+
+    assert decision.selected_engine == "image_generation"
+    assert decision.requires_image_generation is True
+    assert decision.requires_tools is True
 
 
 def test_ambiguous_high_impact_prompt_does_not_route_to_weak_engine(tmp_path):

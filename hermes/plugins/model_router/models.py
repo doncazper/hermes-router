@@ -207,6 +207,8 @@ class PromptFeatures:
     calendar_intent: bool = False
     shell_intent: bool = False
     github_intent: bool = False
+    vision_intent: bool = False
+    image_generation_intent: bool = False
     legal_domain: bool = False
     medical_domain: bool = False
     financial_domain: bool = False
@@ -221,6 +223,8 @@ class PromptFeatures:
     requires_tools: bool = False
     requires_freshness: bool = False
     requires_code_execution: bool = False
+    requires_vision: bool = False
+    requires_image_generation: bool = False
     requires_confirmation: bool = False
 
     def to_dict(self) -> dict[str, Any]:
@@ -274,6 +278,8 @@ class RoutingDecision:
     requires_tools: bool
     requires_freshness: bool
     requires_code_execution: bool
+    requires_vision: bool
+    requires_image_generation: bool
     config_valid: bool
     availability_valid: bool
     availability_reasons: tuple[str, ...]
@@ -291,6 +297,8 @@ class RoutingDecision:
             "requires_tools": self.requires_tools,
             "requires_freshness": self.requires_freshness,
             "requires_code_execution": self.requires_code_execution,
+            "requires_vision": self.requires_vision,
+            "requires_image_generation": self.requires_image_generation,
             "config_valid": self.config_valid,
             "availability_valid": self.availability_valid,
             "availability_reasons": list(self.availability_reasons),
@@ -310,6 +318,8 @@ class RoutingReceipt:
     requires_tools: bool
     requires_freshness: bool
     requires_code_execution: bool
+    requires_vision: bool
+    requires_image_generation: bool
     config_valid: bool
     availability_valid: bool
     availability_reasons: tuple[str, ...]
@@ -326,6 +336,8 @@ class RoutingReceipt:
             "requires_tools": self.requires_tools,
             "requires_freshness": self.requires_freshness,
             "requires_code_execution": self.requires_code_execution,
+            "requires_vision": self.requires_vision,
+            "requires_image_generation": self.requires_image_generation,
             "config_valid": self.config_valid,
             "availability_valid": self.availability_valid,
             "availability_reasons": list(self.availability_reasons),

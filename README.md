@@ -11,10 +11,11 @@ external model APIs, run tools, or perform user actions.
 ## What It Does
 
 - Scores prompt complexity, risk, and confidence without using an LLM.
-- Detects coding/repo work, current research, high-risk actions, structured
-  output, tool intent, ambiguity, and sensitive domains.
+- Detects coding/repo work, current research, multimodal vision, image
+  generation, high-risk actions, structured output, tool intent, ambiguity, and
+  sensitive domains.
 - Routes prompts to configured engines such as local models, Claude Code,
-  Codex, web research, or human confirmation.
+  Codex, web/RAG research, vision, image generation, or human confirmation.
 - Validates declared engine availability before choosing an engine.
 - Emits explainable routing receipts that are safe to serialize as JSON.
 - Fails closed to `human_confirm` when config is missing or invalid.
@@ -78,7 +79,9 @@ Example JSON receipt:
   "requires_code_execution": true,
   "requires_confirmation": false,
   "requires_freshness": false,
+  "requires_image_generation": false,
   "requires_tools": true,
+  "requires_vision": false,
   "risk_score": 25,
   "selected_engine": "code_agent"
 }
@@ -97,6 +100,8 @@ routing_targets:
   reasoning: reasoning_local
   coding: code_agent
   research: web_research
+  vision: multimodal_vision
+  image_generation: image_generation
   confirmation: human_confirm
 ```
 
@@ -131,6 +136,17 @@ Enable one by setting `enabled: true` and pointing `routing_targets.coding` at
 that engine name. Local users can keep `coding: code_agent` and change the
 `provider`, `model`, and `adapter` fields for their local runtime.
 
+The default catalog covers these engine roles:
+
+| Role | Default Route/Engine | Notes |
+| --- | --- | --- |
+| Intent classifier/router | `intent_router` | Catalogs the decision layer itself; the MVP uses deterministic heuristics rather than an LLM call. |
+| Deep reasoning/coding | `reasoning_local`, `code_agent` | Split so non-code planning and repo execution can use different engines. |
+| Fast response/summarization | `fast_local`, `balanced_local` | Lightweight transforms and ordinary summaries. |
+| Web research/RAG | `web_research` | Current research, citations, local RAG, and HTML extraction. |
+| Multimodal/vision | `multimodal_vision` | Screenshots, charts, OCR, and image description. |
+| Image generation | `image_generation` | Local diffusion or image-generation API adapters. |
+
 ## Validate Availability
 
 Availability validation is declarative and safe. It does not execute engines,
@@ -161,6 +177,8 @@ no available fallback exists, the router fails closed to `human_confirm`.
 | `reasoning` | `reasoning_local` | Planning, architecture, long-context reasoning |
 | `coding` | `code_agent` | Repo edits, code, tests, shell/Git workflows |
 | `research` | `web_research` | Current research and citation-heavy prompts |
+| `vision` | `multimodal_vision` | Screenshots, charts, OCR, and image description |
+| `image_generation` | `image_generation` | Local diffusion/image creation requests |
 | `confirmation` | `human_confirm` | High-risk or fail-closed decisions |
 
 ## Development
@@ -188,13 +206,13 @@ uv run --python 3.11 --with ruff --with PyYAML python -m ruff check .
 
 ```text
 hermes/plugins/model_router/
-  models.py      # Dataclass models and JSON-safe serialization helpers
-  config.py      # YAML catalog loading and validation
+  models.py       # Dataclass models and JSON-safe serialization helpers
+  config.py       # YAML catalog loading and validation
   availability.py # Non-executing engine availability validation
-  scorer.py      # Deterministic heuristic prompt scoring
-  policy.py      # Engine selection and fail-closed fallback rules
-  receipts.py    # Routing receipt helpers
-  cli.py         # CLI entrypoint
+  scorer.py       # Deterministic heuristic prompt scoring
+  policy.py       # Engine selection and fail-closed fallback rules
+  receipts.py     # Routing receipt helpers
+  cli.py          # CLI entrypoint
 configs/
   model_router.yaml
 tests/

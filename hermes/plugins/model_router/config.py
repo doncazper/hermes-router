@@ -10,11 +10,14 @@ import yaml
 from hermes.plugins.model_router.models import ModelEngine, RouterConfig
 
 REQUIRED_ENGINE_CATEGORIES = (
+    "intent_router",
     "fast_local",
     "balanced_local",
     "reasoning_local",
     "code_agent",
     "web_research",
+    "multimodal_vision",
+    "image_generation",
     "human_confirm",
 )
 
@@ -24,6 +27,8 @@ REQUIRED_ROUTING_TARGETS = (
     "reasoning",
     "coding",
     "research",
+    "vision",
+    "image_generation",
     "confirmation",
 )
 
@@ -33,6 +38,8 @@ DEFAULT_ROUTING_TARGETS = {
     "reasoning": "reasoning_local",
     "coding": "code_agent",
     "research": "web_research",
+    "vision": "multimodal_vision",
+    "image_generation": "image_generation",
     "confirmation": "human_confirm",
 }
 

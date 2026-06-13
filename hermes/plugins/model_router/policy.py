@@ -58,6 +58,8 @@ def route_prompt(
         requires_tools=analysis.features.requires_tools,
         requires_freshness=analysis.features.requires_freshness,
         requires_code_execution=analysis.features.requires_code_execution,
+        requires_vision=analysis.features.requires_vision,
+        requires_image_generation=analysis.features.requires_image_generation,
         config_valid=True,
         availability_valid=availability_valid,
         availability_reasons=availability_reasons,
@@ -71,6 +73,10 @@ def _target_route(analysis: PromptAnalysis) -> tuple[str, str]:
         return "confirmation", "high-risk action requires human confirmation"
     if features.ambiguous and features.sensitive_domain:
         return "confirmation", "ambiguous high-impact request"
+    if features.requires_image_generation:
+        return "image_generation", "image generation required"
+    if features.requires_vision and not features.requires_code_execution:
+        return "vision", "multimodal vision or OCR required"
     if features.requires_code_execution or features.coding_intent:
         return "coding", "coding or repository work"
     if features.requires_freshness:
@@ -189,6 +195,8 @@ def _fail_closed(analysis: PromptAnalysis, reason: str) -> RoutingDecision:
         requires_tools=analysis.features.requires_tools,
         requires_freshness=analysis.features.requires_freshness,
         requires_code_execution=analysis.features.requires_code_execution,
+        requires_vision=analysis.features.requires_vision,
+        requires_image_generation=analysis.features.requires_image_generation,
         config_valid=False,
         availability_valid=False,
         availability_reasons=(reason,),
