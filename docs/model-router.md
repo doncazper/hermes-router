@@ -102,7 +102,8 @@ The setup assistant is intentionally safe and local-first. It scans:
   `llama-server`, and `lmstudio`.
 
 It does not execute model providers, call external APIs, download files, or
-modify the default catalog unless you explicitly run `setup write`.
+modify the default catalog during `scan`, `recommend`, `write`, or `wizard`.
+Downloads require the separate `setup download --execute` path.
 
 Scan:
 
@@ -137,9 +138,24 @@ The writer will not overwrite an existing file unless `--force` is passed.
 ### Hugging Face Download Plans
 
 Setup recommendations include `hf download` commands for missing local roles,
-but the MVP does not run them. This keeps large downloads, gated licenses, and
-hardware choices under user control. A future milestone can add an explicit
-`setup download --execute` gate.
+and `setup download` shows the same plan without running it:
+
+```bash
+python -m hermes.plugins.model_router.cli setup download
+python -m hermes.plugins.model_router.cli setup download --route fast_local
+```
+
+Execution is a separate opt-in:
+
+```bash
+python -m hermes.plugins.model_router.cli setup download \
+  --route fast_local \
+  --execute
+```
+
+The command asks for confirmation before running `hf download`. For
+non-interactive scripts, pass `--yes`. This keeps large downloads, gated
+licenses, and hardware choices under user control.
 
 Users choose which model or agent handles each task class by editing
 `routing_targets`. For example, coding work can point to a local code engine,

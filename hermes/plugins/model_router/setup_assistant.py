@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 import shutil
+import subprocess
 
 import yaml
 
@@ -83,6 +84,57 @@ class DownloadSuggestion:
             "adapter": self.adapter,
             "reason": self.reason,
             "command": list(self.command),
+        }
+
+
+@dataclass(frozen=True)
+class DownloadPlan:
+    suggestions: tuple[DownloadSuggestion, ...]
+    notes: tuple[str, ...] = field(default_factory=tuple)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "suggestions": [
+                suggestion.to_dict() for suggestion in self.suggestions
+            ],
+            "notes": list(self.notes),
+        }
+
+
+@dataclass(frozen=True)
+class DownloadResult:
+    route: str
+    repo_id: str
+    command: tuple[str, ...]
+    status: str
+    returncode: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "route": self.route,
+            "repo_id": self.repo_id,
+            "command": list(self.command),
+            "status": self.status,
+            "returncode": self.returncode,
+        }
+
+
+@dataclass(frozen=True)
+class DownloadExecution:
+    executed: bool
+    results: tuple[DownloadResult, ...]
+    notes: tuple[str, ...] = field(default_factory=tuple)
+
+    @property
+    def ok(self) -> bool:
+        return all(result.status in {"planned", "completed"} for result in self.results)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "executed": self.executed,
+            "ok": self.ok,
+            "results": [result.to_dict() for result in self.results],
+            "notes": list(self.notes),
         }
 
 
@@ -241,6 +293,101 @@ def write_recommended_config(
         path=str(output),
         message=f"wrote recommended config: {output}",
         recommendation=recommendation,
+    )
+
+
+def plan_model_downloads(
+    *,
+    discovery: SetupDiscovery | None = None,
+    profile: str = "balanced",
+    routes: Sequence[str] | None = None,
+    local_root: str | Path | None = None,
+) -> DownloadPlan:
+    discovery = discovery or scan_local_environment()
+    recommendation = recommend_setup(discovery, profile=profile)
+    selected_routes = set(routes or ())
+    suggestions = tuple(
+        _with_local_root(suggestion, local_root)
+        for suggestion in recommendation.download_suggestions
+        if not selected_routes or suggestion.route in selected_routes
+    )
+    notes = recommendation.notes
+    if selected_routes:
+        missing = selected_routes - {suggestion.route for suggestion in suggestions}
+        if missing:
+            notes = (
+                *notes,
+                "No download suggestions for routes: " + ", ".join(sorted(missing)),
+            )
+    return DownloadPlan(suggestions=suggestions, notes=notes)
+
+
+def execute_download_plan(
+    plan: DownloadPlan,
+    *,
+    execute: bool,
+    confirmed: bool,
+    runner=None,
+) -> DownloadExecution:
+    if not execute:
+        return DownloadExecution(
+            executed=False,
+            results=tuple(
+                DownloadResult(
+                    route=suggestion.route,
+                    repo_id=suggestion.repo_id,
+                    command=suggestion.command,
+                    status="planned",
+                )
+                for suggestion in plan.suggestions
+            ),
+            notes=plan.notes,
+        )
+
+    if not confirmed:
+        return DownloadExecution(
+            executed=False,
+            results=tuple(
+                DownloadResult(
+                    route=suggestion.route,
+                    repo_id=suggestion.repo_id,
+                    command=suggestion.command,
+                    status="confirmation_required",
+                )
+                for suggestion in plan.suggestions
+            ),
+            notes=(*plan.notes, "Pass --yes or confirm interactively to execute."),
+        )
+
+    runner = runner or _run_download_command
+    results: list[DownloadResult] = []
+    for suggestion in plan.suggestions:
+        try:
+            returncode = runner(suggestion.command)
+        except FileNotFoundError:
+            results.append(
+                DownloadResult(
+                    route=suggestion.route,
+                    repo_id=suggestion.repo_id,
+                    command=suggestion.command,
+                    status="missing_command",
+                    returncode=127,
+                )
+            )
+            continue
+        results.append(
+            DownloadResult(
+                route=suggestion.route,
+                repo_id=suggestion.repo_id,
+                command=suggestion.command,
+                status="completed" if returncode == 0 else "failed",
+                returncode=returncode,
+            )
+        )
+    return DownloadExecution(
+        executed=True,
+        results=tuple(results),
+        notes=plan.notes,
     )
 
 
@@ -403,6 +550,31 @@ def _default_download_suggestions(profile: str) -> tuple[DownloadSuggestion, ...
         )
         for route, repo_id, reason in specs
     )
+
+
+def _with_local_root(
+    suggestion: DownloadSuggestion,
+    local_root: str | Path | None,
+) -> DownloadSuggestion:
+    if local_root is None:
+        return suggestion
+    route_dir = Path(local_root).expanduser() / suggestion.route / _repo_slug(
+        suggestion.repo_id
+    )
+    command = (*suggestion.command[:-1], str(route_dir))
+    return DownloadSuggestion(
+        route=suggestion.route,
+        repo_id=suggestion.repo_id,
+        provider=suggestion.provider,
+        adapter=suggestion.adapter,
+        reason=suggestion.reason,
+        command=command,
+    )
+
+
+def _run_download_command(command: tuple[str, ...]) -> int:
+    completed = subprocess.run(command, check=False)
+    return int(completed.returncode)
 
 
 def _adapter_for_route(route: str) -> str:

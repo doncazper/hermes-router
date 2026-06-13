@@ -8,6 +8,8 @@ from pathlib import Path
 import yaml
 
 from hermes.plugins.model_router.setup_assistant import (
+    execute_download_plan,
+    plan_model_downloads,
     recommend_setup,
     scan_local_environment,
     write_recommended_config,
@@ -87,6 +89,99 @@ def test_recommend_setup_includes_download_plan_for_missing_roles():
     assert all(item["command"][0:2] == ["hf", "download"] for item in payload["download_suggestions"])
 
 
+def test_plan_model_downloads_filters_routes_and_rewrites_local_root(tmp_path):
+    discovery = scan_local_environment(model_dirs=[], command_names=[])
+
+    plan = plan_model_downloads(
+        discovery=discovery,
+        routes=["fast_local"],
+        local_root=tmp_path / "models",
+    )
+
+    assert len(plan.suggestions) == 1
+    suggestion = plan.suggestions[0]
+    assert suggestion.route == "fast_local"
+    assert suggestion.command[-1] == str(tmp_path / "models" / "fast_local" / "Qwen--Qwen3-0.6B")
+
+
+def test_execute_download_plan_dry_run_does_not_call_runner(tmp_path):
+    plan = plan_model_downloads(
+        discovery=scan_local_environment(model_dirs=[], command_names=[]),
+        routes=["fast_local"],
+        local_root=tmp_path / "models",
+    )
+    calls: list[tuple[str, ...]] = []
+
+    result = execute_download_plan(
+        plan,
+        execute=False,
+        confirmed=False,
+        runner=lambda command: calls.append(command) or 0,
+    )
+
+    assert result.executed is False
+    assert calls == []
+    assert result.results[0].status == "planned"
+
+
+def test_execute_download_plan_requires_confirmation(tmp_path):
+    plan = plan_model_downloads(
+        discovery=scan_local_environment(model_dirs=[], command_names=[]),
+        routes=["fast_local"],
+        local_root=tmp_path / "models",
+    )
+
+    result = execute_download_plan(
+        plan,
+        execute=True,
+        confirmed=False,
+        runner=lambda command: 0,
+    )
+
+    assert result.executed is False
+    assert result.results[0].status == "confirmation_required"
+
+
+def test_execute_download_plan_runs_confirmed_commands(tmp_path):
+    plan = plan_model_downloads(
+        discovery=scan_local_environment(model_dirs=[], command_names=[]),
+        routes=["fast_local"],
+        local_root=tmp_path / "models",
+    )
+    calls: list[tuple[str, ...]] = []
+
+    result = execute_download_plan(
+        plan,
+        execute=True,
+        confirmed=True,
+        runner=lambda command: calls.append(command) or 0,
+    )
+
+    assert result.executed is True
+    assert calls == [plan.suggestions[0].command]
+    assert result.results[0].status == "completed"
+
+
+def test_execute_download_plan_reports_missing_command(tmp_path):
+    plan = plan_model_downloads(
+        discovery=scan_local_environment(model_dirs=[], command_names=[]),
+        routes=["fast_local"],
+        local_root=tmp_path / "models",
+    )
+
+    result = execute_download_plan(
+        plan,
+        execute=True,
+        confirmed=True,
+        runner=lambda command: (_ for _ in ()).throw(FileNotFoundError("hf")),
+    )
+
+    assert result.executed is True
+    assert result.ok is False
+    assert result.results[0].status == "missing_command"
+    assert result.results[0].returncode == 127
+
+
 def test_write_recommended_config_is_safe_by_default(tmp_path):
     output = tmp_path / "model_router.local.yaml"
     output.write_text("existing: true\n", encoding="utf-8")
@@ -130,6 +225,56 @@ def test_setup_recommend_cli_emits_download_suggestions():
     payload = json.loads(result.stdout)
     assert "routing_targets" in payload
     assert payload["download_suggestions"]
+
+
+def test_setup_download_cli_defaults_to_dry_run(tmp_path):
+    result = _run_cli(
+        "setup",
+        "download",
+        "--json",
+        "--no-default-dirs",
+        "--route",
+        "fast_local",
+        "--local-root",
+        str(tmp_path / "models"),
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["executed"] is False
+    assert payload["results"][0]["status"] == "planned"
+
+
+def test_setup_download_cli_executes_with_yes_and_fake_hf(tmp_path, monkeypatch):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    marker = tmp_path / "hf-called.txt"
+    hf = bin_dir / "hf"
+    hf.write_text(
+        f"#!/bin/sh\nprintf '%s\\n' \"$@\" > {marker}\nexit 0\n",
+        encoding="utf-8",
+    )
+    hf.chmod(hf.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+
+    result = _run_cli(
+        "setup",
+        "download",
+        "--json",
+        "--no-default-dirs",
+        "--route",
+        "fast_local",
+        "--local-root",
+        str(tmp_path / "models"),
+        "--execute",
+        "--yes",
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["executed"] is True
+    assert payload["results"][0]["status"] == "completed"
+    assert "download" in marker.read_text(encoding="utf-8")
 
 
 def test_setup_write_cli_writes_config(tmp_path):

@@ -96,6 +96,7 @@ Hermes supports a hybrid setup process:
 - Use an interactive wizard that asks before writing anything.
 - Generate a recommended local config file.
 - Review Hugging Face download-plan commands before downloading anything.
+- Execute approved Hugging Face downloads with an explicit confirmation gate.
 
 The default catalog is `configs/model_router.yaml`. For machine-specific
 settings, use `configs/model_router.local.yaml` and pass it with `--config`.
@@ -129,9 +130,23 @@ python -m hermes.plugins.model_router.cli setup write \
   --output configs/model_router.local.yaml
 ```
 
-The setup assistant does not download models. It emits explicit `hf download`
-commands in its recommendation output so you can review size, license, and
-hardware fit before running anything.
+Plan downloads without running them:
+
+```bash
+python -m hermes.plugins.model_router.cli setup download
+python -m hermes.plugins.model_router.cli setup download --route fast_local
+```
+
+Run approved downloads:
+
+```bash
+python -m hermes.plugins.model_router.cli setup download \
+  --route fast_local \
+  --execute
+```
+
+For non-interactive use, add `--yes`. Downloads use the Hugging Face `hf`
+CLI and are never run by `decide`, `recommend`, `write`, or `wizard`.
 
 The router separates semantic routes from concrete engines:
 

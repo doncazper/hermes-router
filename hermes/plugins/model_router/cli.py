@@ -11,6 +11,8 @@ from hermes.plugins.model_router.config import RouterConfigError, load_router_co
 from hermes.plugins.model_router.policy import route_prompt
 from hermes.plugins.model_router.receipts import decision_to_receipt, receipt_to_json
 from hermes.plugins.model_router.setup_assistant import (
+    execute_download_plan,
+    plan_model_downloads,
     recommend_setup,
     scan_local_environment,
     write_recommended_config,
@@ -81,6 +83,41 @@ def build_parser() -> argparse.ArgumentParser:
         help="Recommendation profile for future model download plans",
     )
     recommend.set_defaults(func=_cmd_setup_recommend)
+
+    download = setup_subparsers.add_parser(
+        "download",
+        help="Plan or execute approved Hugging Face model downloads",
+    )
+    _add_setup_scan_args(download)
+    download.add_argument(
+        "--profile",
+        default="balanced",
+        choices=("balanced", "lightweight", "quality"),
+        help="Recommendation profile for model download plans",
+    )
+    download.add_argument(
+        "--route",
+        action="append",
+        default=None,
+        help="Only include a route such as fast_local or multimodal_vision",
+    )
+    download.add_argument(
+        "--local-root",
+        type=Path,
+        default=None,
+        help="Root directory for downloaded model folders",
+    )
+    download.add_argument(
+        "--execute",
+        action="store_true",
+        help="Run the planned hf download commands",
+    )
+    download.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm execution without an interactive prompt",
+    )
+    download.set_defaults(func=_cmd_setup_download)
 
     write = setup_subparsers.add_parser(
         "write",
@@ -199,6 +236,32 @@ def _cmd_setup_recommend(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_setup_download(args: argparse.Namespace) -> int:
+    discovery = scan_local_environment(model_dirs=_model_dirs_from_args(args))
+    plan = plan_model_downloads(
+        discovery=discovery,
+        profile=args.profile,
+        routes=args.route,
+        local_root=args.local_root,
+    )
+    confirmed = args.yes
+    if args.execute and not confirmed and not args.json:
+        _print_download_plan(plan)
+        answer = input("Run these hf download commands? [y/N] ").strip().lower()
+        confirmed = answer in {"y", "yes"}
+
+    result = execute_download_plan(
+        plan,
+        execute=args.execute,
+        confirmed=confirmed,
+    )
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+    else:
+        _print_download_result(result)
+    return 0 if result.ok else 1
+
+
 def _cmd_setup_write(args: argparse.Namespace) -> int:
     discovery = scan_local_environment(model_dirs=_model_dirs_from_args(args))
     result = write_recommended_config(
@@ -299,6 +362,39 @@ def _print_recommendation(recommendation) -> None:
     if not recommendation.notes:
         print("- none")
     for note in recommendation.notes:
+        print(f"- {note}")
+
+
+def _print_download_plan(plan) -> None:
+    print("Download plan:")
+    if not plan.suggestions:
+        print("- none")
+    for suggestion in plan.suggestions:
+        print(f"- {suggestion.route}: {suggestion.repo_id}")
+        print(f"  command: {' '.join(suggestion.command)}")
+    print("Notes:")
+    if not plan.notes:
+        print("- none")
+    for note in plan.notes:
+        print(f"- {note}")
+
+
+def _print_download_result(result) -> None:
+    print(f"Executed: {str(result.executed).lower()}")
+    print(f"OK: {str(result.ok).lower()}")
+    print("Results:")
+    if not result.results:
+        print("- none")
+    for item in result.results:
+        print(f"- {item.route}: {item.status}")
+        print(f"  repo: {item.repo_id}")
+        print(f"  command: {' '.join(item.command)}")
+        if item.returncode is not None:
+            print(f"  returncode: {item.returncode}")
+    print("Notes:")
+    if not result.notes:
+        print("- none")
+    for note in result.notes:
         print(f"- {note}")
 
 
