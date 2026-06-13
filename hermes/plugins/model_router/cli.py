@@ -10,6 +10,11 @@ from hermes.plugins.model_router.availability import validate_router_availabilit
 from hermes.plugins.model_router.config import RouterConfigError, load_router_config
 from hermes.plugins.model_router.policy import route_prompt
 from hermes.plugins.model_router.receipts import decision_to_receipt, receipt_to_json
+from hermes.plugins.model_router.setup_assistant import (
+    recommend_setup,
+    scan_local_environment,
+    write_recommended_config,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -50,6 +55,80 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to a model_router.yaml catalog",
     )
     validate.set_defaults(func=_cmd_validate_config)
+
+    setup = subparsers.add_parser(
+        "setup",
+        help="Scan local models and generate recommended router config",
+    )
+    setup_subparsers = setup.add_subparsers(dest="setup_command", required=True)
+
+    scan = setup_subparsers.add_parser(
+        "scan",
+        help="Scan safe local signals such as model cache dirs and commands",
+    )
+    _add_setup_scan_args(scan)
+    scan.set_defaults(func=_cmd_setup_scan)
+
+    recommend = setup_subparsers.add_parser(
+        "recommend",
+        help="Recommend routing targets, engine overrides, and download plans",
+    )
+    _add_setup_scan_args(recommend)
+    recommend.add_argument(
+        "--profile",
+        default="balanced",
+        choices=("balanced", "lightweight", "quality"),
+        help="Recommendation profile for future model download plans",
+    )
+    recommend.set_defaults(func=_cmd_setup_recommend)
+
+    write = setup_subparsers.add_parser(
+        "write",
+        help="Write a recommended model-router config file",
+    )
+    _add_setup_scan_args(write)
+    write.add_argument(
+        "--profile",
+        default="balanced",
+        choices=("balanced", "lightweight", "quality"),
+        help="Recommendation profile for future model download plans",
+    )
+    write.add_argument(
+        "--output",
+        type=Path,
+        default=Path("configs/model_router.local.yaml"),
+        help="Path for the generated config",
+    )
+    write.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing output file",
+    )
+    write.set_defaults(func=_cmd_setup_write)
+
+    wizard = setup_subparsers.add_parser(
+        "wizard",
+        help="Interactive setup flow that asks before writing config",
+    )
+    _add_setup_scan_args(wizard)
+    wizard.add_argument(
+        "--profile",
+        default="balanced",
+        choices=("balanced", "lightweight", "quality"),
+        help="Recommendation profile for future model download plans",
+    )
+    wizard.add_argument(
+        "--output",
+        type=Path,
+        default=Path("configs/model_router.local.yaml"),
+        help="Path for the generated config",
+    )
+    wizard.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing output file",
+    )
+    wizard.set_defaults(func=_cmd_setup_wizard)
     return parser
 
 
@@ -99,6 +178,128 @@ def _cmd_validate_config(args: argparse.Namespace) -> int:
             for reason in result.reasons:
                 print(f"  - {reason}")
     return 0 if report.all_available else 1
+
+
+def _cmd_setup_scan(args: argparse.Namespace) -> int:
+    discovery = scan_local_environment(model_dirs=_model_dirs_from_args(args))
+    if args.json:
+        print(json.dumps(discovery.to_dict(), indent=2, sort_keys=True))
+    else:
+        _print_discovery(discovery)
+    return 0
+
+
+def _cmd_setup_recommend(args: argparse.Namespace) -> int:
+    discovery = scan_local_environment(model_dirs=_model_dirs_from_args(args))
+    recommendation = recommend_setup(discovery, profile=args.profile)
+    if args.json:
+        print(json.dumps(recommendation.to_dict(), indent=2, sort_keys=True))
+    else:
+        _print_recommendation(recommendation)
+    return 0
+
+
+def _cmd_setup_write(args: argparse.Namespace) -> int:
+    discovery = scan_local_environment(model_dirs=_model_dirs_from_args(args))
+    result = write_recommended_config(
+        args.output,
+        discovery=discovery,
+        force=args.force,
+        profile=args.profile,
+    )
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+    else:
+        print(result.message)
+        _print_recommendation(result.recommendation)
+    return 0 if result.written else 1
+
+
+def _cmd_setup_wizard(args: argparse.Namespace) -> int:
+    discovery = scan_local_environment(model_dirs=_model_dirs_from_args(args))
+    recommendation = recommend_setup(discovery, profile=args.profile)
+    print("Hermes model-router setup wizard")
+    print("")
+    _print_discovery(discovery)
+    print("")
+    _print_recommendation(recommendation)
+    print("")
+    answer = input(f"Write this config to {args.output}? [y/N] ").strip().lower()
+    if answer not in {"y", "yes"}:
+        print("No config written.")
+        return 0
+
+    result = write_recommended_config(
+        args.output,
+        discovery=discovery,
+        force=args.force,
+        profile=args.profile,
+    )
+    print(result.message)
+    return 0 if result.written else 1
+
+
+def _add_setup_scan_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit JSON output",
+    )
+    parser.add_argument(
+        "--model-dir",
+        action="append",
+        type=Path,
+        default=None,
+        help="Additional or replacement local model directory to scan",
+    )
+    parser.add_argument(
+        "--no-default-dirs",
+        action="store_true",
+        help="Do not scan default local model cache directories",
+    )
+
+
+def _model_dirs_from_args(args: argparse.Namespace):
+    if args.no_default_dirs:
+        return args.model_dir or []
+    return args.model_dir
+
+
+def _print_discovery(discovery) -> None:
+    print("Commands:")
+    for name, available in sorted(discovery.commands.items()):
+        print(f"- {name}: {'available' if available else 'missing'}")
+    print("Model directories:")
+    for path in discovery.model_dirs:
+        print(f"- {path}")
+    print("Models:")
+    if not discovery.models:
+        print("- none discovered")
+    for model in discovery.models:
+        roles = ", ".join(model.roles) if model.roles else "unclassified"
+        print(f"- {model.repo_id} ({model.source}; {roles})")
+
+
+def _print_recommendation(recommendation) -> None:
+    print("Routing targets:")
+    for route, engine in sorted(recommendation.routing_targets.items()):
+        print(f"- {route}: {engine}")
+    print("Engine overrides:")
+    if not recommendation.engine_overrides:
+        print("- none")
+    for engine in sorted(recommendation.engine_overrides):
+        print(f"- {engine}")
+    print("Download suggestions:")
+    if not recommendation.download_suggestions:
+        print("- none")
+    for suggestion in recommendation.download_suggestions:
+        print(f"- {suggestion.route}: {suggestion.repo_id}")
+        print(f"  command: {' '.join(suggestion.command)}")
+    print("Notes:")
+    if not recommendation.notes:
+        print("- none")
+    for note in recommendation.notes:
+        print(f"- {note}")
 
 
 def _print_readable(receipt) -> None:

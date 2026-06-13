@@ -1,0 +1,169 @@
+# Copy this file to configs/model_router.local.yaml and edit values for your machine.
+# The generated setup command can also write this shape for you:
+#   python -m hermes.plugins.model_router.cli setup write --output configs/model_router.local.yaml
+
+routing_targets:
+  simple: fast_local
+  balanced: balanced_local
+  reasoning: reasoning_local
+  coding: code_agent
+  research: web_research
+  vision: multimodal_vision
+  image_generation: image_generation
+  confirmation: human_confirm
+
+engines:
+  intent_router:
+    provider: local
+    model: hermes-intent-router
+    adapter: heuristic_router
+    strengths: [intent classification, routing decisions]
+    max_context: 8192
+    cost_tier: free
+    latency_tier: low
+    enabled: true
+    fallback: fast_local
+    availability:
+      status: auto
+
+  fast_local:
+    provider: huggingface_local
+    model: Qwen/Qwen3-0.6B
+    adapter: local_chat
+    strengths: [rewrite, extraction, formatting]
+    max_context: 8192
+    cost_tier: free
+    latency_tier: low
+    enabled: true
+    fallback: balanced_local
+    availability:
+      status: auto
+      required_paths:
+        - models/fast_local/Qwen--Qwen3-0.6B
+
+  balanced_local:
+    provider: huggingface_local
+    model: Qwen/Qwen2.5-3B-Instruct
+    adapter: local_chat
+    strengths: [summarization, general tasks, moderate reasoning]
+    max_context: 16384
+    cost_tier: free
+    latency_tier: medium
+    enabled: true
+    fallback: reasoning_local
+    availability:
+      status: auto
+      required_paths:
+        - models/balanced_local/Qwen--Qwen2.5-3B-Instruct
+
+  reasoning_local:
+    provider: huggingface_local
+    model: Qwen/Qwen3-8B
+    adapter: local_reasoning
+    strengths: [architecture, planning, long-context reasoning]
+    max_context: 65536
+    cost_tier: free
+    latency_tier: high
+    enabled: true
+    fallback: balanced_local
+    availability:
+      status: auto
+      required_paths:
+        - models/reasoning_local/Qwen--Qwen3-8B
+
+  code_agent:
+    provider: local
+    model: hermes-local-code-agent
+    adapter: local_code
+    strengths: [deep reasoning and coding, repository inspection, tests]
+    max_context: 65536
+    cost_tier: free
+    latency_tier: medium
+    enabled: true
+    fallback: reasoning_local
+    availability:
+      status: auto
+
+  claude_code:
+    provider: anthropic
+    model: claude-code
+    adapter: claude_code
+    strengths: [repository edits, tests]
+    max_context: 200000
+    cost_tier: high
+    latency_tier: medium
+    enabled: false
+    fallback: code_agent
+    availability:
+      status: auto
+      required_commands: [claude]
+
+  codex:
+    provider: openai
+    model: codex
+    adapter: codex
+    strengths: [repository edits, tests]
+    max_context: 200000
+    cost_tier: high
+    latency_tier: medium
+    enabled: false
+    fallback: code_agent
+    availability:
+      status: auto
+      required_commands: [codex]
+
+  web_research:
+    provider: local
+    model: hermes-web-research
+    adapter: web_research
+    strengths: [current information, citations, local RAG, HTML extraction]
+    max_context: 32768
+    cost_tier: medium
+    latency_tier: high
+    enabled: true
+    fallback: reasoning_local
+    availability:
+      status: auto
+
+  multimodal_vision:
+    provider: huggingface_local
+    model: Qwen/Qwen3-VL-8B-Instruct
+    adapter: local_vision
+    strengths: [screenshots, image description, OCR, charts, diagrams]
+    max_context: 32768
+    cost_tier: medium
+    latency_tier: medium
+    enabled: true
+    fallback: reasoning_local
+    availability:
+      status: auto
+      required_paths:
+        - models/multimodal_vision/Qwen--Qwen3-VL-8B-Instruct
+
+  image_generation:
+    provider: huggingface_local
+    model: stabilityai/sdxl-turbo
+    adapter: local_image_generation
+    strengths: [image generation, local diffusion, visual asset creation]
+    max_context: 4096
+    cost_tier: medium
+    latency_tier: high
+    enabled: true
+    fallback: human_confirm
+    availability:
+      status: auto
+      required_paths:
+        - models/image_generation/stabilityai--sdxl-turbo
+
+  human_confirm:
+    provider: human
+    model: human-confirmation
+    adapter: confirmation_gate
+    strengths: [high-risk review, external-action confirmation, fail-closed routing]
+    max_context: 4096
+    cost_tier: none
+    latency_tier: manual
+    enabled: true
+    fallback: null
+    availability:
+      status: available

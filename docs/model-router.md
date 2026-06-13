@@ -24,7 +24,9 @@ The router is implemented under `hermes/plugins/model_router/`.
   expressions and length heuristics.
 - `policy.py` maps scores and features to engine categories.
 - `receipts.py` converts routing decisions into serializable receipts.
-- `cli.py` exposes the `decide` command.
+- `setup_assistant.py` scans local commands/model directories and produces
+  setup recommendations without downloading or executing models.
+- `cli.py` exposes decision, validation, and setup commands.
 
 ## Scoring Dimensions
 
@@ -73,6 +75,71 @@ When config is missing or invalid, it fails closed to `human_confirm`.
 The model catalog lives at `configs/model_router.yaml`. It defines engine
 categories and semantic routing targets rather than hardcoding provider model
 names throughout the code.
+
+For machine-specific setup, use one of three paths:
+
+1. Copy and edit `configs/model_router.local.example.yaml`.
+2. Run `setup scan` and `setup recommend` to inspect local models and commands.
+3. Run `setup wizard` if you want Hermes to ask before writing a config.
+4. Run `setup write` to generate a local YAML file from those recommendations.
+
+The generated local config can be passed explicitly:
+
+```bash
+python -m hermes.plugins.model_router.cli decide \
+  --config configs/model_router.local.yaml \
+  "fix the repo and run tests"
+```
+
+### Setup Assistant
+
+The setup assistant is intentionally safe and local-first. It scans:
+
+- Known local model directories such as Hugging Face cache, Ollama, LM Studio,
+  and `~/models`.
+- Optional `--model-dir` paths supplied by the user.
+- Command availability for tools such as `claude`, `codex`, `hf`, `ollama`,
+  `llama-server`, and `lmstudio`.
+
+It does not execute model providers, call external APIs, download files, or
+modify the default catalog unless you explicitly run `setup write`.
+
+Scan:
+
+```bash
+python -m hermes.plugins.model_router.cli setup scan
+python -m hermes.plugins.model_router.cli setup scan --json
+```
+
+Recommend:
+
+```bash
+python -m hermes.plugins.model_router.cli setup recommend
+python -m hermes.plugins.model_router.cli setup recommend --json
+```
+
+Interactive wizard:
+
+```bash
+python -m hermes.plugins.model_router.cli setup wizard \
+  --output configs/model_router.local.yaml
+```
+
+Write a generated config:
+
+```bash
+python -m hermes.plugins.model_router.cli setup write \
+  --output configs/model_router.local.yaml
+```
+
+The writer will not overwrite an existing file unless `--force` is passed.
+
+### Hugging Face Download Plans
+
+Setup recommendations include `hf download` commands for missing local roles,
+but the MVP does not run them. This keeps large downloads, gated licenses, and
+hardware choices under user control. A future milestone can add an explicit
+`setup download --execute` gate.
 
 Users choose which model or agent handles each task class by editing
 `routing_targets`. For example, coding work can point to a local code engine,

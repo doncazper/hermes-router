@@ -89,7 +89,49 @@ Example JSON receipt:
 
 ## Configure Models And Agents
 
-Edit `configs/model_router.yaml`.
+Hermes supports a hybrid setup process:
+
+- Edit a plain YAML file directly.
+- Ask the setup assistant to scan local commands and model cache directories.
+- Use an interactive wizard that asks before writing anything.
+- Generate a recommended local config file.
+- Review Hugging Face download-plan commands before downloading anything.
+
+The default catalog is `configs/model_router.yaml`. For machine-specific
+settings, use `configs/model_router.local.yaml` and pass it with `--config`.
+You can start from `configs/model_router.local.example.yaml`.
+
+Scan your machine:
+
+```bash
+python -m hermes.plugins.model_router.cli setup scan
+python -m hermes.plugins.model_router.cli setup scan --json
+```
+
+Get recommendations:
+
+```bash
+python -m hermes.plugins.model_router.cli setup recommend
+python -m hermes.plugins.model_router.cli setup recommend --json
+```
+
+Use the interactive wizard:
+
+```bash
+python -m hermes.plugins.model_router.cli setup wizard \
+  --output configs/model_router.local.yaml
+```
+
+Write a local config:
+
+```bash
+python -m hermes.plugins.model_router.cli setup write \
+  --output configs/model_router.local.yaml
+```
+
+The setup assistant does not download models. It emits explicit `hf download`
+commands in its recommendation output so you can review size, license, and
+hardware fit before running anything.
 
 The router separates semantic routes from concrete engines:
 
@@ -135,6 +177,11 @@ The included catalog has disabled examples for `claude_code` and `codex`.
 Enable one by setting `enabled: true` and pointing `routing_targets.coding` at
 that engine name. Local users can keep `coding: code_agent` and change the
 `provider`, `model`, and `adapter` fields for their local runtime.
+
+If the setup assistant detects the `claude` command, it recommends
+`routing_targets.coding: claude_code`. If it detects `codex` but not `claude`,
+it recommends `routing_targets.coding: codex`. Otherwise, it keeps coding on
+the local `code_agent` fallback.
 
 The default catalog covers these engine roles:
 
@@ -212,9 +259,11 @@ hermes/plugins/model_router/
   scorer.py       # Deterministic heuristic prompt scoring
   policy.py       # Engine selection and fail-closed fallback rules
   receipts.py     # Routing receipt helpers
+  setup_assistant.py # Local setup scanning and config recommendation
   cli.py          # CLI entrypoint
 configs/
   model_router.yaml
+  model_router.local.example.yaml
 tests/
 docs/
   model-router.md
