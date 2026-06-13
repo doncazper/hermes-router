@@ -24,6 +24,9 @@ def decision_to_receipt(decision: RoutingDecision) -> RoutingReceipt:
         config_valid=decision.config_valid,
         availability_valid=decision.availability_valid,
         availability_reasons=decision.availability_reasons,
+        requirements=decision.requirements,
+        rejected_engines=decision.rejected_engines,
+        fallback_used=decision.fallback_used,
     )
 
 

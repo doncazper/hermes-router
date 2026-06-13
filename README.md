@@ -60,6 +60,17 @@ python -m hermes.plugins.model_router.cli decide \
   "research current GLP-1 supplement trends"
 ```
 
+Pass routing hints:
+
+```bash
+python -m hermes.plugins.model_router.cli decide \
+  --attachment image \
+  --force-engine multimodal_vision \
+  --max-cost-tier medium \
+  --max-latency-tier medium \
+  "summarize this attachment"
+```
+
 Example JSON receipt:
 
 ```json
@@ -68,6 +79,7 @@ Example JSON receipt:
   "confidence_score": 90,
   "config_valid": true,
   "fallback_engine": "reasoning_local",
+  "fallback_used": false,
   "availability_valid": true,
   "availability_reasons": [
     "code_agent: no availability requirements declared"
@@ -84,6 +96,13 @@ Example JSON receipt:
   "requires_image_generation": false,
   "requires_tools": true,
   "requires_vision": false,
+  "requirements": {
+    "max_cost_tier": null,
+    "max_latency_tier": null,
+    "needs_tools": true,
+    "required_modalities": []
+  },
+  "rejected_engines": [],
   "risk_score": 25,
   "selected_engine": "code_agent"
 }
@@ -253,6 +272,8 @@ python -m hermes.plugins.model_router.cli validate-config --json
 
 During routing, unavailable engines are skipped through their fallback chain. If
 no available fallback exists, the router fails closed to `human_confirm`.
+Receipts include rejected engines and reasons, such as missing tool support,
+missing modality support, or cost/latency tier limits.
 
 ## Default Routes
 
@@ -315,12 +336,12 @@ docs/
   APIs.
 - High-risk external actions require confirmation.
 - Missing or invalid config routes to `human_confirm`.
-- Unavailable engines are skipped through fallbacks before dispatch is possible.
+- Unavailable or unsuitable engines are skipped through fallbacks before dispatch
+  is possible.
 - Receipts omit raw prompt text.
 
 ## Roadmap
 
-- Add richer model/agent capability metadata.
 - Add active provider health checks behind explicit opt-in.
 - Add gateway dispatch behind explicit confirmation gates.
 - Add telemetry-free receipt storage for audit trails.

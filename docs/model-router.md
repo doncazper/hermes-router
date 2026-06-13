@@ -69,6 +69,10 @@ The default engine categories are:
 
 When the router is uncertain, it routes upward to a safer or stronger category.
 When config is missing or invalid, it fails closed to `human_confirm`.
+Routing hints can add constraints without executing anything. Supported hints
+include forced engine preference, attachment modalities, maximum cost tier,
+maximum latency tier, and latency sensitivity. High-risk actions still route to
+confirmation even if a weaker engine is forced.
 
 ## Model Catalog And User Setup
 
@@ -275,7 +279,8 @@ python -m hermes.plugins.model_router.cli validate-config --json
 Routing uses the same safe validation. If a selected engine is unavailable, the
 router follows its fallback chain. If no available fallback exists, the decision
 fails closed to `human_confirm` and includes availability reasons in the
-receipt.
+receipt. Engines can also be rejected when they lack required tool support,
+required modalities, or exceed requested cost/latency tiers.
 
 Each engine supports:
 
@@ -288,6 +293,8 @@ strengths:
 max_context: 16384
 cost_tier: free
 latency_tier: medium
+supports_tools: false
+modalities: []
 enabled: true
 fallback: reasoning_local
 availability:
@@ -344,6 +351,17 @@ Custom catalog:
 python -m hermes.plugins.model_router.cli decide --config configs/model_router.yaml "research current GLP-1 supplement trends"
 ```
 
+Routing hints:
+
+```bash
+python -m hermes.plugins.model_router.cli decide \
+  --attachment image \
+  --force-engine multimodal_vision \
+  --max-cost-tier medium \
+  --max-latency-tier medium \
+  "summarize this attachment"
+```
+
 Example receipt:
 
 ```json
@@ -369,7 +387,15 @@ Example receipt:
   "availability_reasons": [
     "code_agent: no availability requirements declared"
   ],
-  "config_valid": true
+  "config_valid": true,
+  "requirements": {
+    "needs_tools": true,
+    "required_modalities": [],
+    "max_cost_tier": null,
+    "max_latency_tier": null
+  },
+  "rejected_engines": [],
+  "fallback_used": false
 }
 ```
 

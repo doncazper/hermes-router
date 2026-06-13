@@ -72,6 +72,10 @@ class ModelEngine:
     enabled: bool
     fallback: str | None = None
     availability: EngineAvailability = field(default_factory=EngineAvailability)
+    supports_tools: bool = False
+    modalities: tuple[str, ...] = field(default_factory=tuple)
+    capability_tier: str = "standard"
+    trust_tier: str = "standard"
 
     @classmethod
     def from_dict(cls, name: str, data: dict[str, Any]) -> "ModelEngine":
@@ -119,6 +123,26 @@ class ModelEngine:
             enabled=_require_bool(data, "enabled", name),
             fallback=fallback,
             availability=availability,
+            supports_tools=_optional_bool(
+                data,
+                "supports_tools",
+                _default_supports_tools(name, data),
+                name,
+            ),
+            modalities=_optional_string_tuple(data, "modalities", name)
+            or _default_modalities(name, data),
+            capability_tier=_optional_string(
+                data,
+                "capability_tier",
+                _default_capability_tier(data),
+                name,
+            ),
+            trust_tier=_optional_string(
+                data,
+                "trust_tier",
+                _default_trust_tier(data),
+                name,
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -134,6 +158,10 @@ class ModelEngine:
             "enabled": self.enabled,
             "fallback": self.fallback,
             "availability": self.availability.to_dict(),
+            "supports_tools": self.supports_tools,
+            "modalities": list(self.modalities),
+            "capability_tier": self.capability_tier,
+            "trust_tier": self.trust_tier,
         }
 
 
@@ -190,6 +218,208 @@ def _require_bool(data: dict[str, Any], key: str, engine_name: str) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"engine {engine_name!r} field {key!r} must be a bool")
     return value
+
+
+def _optional_bool(
+    data: dict[str, Any],
+    key: str,
+    default: bool,
+    engine_name: str,
+) -> bool:
+    if key not in data:
+        return default
+    value = data[key]
+    if not isinstance(value, bool):
+        raise ValueError(f"engine {engine_name!r} field {key!r} must be a bool")
+    return value
+
+
+def _optional_string(
+    data: dict[str, Any],
+    key: str,
+    default: str,
+    engine_name: str,
+) -> str:
+    value = data.get(key, default)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"engine {engine_name!r} field {key!r} must be a string")
+    return value
+
+
+def _optional_string_tuple(
+    data: dict[str, Any],
+    key: str,
+    engine_name: str,
+) -> tuple[str, ...]:
+    value = data.get(key, [])
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError(f"engine {engine_name!r} field {key!r} must be strings")
+    return tuple(item for item in value if item.strip())
+
+
+def _default_supports_tools(name: str, data: dict[str, Any]) -> bool:
+    text = " ".join(
+        str(part).lower()
+        for part in (
+            name,
+            data.get("provider", ""),
+            data.get("adapter", ""),
+            data.get("model", ""),
+            " ".join(data.get("strengths", []))
+            if isinstance(data.get("strengths"), list)
+            else "",
+        )
+    )
+    return any(
+        token in text
+        for token in (
+            "code",
+            "codex",
+            "claude",
+            "tool",
+            "web",
+            "research",
+            "rag",
+            "vision",
+            "ocr",
+            "image generation",
+            "diffusion",
+            "confirm",
+        )
+    )
+
+
+def _default_capability_tier(data: dict[str, Any]) -> str:
+    max_context = data.get("max_context", 0)
+    if isinstance(max_context, int) and max_context >= 65536:
+        return "high"
+    if isinstance(max_context, int) and max_context >= 16384:
+        return "medium"
+    return "standard"
+
+
+def _default_trust_tier(data: dict[str, Any]) -> str:
+    provider = str(data.get("provider", "")).lower()
+    adapter = str(data.get("adapter", "")).lower()
+    if provider == "human" or "confirmation" in adapter:
+        return "critical"
+    if provider in {"anthropic", "openai"}:
+        return "high"
+    return "standard"
+
+
+def _default_modalities(name: str, data: dict[str, Any]) -> tuple[str, ...]:
+    text = " ".join(
+        str(part).lower()
+        for part in (
+            name,
+            data.get("adapter", ""),
+            data.get("model", ""),
+            " ".join(data.get("strengths", []))
+            if isinstance(data.get("strengths"), list)
+            else "",
+        )
+    )
+    modalities: list[str] = []
+    if any(token in text for token in ("vision", "ocr", "screenshot", "chart", "image")):
+        modalities.append("image")
+    if "pdf" in text:
+        modalities.append("pdf")
+    if "audio" in text:
+        modalities.append("audio")
+    return tuple(dict.fromkeys(modalities))
+
+
+VALID_ATTACHMENTS = ("image", "pdf", "audio", "code")
+
+
+@dataclass(frozen=True)
+class RoutingHints:
+    force_engine: str | None = None
+    latency_sensitive: bool = False
+    max_cost_tier: str | None = None
+    max_latency_tier: str | None = None
+    attachments: tuple[str, ...] = field(default_factory=tuple)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "RoutingHints":
+        if data is None:
+            return cls()
+        if not isinstance(data, dict):
+            raise ValueError("routing hints must be a mapping")
+
+        force_engine = data.get("force_engine")
+        if force_engine is not None and (
+            not isinstance(force_engine, str) or not force_engine.strip()
+        ):
+            raise ValueError("routing hint force_engine must be a string")
+
+        attachments = data.get("attachments", [])
+        if not isinstance(attachments, list) or not all(
+            isinstance(item, str) and item in VALID_ATTACHMENTS
+            for item in attachments
+        ):
+            raise ValueError(
+                "routing hint attachments must be image, pdf, audio, or code"
+            )
+
+        return cls(
+            force_engine=force_engine,
+            latency_sensitive=_hint_bool(data, "latency_sensitive"),
+            max_cost_tier=_hint_optional_string(data, "max_cost_tier"),
+            max_latency_tier=_hint_optional_string(data, "max_latency_tier"),
+            attachments=tuple(attachments),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "force_engine": self.force_engine,
+            "latency_sensitive": self.latency_sensitive,
+            "max_cost_tier": self.max_cost_tier,
+            "max_latency_tier": self.max_latency_tier,
+            "attachments": list(self.attachments),
+        }
+
+
+def _hint_bool(data: dict[str, Any], key: str) -> bool:
+    value = data.get(key, False)
+    if not isinstance(value, bool):
+        raise ValueError(f"routing hint {key} must be a bool")
+    return value
+
+
+def _hint_optional_string(data: dict[str, Any], key: str) -> str | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"routing hint {key} must be a string")
+    return value
+
+
+@dataclass(frozen=True)
+class RoutingRequirements:
+    needs_tools: bool = False
+    required_modalities: tuple[str, ...] = field(default_factory=tuple)
+    max_cost_tier: str | None = None
+    max_latency_tier: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "needs_tools": self.needs_tools,
+            "required_modalities": list(self.required_modalities),
+            "max_cost_tier": self.max_cost_tier,
+            "max_latency_tier": self.max_latency_tier,
+        }
+
+
+@dataclass(frozen=True)
+class EngineRejection:
+    engine: str
+    reason: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"engine": self.engine, "reason": self.reason}
 
 
 @dataclass(frozen=True)
@@ -284,6 +514,9 @@ class RoutingDecision:
     availability_valid: bool
     availability_reasons: tuple[str, ...]
     features: PromptFeatures
+    requirements: RoutingRequirements = field(default_factory=RoutingRequirements)
+    rejected_engines: tuple[EngineRejection, ...] = field(default_factory=tuple)
+    fallback_used: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -303,6 +536,11 @@ class RoutingDecision:
             "availability_valid": self.availability_valid,
             "availability_reasons": list(self.availability_reasons),
             "features": self.features.to_dict(),
+            "requirements": self.requirements.to_dict(),
+            "rejected_engines": [
+                rejection.to_dict() for rejection in self.rejected_engines
+            ],
+            "fallback_used": self.fallback_used,
         }
 
 
@@ -323,6 +561,9 @@ class RoutingReceipt:
     config_valid: bool
     availability_valid: bool
     availability_reasons: tuple[str, ...]
+    requirements: RoutingRequirements = field(default_factory=RoutingRequirements)
+    rejected_engines: tuple[EngineRejection, ...] = field(default_factory=tuple)
+    fallback_used: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -341,6 +582,11 @@ class RoutingReceipt:
             "config_valid": self.config_valid,
             "availability_valid": self.availability_valid,
             "availability_reasons": list(self.availability_reasons),
+            "requirements": self.requirements.to_dict(),
+            "rejected_engines": [
+                rejection.to_dict() for rejection in self.rejected_engines
+            ],
+            "fallback_used": self.fallback_used,
         }
 
 

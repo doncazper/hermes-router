@@ -21,6 +21,8 @@ engines:
     max_context: 8192
     cost_tier: free
     latency_tier: low
+    supports_tools: false
+    modalities: []
     enabled: true
     fallback: fast_local
     availability:
@@ -34,6 +36,8 @@ engines:
     max_context: 8192
     cost_tier: free
     latency_tier: low
+    supports_tools: false
+    modalities: []
     enabled: true
     fallback: balanced_local
     availability:
@@ -49,6 +53,8 @@ engines:
     max_context: 16384
     cost_tier: free
     latency_tier: medium
+    supports_tools: false
+    modalities: []
     enabled: true
     fallback: reasoning_local
     availability:
@@ -64,6 +70,8 @@ engines:
     max_context: 65536
     cost_tier: free
     latency_tier: high
+    supports_tools: false
+    modalities: []
     enabled: true
     fallback: balanced_local
     availability:
@@ -79,6 +87,8 @@ engines:
     max_context: 65536
     cost_tier: free
     latency_tier: medium
+    supports_tools: true
+    modalities: []
     enabled: true
     fallback: reasoning_local
     availability:
@@ -92,6 +102,8 @@ engines:
     max_context: 200000
     cost_tier: high
     latency_tier: medium
+    supports_tools: true
+    modalities: []
     enabled: false
     fallback: code_agent
     availability:
@@ -106,6 +118,8 @@ engines:
     max_context: 200000
     cost_tier: high
     latency_tier: medium
+    supports_tools: true
+    modalities: []
     enabled: false
     fallback: code_agent
     availability:
@@ -120,6 +134,8 @@ engines:
     max_context: 128000
     cost_tier: paid
     latency_tier: medium
+    supports_tools: true
+    modalities: [image]
     enabled: false
     fallback: balanced_local
     availability:
@@ -134,6 +150,8 @@ engines:
     max_context: 200000
     cost_tier: paid
     latency_tier: medium
+    supports_tools: true
+    modalities: [image, pdf]
     enabled: false
     fallback: reasoning_local
     availability:
@@ -148,6 +166,8 @@ engines:
     max_context: 32768
     cost_tier: medium
     latency_tier: high
+    supports_tools: true
+    modalities: []
     enabled: true
     fallback: reasoning_local
     availability:
@@ -161,6 +181,8 @@ engines:
     max_context: 32768
     cost_tier: medium
     latency_tier: medium
+    supports_tools: true
+    modalities: [image, pdf]
     enabled: true
     fallback: reasoning_local
     availability:
@@ -176,6 +198,8 @@ engines:
     max_context: 4096
     cost_tier: medium
     latency_tier: high
+    supports_tools: true
+    modalities: [image]
     enabled: true
     fallback: human_confirm
     availability:
@@ -191,6 +215,8 @@ engines:
     max_context: 4096
     cost_tier: none
     latency_tier: manual
+    supports_tools: true
+    modalities: []
     enabled: true
     fallback: null
     availability:

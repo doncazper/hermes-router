@@ -81,6 +81,33 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Path to a model_router.yaml catalog",
     )
+    decide.add_argument(
+        "--force-engine",
+        default=None,
+        help="Prefer a specific engine by name; high-risk actions still confirm",
+    )
+    decide.add_argument(
+        "--attachment",
+        action="append",
+        choices=("image", "pdf", "audio", "code"),
+        default=None,
+        help="Declare an attachment modality for routing constraints",
+    )
+    decide.add_argument(
+        "--max-cost-tier",
+        default=None,
+        help="Reject engines above this cost tier",
+    )
+    decide.add_argument(
+        "--max-latency-tier",
+        default=None,
+        help="Reject engines above this latency tier",
+    )
+    decide.add_argument(
+        "--latency-sensitive",
+        action="store_true",
+        help="Prefer lower-latency engines when possible",
+    )
     decide.add_argument("prompt", nargs="+", help="Prompt text to route")
     decide.set_defaults(func=_cmd_decide)
 
@@ -230,7 +257,17 @@ def main(argv: list[str] | None = None) -> int:
 
 def _cmd_decide(args: argparse.Namespace) -> int:
     prompt = " ".join(args.prompt)
-    decision = route_prompt(prompt, config_path=args.config)
+    decision = route_prompt(
+        prompt,
+        config_path=args.config,
+        hints={
+            "force_engine": args.force_engine,
+            "attachments": args.attachment or [],
+            "max_cost_tier": args.max_cost_tier,
+            "max_latency_tier": args.max_latency_tier,
+            "latency_sensitive": args.latency_sensitive,
+        },
+    )
     receipt = decision_to_receipt(decision)
     if args.json:
         print(receipt_to_json(receipt))
@@ -793,6 +830,16 @@ def _print_readable(receipt) -> None:
     )
     print(f"Config valid: {str(receipt.config_valid).lower()}")
     print(f"Availability valid: {str(receipt.availability_valid).lower()}")
+    print(f"Fallback used: {str(receipt.fallback_used).lower()}")
+    print("Requirements:")
+    requirements = receipt.requirements.to_dict()
+    for key in sorted(requirements):
+        print(f"- {key}: {requirements[key]}")
+    print("Rejected engines:")
+    if not receipt.rejected_engines:
+        print("- none")
+    for rejection in receipt.rejected_engines:
+        print(f"- {rejection.engine}: {rejection.reason}")
     print("Availability:")
     for reason in receipt.availability_reasons:
         print(f"- {reason}")

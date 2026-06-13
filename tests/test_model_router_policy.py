@@ -11,6 +11,8 @@ def _engine(
     *,
     enabled: bool = True,
     fallback: str | None = None,
+    supports_tools: bool | None = None,
+    modalities: list[str] | None = None,
 ) -> dict:
     return {
         "provider": "local" if name != "human_confirm" else "human",
@@ -22,6 +24,19 @@ def _engine(
         "latency_tier": "low",
         "enabled": enabled,
         "fallback": fallback,
+        "supports_tools": supports_tools
+        if supports_tools is not None
+        else name
+        in {
+            "claude_code",
+            "codex",
+            "code_agent",
+            "web_research",
+            "multimodal_vision",
+            "image_generation",
+            "human_confirm",
+        },
+        "modalities": modalities or [],
     }
 
 
@@ -180,7 +195,7 @@ def test_missing_config_fails_closed_to_human_confirm(tmp_path):
     assert any("fail-closed" in reason for reason in decision.reasons)
 
 
-def test_disabled_engine_follows_fallback_chain(tmp_path):
+def test_disabled_tool_engine_fails_closed_when_fallback_cannot_run_tools(tmp_path):
     decision = route_prompt(
         "Fix the repo and run tests.",
         config_path=_config_path(
@@ -189,6 +204,114 @@ def test_disabled_engine_follows_fallback_chain(tmp_path):
         ),
     )
 
-    assert decision.selected_engine == "reasoning_local"
-    assert decision.fallback_engine == "reasoning_local"
+    assert decision.selected_engine == "human_confirm"
+    assert decision.requires_confirmation is True
     assert any("fallback" in reason for reason in decision.reasons)
+    assert any(
+        rejection.engine == "reasoning_local" and "tools required" in rejection.reason
+        for rejection in decision.rejected_engines
+    )
+
+
+def test_force_engine_hint_routes_to_known_engine(tmp_path):
+    decision = route_prompt(
+        "rewrite this text",
+        config_path=_config_path(tmp_path),
+        hints={"force_engine": "reasoning_local"},
+    )
+
+    assert decision.selected_engine == "reasoning_local"
+    assert any("forced engine reasoning_local" in reason for reason in decision.reasons)
+
+
+def test_force_engine_hint_cannot_bypass_confirmation(tmp_path):
+    decision = route_prompt(
+        "delete all my emails",
+        config_path=_config_path(tmp_path),
+        hints={"force_engine": "fast_local"},
+    )
+
+    assert decision.selected_engine == "human_confirm"
+    assert decision.requires_confirmation is True
+    assert any("force_engine ignored" in reason for reason in decision.reasons)
+
+
+def test_unknown_force_engine_fails_closed(tmp_path):
+    decision = route_prompt(
+        "rewrite this text",
+        config_path=_config_path(tmp_path),
+        hints={"force_engine": "missing_engine"},
+    )
+
+    assert decision.selected_engine == "human_confirm"
+    assert decision.requires_confirmation is True
+    assert any("unknown forced engine" in reason for reason in decision.reasons)
+
+
+def test_toolless_target_is_rejected_with_reason(tmp_path):
+    path = _config_path(
+        tmp_path,
+        {
+            "fast_local": {
+                "fallback": "web_research",
+                "supports_tools": False,
+            },
+            "web_research": {
+                "supports_tools": True,
+            },
+        },
+    )
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data["routing_targets"]["research"] = "fast_local"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    decision = route_prompt(
+        "Research current GLP-1 supplement trends and include citations.",
+        config_path=path,
+    )
+
+    assert decision.selected_engine == "web_research"
+    assert any(
+        rejection.engine == "fast_local" and "tools required" in rejection.reason
+        for rejection in decision.rejected_engines
+    )
+
+
+def test_image_attachment_hint_routes_to_vision(tmp_path):
+    decision = route_prompt(
+        "summarize this attachment",
+        config_path=_config_path(tmp_path),
+        hints={"attachments": ["image"]},
+    )
+
+    assert decision.selected_engine == "multimodal_vision"
+    assert decision.requirements.required_modalities == ("image",)
+
+
+def test_latency_sensitive_hint_rejects_high_latency_target(tmp_path):
+    decision = route_prompt(
+        (
+            "Design a multi-step architecture plan with data flow, edge cases, "
+            "testing strategy, and rollout notes."
+        ),
+        config_path=_config_path(
+            tmp_path,
+            {
+                "reasoning_local": {
+                    "latency_tier": "high",
+                    "fallback": "balanced_local",
+                },
+                "balanced_local": {
+                    "latency_tier": "medium",
+                },
+            },
+        ),
+        hints={"latency_sensitive": True},
+    )
+
+    assert decision.selected_engine == "balanced_local"
+    assert decision.requirements.max_latency_tier == "medium"
+    assert any(
+        rejection.engine == "reasoning_local" and "latency_tier" in rejection.reason
+        for rejection in decision.rejected_engines
+    )

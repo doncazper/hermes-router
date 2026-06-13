@@ -36,6 +36,36 @@ def test_json_cli_emits_parseable_receipt():
     assert payload["requires_tools"] is True
 
 
+def test_json_cli_accepts_force_engine_hint():
+    result = _run_cli(
+        "decide",
+        "--json",
+        "--force-engine",
+        "reasoning_local",
+        "rewrite this text",
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["selected_engine"] == "reasoning_local"
+    assert any("forced engine reasoning_local" in reason for reason in payload["reasons"])
+
+
+def test_json_cli_accepts_attachment_hint():
+    result = _run_cli(
+        "decide",
+        "--json",
+        "--attachment",
+        "image",
+        "summarize this attachment",
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["selected_engine"] == "multimodal_vision"
+    assert payload["requirements"]["required_modalities"] == ["image"]
+
+
 def test_invalid_config_path_emits_fail_closed_receipt():
     result = _run_cli(
         "decide",
