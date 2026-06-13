@@ -1,0 +1,256 @@
+"""Typed data models for deterministic model routing."""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from typing import Any
+
+
+def _as_jsonable(value: Any) -> Any:
+    if hasattr(value, "to_dict"):
+        return value.to_dict()
+    if isinstance(value, dict):
+        return {str(k): _as_jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_as_jsonable(v) for v in value]
+    return value
+
+
+@dataclass(frozen=True)
+class ModelEngine:
+    name: str
+    provider: str
+    model: str
+    adapter: str
+    strengths: tuple[str, ...]
+    max_context: int
+    cost_tier: str
+    latency_tier: str
+    enabled: bool
+    fallback: str | None = None
+
+    @classmethod
+    def from_dict(cls, name: str, data: dict[str, Any]) -> "ModelEngine":
+        if not isinstance(data, dict):
+            raise ValueError(f"engine {name!r} must be a mapping")
+
+        required = (
+            "provider",
+            "model",
+            "adapter",
+            "strengths",
+            "max_context",
+            "cost_tier",
+            "latency_tier",
+            "enabled",
+        )
+        missing = [key for key in required if key not in data]
+        if missing:
+            raise ValueError(f"engine {name!r} missing fields: {', '.join(missing)}")
+
+        strengths = data["strengths"]
+        if not isinstance(strengths, list) or not all(
+            isinstance(item, str) for item in strengths
+        ):
+            raise ValueError(f"engine {name!r} strengths must be a list of strings")
+
+        fallback = data.get("fallback")
+        if fallback is not None and not isinstance(fallback, str):
+            raise ValueError(f"engine {name!r} fallback must be a string or null")
+
+        return cls(
+            name=name,
+            provider=_require_string(data, "provider", name),
+            model=_require_string(data, "model", name),
+            adapter=_require_string(data, "adapter", name),
+            strengths=tuple(strengths),
+            max_context=_require_int(data, "max_context", name),
+            cost_tier=_require_string(data, "cost_tier", name),
+            latency_tier=_require_string(data, "latency_tier", name),
+            enabled=_require_bool(data, "enabled", name),
+            fallback=fallback,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "provider": self.provider,
+            "model": self.model,
+            "adapter": self.adapter,
+            "strengths": list(self.strengths),
+            "max_context": self.max_context,
+            "cost_tier": self.cost_tier,
+            "latency_tier": self.latency_tier,
+            "enabled": self.enabled,
+            "fallback": self.fallback,
+        }
+
+
+def _require_string(data: dict[str, Any], key: str, engine_name: str) -> str:
+    value = data[key]
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"engine {engine_name!r} field {key!r} must be a string")
+    return value
+
+
+def _require_int(data: dict[str, Any], key: str, engine_name: str) -> int:
+    value = data[key]
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"engine {engine_name!r} field {key!r} must be a positive int")
+    return value
+
+
+def _require_bool(data: dict[str, Any], key: str, engine_name: str) -> bool:
+    value = data[key]
+    if not isinstance(value, bool):
+        raise ValueError(f"engine {engine_name!r} field {key!r} must be a bool")
+    return value
+
+
+@dataclass(frozen=True)
+class PromptFeatures:
+    prompt_length: int
+    estimated_tokens: int
+    simple_transform: bool = False
+    coding_intent: bool = False
+    research_intent: bool = False
+    current_info_intent: bool = False
+    multi_step_reasoning: bool = False
+    tool_intent: bool = False
+    file_intent: bool = False
+    email_intent: bool = False
+    calendar_intent: bool = False
+    shell_intent: bool = False
+    github_intent: bool = False
+    legal_domain: bool = False
+    medical_domain: bool = False
+    financial_domain: bool = False
+    sensitive_domain: bool = False
+    destructive_action: bool = False
+    external_action: bool = False
+    purchase_action: bool = False
+    send_action: bool = False
+    structured_output: bool = False
+    ambiguous: bool = False
+    long_context: bool = False
+    requires_tools: bool = False
+    requires_freshness: bool = False
+    requires_code_execution: bool = False
+    requires_confirmation: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class ComplexityScore:
+    value: int
+    reasons: tuple[str, ...] = field(default_factory=tuple)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"value": self.value, "reasons": list(self.reasons)}
+
+
+@dataclass(frozen=True)
+class RiskScore:
+    value: int
+    requires_confirmation: bool
+    reasons: tuple[str, ...] = field(default_factory=tuple)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "value": self.value,
+            "requires_confirmation": self.requires_confirmation,
+            "reasons": list(self.reasons),
+        }
+
+
+@dataclass(frozen=True)
+class PromptAnalysis:
+    complexity_score: ComplexityScore
+    risk_score: RiskScore
+    confidence_score: int
+    features: PromptFeatures
+    reasons: tuple[str, ...] = field(default_factory=tuple)
+
+    def to_dict(self) -> dict[str, Any]:
+        return _as_jsonable(asdict(self))
+
+
+@dataclass(frozen=True)
+class RoutingDecision:
+    selected_engine: str
+    fallback_engine: str | None
+    complexity_score: int
+    risk_score: int
+    confidence_score: int
+    reasons: tuple[str, ...]
+    requires_confirmation: bool
+    requires_tools: bool
+    requires_freshness: bool
+    requires_code_execution: bool
+    config_valid: bool
+    features: PromptFeatures
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "selected_engine": self.selected_engine,
+            "fallback_engine": self.fallback_engine,
+            "complexity_score": self.complexity_score,
+            "risk_score": self.risk_score,
+            "confidence_score": self.confidence_score,
+            "reasons": list(self.reasons),
+            "requires_confirmation": self.requires_confirmation,
+            "requires_tools": self.requires_tools,
+            "requires_freshness": self.requires_freshness,
+            "requires_code_execution": self.requires_code_execution,
+            "config_valid": self.config_valid,
+            "features": self.features.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class RoutingReceipt:
+    selected_engine: str
+    complexity_score: int
+    risk_score: int
+    confidence_score: int
+    reasons: tuple[str, ...]
+    fallback_engine: str | None
+    requires_confirmation: bool
+    requires_tools: bool
+    requires_freshness: bool
+    requires_code_execution: bool
+    config_valid: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "selected_engine": self.selected_engine,
+            "complexity_score": self.complexity_score,
+            "risk_score": self.risk_score,
+            "confidence_score": self.confidence_score,
+            "reasons": list(self.reasons),
+            "fallback_engine": self.fallback_engine,
+            "requires_confirmation": self.requires_confirmation,
+            "requires_tools": self.requires_tools,
+            "requires_freshness": self.requires_freshness,
+            "requires_code_execution": self.requires_code_execution,
+            "config_valid": self.config_valid,
+        }
+
+
+@dataclass(frozen=True)
+class RouterConfig:
+    engines: dict[str, ModelEngine]
+    source_path: str | None = None
+
+    def get_engine(self, name: str) -> ModelEngine | None:
+        return self.engines.get(name)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "engines": {
+                name: engine.to_dict() for name, engine in sorted(self.engines.items())
+            },
+            "source_path": self.source_path,
+        }

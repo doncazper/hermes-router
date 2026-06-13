@@ -1,0 +1,79 @@
+engines:
+  fast_local:
+    provider: local
+    model: hermes-fast-local
+    adapter: local_chat
+    strengths:
+      - rewrite
+      - extraction
+      - formatting
+    max_context: 8192
+    cost_tier: free
+    latency_tier: low
+    enabled: true
+    fallback: balanced_local
+  balanced_local:
+    provider: local
+    model: hermes-balanced-local
+    adapter: local_chat
+    strengths:
+      - summarization
+      - general tasks
+      - moderate reasoning
+    max_context: 16384
+    cost_tier: free
+    latency_tier: medium
+    enabled: true
+    fallback: reasoning_local
+  reasoning_local:
+    provider: local
+    model: hermes-reasoning-local
+    adapter: local_reasoning
+    strengths:
+      - architecture
+      - planning
+      - long-context reasoning
+    max_context: 65536
+    cost_tier: free
+    latency_tier: high
+    enabled: true
+    fallback: balanced_local
+  codex:
+    provider: local
+    model: hermes-codex
+    adapter: codex
+    strengths:
+      - code modification
+      - repository inspection
+      - tests
+    max_context: 65536
+    cost_tier: medium
+    latency_tier: medium
+    enabled: true
+    fallback: reasoning_local
+  web_research:
+    provider: local
+    model: hermes-web-research
+    adapter: web_research
+    strengths:
+      - current information
+      - citations
+      - source-grounded research
+    max_context: 32768
+    cost_tier: medium
+    latency_tier: high
+    enabled: true
+    fallback: reasoning_local
+  human_confirm:
+    provider: human
+    model: human-confirmation
+    adapter: confirmation_gate
+    strengths:
+      - high-risk review
+      - external-action confirmation
+      - fail-closed routing
+    max_context: 4096
+    cost_tier: none
+    latency_tier: manual
+    enabled: true
+    fallback: null
