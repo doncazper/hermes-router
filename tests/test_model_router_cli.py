@@ -50,3 +50,13 @@ def test_invalid_config_path_emits_fail_closed_receipt():
     assert payload["selected_engine"] == "human_confirm"
     assert payload["requires_confirmation"] is True
     assert payload["config_valid"] is False
+
+
+def test_validate_config_json_emits_availability_report():
+    result = _run_cli("validate-config", "--json")
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["config_valid"] is True
+    assert "engines" in payload
+    assert "code_agent" in payload["engines"]

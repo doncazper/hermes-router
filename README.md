@@ -15,6 +15,7 @@ external model APIs, run tools, or perform user actions.
   output, tool intent, ambiguity, and sensitive domains.
 - Routes prompts to configured engines such as local models, Claude Code,
   Codex, web research, or human confirmation.
+- Validates declared engine availability before choosing an engine.
 - Emits explainable routing receipts that are safe to serialize as JSON.
 - Fails closed to `human_confirm` when config is missing or invalid.
 
@@ -64,6 +65,10 @@ Example JSON receipt:
   "confidence_score": 90,
   "config_valid": true,
   "fallback_engine": "reasoning_local",
+  "availability_valid": true,
+  "availability_reasons": [
+    "code_agent: no availability requirements declared"
+  ],
   "reasons": [
     "coding or repository intent",
     "tool use likely",
@@ -115,12 +120,37 @@ engines:
     latency_tier: medium
     enabled: true
     fallback: code_agent
+    availability:
+      status: auto
+      required_commands:
+        - claude
 ```
 
 The included catalog has disabled examples for `claude_code` and `codex`.
 Enable one by setting `enabled: true` and pointing `routing_targets.coding` at
 that engine name. Local users can keep `coding: code_agent` and change the
 `provider`, `model`, and `adapter` fields for their local runtime.
+
+## Validate Availability
+
+Availability validation is declarative and safe. It does not execute engines,
+run provider health checks, or call external APIs. It only checks configured
+signals:
+
+- `status: available`, `auto`, or `unavailable`
+- `required_env`: environment variable names that must be present
+- `required_commands`: binaries that must exist on `PATH`
+- `required_paths`: local paths that must exist
+
+Run:
+
+```bash
+python -m hermes.plugins.model_router.cli validate-config
+python -m hermes.plugins.model_router.cli validate-config --json
+```
+
+During routing, unavailable engines are skipped through their fallback chain. If
+no available fallback exists, the router fails closed to `human_confirm`.
 
 ## Default Routes
 
@@ -160,6 +190,7 @@ uv run --python 3.11 --with ruff --with PyYAML python -m ruff check .
 hermes/plugins/model_router/
   models.py      # Dataclass models and JSON-safe serialization helpers
   config.py      # YAML catalog loading and validation
+  availability.py # Non-executing engine availability validation
   scorer.py      # Deterministic heuristic prompt scoring
   policy.py      # Engine selection and fail-closed fallback rules
   receipts.py    # Routing receipt helpers
@@ -178,12 +209,13 @@ docs/
   APIs.
 - High-risk external actions require confirmation.
 - Missing or invalid config routes to `human_confirm`.
+- Unavailable engines are skipped through fallbacks before dispatch is possible.
 - Receipts omit raw prompt text.
 
 ## Roadmap
 
 - Add richer model/agent capability metadata.
-- Add optional availability checks for local and remote engines.
+- Add active provider health checks behind explicit opt-in.
 - Add gateway dispatch behind explicit confirmation gates.
 - Add telemetry-free receipt storage for audit trails.
 - Add learned or LLM-assisted classification as an optional second-pass scorer.

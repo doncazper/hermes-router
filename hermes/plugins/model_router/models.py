@@ -17,6 +17,49 @@ def _as_jsonable(value: Any) -> Any:
 
 
 @dataclass(frozen=True)
+class EngineAvailability:
+    status: str = "auto"
+    required_env: tuple[str, ...] = field(default_factory=tuple)
+    required_commands: tuple[str, ...] = field(default_factory=tuple)
+    required_paths: tuple[str, ...] = field(default_factory=tuple)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "EngineAvailability":
+        if data is None:
+            return cls()
+        if not isinstance(data, dict):
+            raise ValueError("availability must be a mapping")
+
+        status = data.get("status", "auto")
+        if status not in {"auto", "available", "unavailable"}:
+            raise ValueError(
+                "availability status must be auto, available, or unavailable"
+            )
+
+        return cls(
+            status=status,
+            required_env=_string_tuple(data, "required_env"),
+            required_commands=_string_tuple(data, "required_commands"),
+            required_paths=_string_tuple(data, "required_paths"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "required_env": list(self.required_env),
+            "required_commands": list(self.required_commands),
+            "required_paths": list(self.required_paths),
+        }
+
+
+def _string_tuple(data: dict[str, Any], key: str) -> tuple[str, ...]:
+    value = data.get(key, [])
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError(f"availability {key!r} must be a list of strings")
+    return tuple(item for item in value if item.strip())
+
+
+@dataclass(frozen=True)
 class ModelEngine:
     name: str
     provider: str
@@ -28,6 +71,7 @@ class ModelEngine:
     latency_tier: str
     enabled: bool
     fallback: str | None = None
+    availability: EngineAvailability = field(default_factory=EngineAvailability)
 
     @classmethod
     def from_dict(cls, name: str, data: dict[str, Any]) -> "ModelEngine":
@@ -58,6 +102,11 @@ class ModelEngine:
         if fallback is not None and not isinstance(fallback, str):
             raise ValueError(f"engine {name!r} fallback must be a string or null")
 
+        try:
+            availability = EngineAvailability.from_dict(data.get("availability"))
+        except ValueError as exc:
+            raise ValueError(f"engine {name!r} {exc}") from exc
+
         return cls(
             name=name,
             provider=_require_string(data, "provider", name),
@@ -69,6 +118,7 @@ class ModelEngine:
             latency_tier=_require_string(data, "latency_tier", name),
             enabled=_require_bool(data, "enabled", name),
             fallback=fallback,
+            availability=availability,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -83,6 +133,41 @@ class ModelEngine:
             "latency_tier": self.latency_tier,
             "enabled": self.enabled,
             "fallback": self.fallback,
+            "availability": self.availability.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class EngineAvailabilityResult:
+    engine: str
+    available: bool
+    reasons: tuple[str, ...] = field(default_factory=tuple)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "engine": self.engine,
+            "available": self.available,
+            "reasons": list(self.reasons),
+        }
+
+
+@dataclass(frozen=True)
+class RouterAvailabilityReport:
+    engines: dict[str, EngineAvailabilityResult]
+
+    @property
+    def all_available(self) -> bool:
+        return bool(self.engines) and all(
+            result.available for result in self.engines.values()
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "all_available": self.all_available,
+            "engines": {
+                name: result.to_dict()
+                for name, result in sorted(self.engines.items())
+            },
         }
 
 
@@ -190,6 +275,8 @@ class RoutingDecision:
     requires_freshness: bool
     requires_code_execution: bool
     config_valid: bool
+    availability_valid: bool
+    availability_reasons: tuple[str, ...]
     features: PromptFeatures
 
     def to_dict(self) -> dict[str, Any]:
@@ -205,6 +292,8 @@ class RoutingDecision:
             "requires_freshness": self.requires_freshness,
             "requires_code_execution": self.requires_code_execution,
             "config_valid": self.config_valid,
+            "availability_valid": self.availability_valid,
+            "availability_reasons": list(self.availability_reasons),
             "features": self.features.to_dict(),
         }
 
@@ -222,6 +311,8 @@ class RoutingReceipt:
     requires_freshness: bool
     requires_code_execution: bool
     config_valid: bool
+    availability_valid: bool
+    availability_reasons: tuple[str, ...]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -236,6 +327,8 @@ class RoutingReceipt:
             "requires_freshness": self.requires_freshness,
             "requires_code_execution": self.requires_code_execution,
             "config_valid": self.config_valid,
+            "availability_valid": self.availability_valid,
+            "availability_reasons": list(self.availability_reasons),
         }
 
 

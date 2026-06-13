@@ -25,6 +25,8 @@ def test_receipt_fields_match_routing_decision():
     assert receipt.requires_freshness == decision.requires_freshness
     assert receipt.requires_tools == decision.requires_tools
     assert receipt.requires_code_execution == decision.requires_code_execution
+    assert receipt.availability_valid == decision.availability_valid
+    assert receipt.availability_reasons == decision.availability_reasons
 
 
 def test_receipt_does_not_serialize_raw_prompt():

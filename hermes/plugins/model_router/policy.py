@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from hermes.plugins.model_router.availability import validate_engine_availability
 from hermes.plugins.model_router.config import RouterConfigError, load_router_config
 from hermes.plugins.model_router.models import (
     PromptAnalysis,
@@ -29,7 +30,13 @@ def route_prompt(
         return _fail_closed(analysis, f"fail-closed: {exc}")
 
     target, target_reason = _target_route(analysis)
-    selected, fallback_engine, fallback_reason = _resolve_enabled_route(
+    (
+        selected,
+        fallback_engine,
+        fallback_reason,
+        availability_valid,
+        availability_reasons,
+    ) = _resolve_enabled_route(
         target,
         router_config,
     )
@@ -52,6 +59,8 @@ def route_prompt(
         requires_freshness=analysis.features.requires_freshness,
         requires_code_execution=analysis.features.requires_code_execution,
         config_valid=True,
+        availability_valid=availability_valid,
+        availability_reasons=availability_reasons,
         features=analysis.features,
     )
 
@@ -86,13 +95,15 @@ def _target_route(analysis: PromptAnalysis) -> tuple[str, str]:
 def _resolve_enabled_route(
     target: str,
     router_config: RouterConfig,
-) -> tuple[str, str | None, str | None]:
+) -> tuple[str, str | None, str | None, bool, tuple[str, ...]]:
     engine_name = router_config.target_engine(target)
     if engine_name is None:
         return (
             FAIL_CLOSED_ENGINE,
             FAIL_CLOSED_ENGINE,
             f"fallback to {FAIL_CLOSED_ENGINE}: route {target!r} is undefined",
+            False,
+            (f"route {target!r} is undefined",),
         )
     return _resolve_enabled_engine(engine_name, router_config)
 
@@ -100,9 +111,11 @@ def _resolve_enabled_route(
 def _resolve_enabled_engine(
     target_engine: str,
     router_config: RouterConfig,
-) -> tuple[str, str | None, str | None]:
+) -> tuple[str, str | None, str | None, bool, tuple[str, ...]]:
     visited: set[str] = set()
     current = target_engine
+    availability_reasons: list[str] = []
+    fallback_cause = "disabled"
 
     while current and current not in visited:
         visited.add(current)
@@ -112,20 +125,46 @@ def _resolve_enabled_engine(
                 FAIL_CLOSED_ENGINE,
                 FAIL_CLOSED_ENGINE,
                 f"fallback to {FAIL_CLOSED_ENGINE}: engine {current!r} is undefined",
+                False,
+                (f"engine {current!r} is undefined",),
             )
         if engine.enabled:
+            availability = validate_engine_availability(engine)
+            availability_reasons.extend(
+                f"{current}: {reason}" for reason in availability.reasons
+            )
+            if not availability.available:
+                if engine.fallback is None:
+                    return (
+                        FAIL_CLOSED_ENGINE,
+                        FAIL_CLOSED_ENGINE,
+                        f"fallback to {FAIL_CLOSED_ENGINE}: {current} unavailable",
+                        False,
+                        tuple(availability_reasons),
+                    )
+                fallback = engine.fallback
+                availability_reasons.append(
+                    f"{current} unavailable; trying fallback {fallback}"
+                )
+                fallback_cause = "unavailable"
+                current = fallback
+                continue
             if current != target_engine:
                 return (
                     current,
                     current,
-                    f"fallback to {current}: {target_engine} disabled",
+                    f"fallback to {current}: {target_engine} {fallback_cause}",
+                    True,
+                    tuple(availability_reasons),
                 )
-            return current, engine.fallback, None
+            return current, engine.fallback, None, True, tuple(availability_reasons)
         if engine.fallback is None:
             return (
                 FAIL_CLOSED_ENGINE,
                 FAIL_CLOSED_ENGINE,
                 f"fallback to {FAIL_CLOSED_ENGINE}: {current} disabled",
+                False,
+                (f"{current} disabled with no fallback",),
             )
         current = engine.fallback
 
@@ -133,6 +172,8 @@ def _resolve_enabled_engine(
         FAIL_CLOSED_ENGINE,
         FAIL_CLOSED_ENGINE,
         "fallback to human_confirm: fallback cycle detected",
+        False,
+        ("fallback cycle detected",),
     )
 
 
@@ -149,6 +190,8 @@ def _fail_closed(analysis: PromptAnalysis, reason: str) -> RoutingDecision:
         requires_freshness=analysis.features.requires_freshness,
         requires_code_execution=analysis.features.requires_code_execution,
         config_valid=False,
+        availability_valid=False,
+        availability_reasons=(reason,),
         features=_with_confirmation(analysis.features),
     )
 

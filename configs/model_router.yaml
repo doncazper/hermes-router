@@ -19,6 +19,8 @@ engines:
     latency_tier: low
     enabled: true
     fallback: balanced_local
+    availability:
+      status: auto
   balanced_local:
     provider: local
     model: hermes-balanced-local
@@ -32,6 +34,8 @@ engines:
     latency_tier: medium
     enabled: true
     fallback: reasoning_local
+    availability:
+      status: auto
   reasoning_local:
     provider: local
     model: hermes-reasoning-local
@@ -45,6 +49,8 @@ engines:
     latency_tier: high
     enabled: true
     fallback: balanced_local
+    availability:
+      status: auto
   code_agent:
     provider: local
     model: hermes-local-code-agent
@@ -58,6 +64,8 @@ engines:
     latency_tier: medium
     enabled: true
     fallback: reasoning_local
+    availability:
+      status: auto
   claude_code:
     provider: anthropic
     model: claude-code
@@ -71,6 +79,10 @@ engines:
     latency_tier: medium
     enabled: false
     fallback: code_agent
+    availability:
+      status: auto
+      required_commands:
+        - claude
   codex:
     provider: openai
     model: codex
@@ -84,6 +96,10 @@ engines:
     latency_tier: medium
     enabled: false
     fallback: code_agent
+    availability:
+      status: auto
+      required_commands:
+        - codex
   web_research:
     provider: local
     model: hermes-web-research
@@ -97,6 +113,8 @@ engines:
     latency_tier: high
     enabled: true
     fallback: reasoning_local
+    availability:
+      status: auto
   human_confirm:
     provider: human
     model: human-confirmation
@@ -110,3 +128,5 @@ engines:
     latency_tier: manual
     enabled: true
     fallback: null
+    availability:
+      status: available

@@ -20,6 +20,8 @@ def decision_to_receipt(decision: RoutingDecision) -> RoutingReceipt:
         requires_freshness=decision.requires_freshness,
         requires_code_execution=decision.requires_code_execution,
         config_valid=decision.config_valid,
+        availability_valid=decision.availability_valid,
+        availability_reasons=decision.availability_reasons,
     )
 
 

@@ -18,6 +18,8 @@ The router is implemented under `hermes/plugins/model_router/`.
   scores, decisions, receipts, and config.
 - `config.py` loads and validates the engine catalog from
   `configs/model_router.yaml`.
+- `availability.py` validates declared engine availability without executing
+  commands or calling providers.
 - `scorer.py` performs fast deterministic prompt analysis with regular
   expressions and length heuristics.
 - `policy.py` maps scores and features to engine categories.
@@ -93,6 +95,10 @@ engines:
     latency_tier: medium
     enabled: true
     fallback: code_agent
+    availability:
+      status: auto
+      required_commands:
+        - claude
 ```
 
 The built-in catalog also includes disabled examples for `claude_code` and
@@ -100,6 +106,43 @@ The built-in catalog also includes disabled examples for `claude_code` and
 `routing_targets.coding` to its engine name. Local coding can stay on
 `code_agent`, whose provider/model/adapter fields can be changed to match the
 user's local runtime.
+
+## Availability Validation
+
+Each engine can declare availability checks:
+
+```yaml
+availability:
+  status: auto
+  required_env:
+    - OPENAI_API_KEY
+  required_commands:
+    - codex
+  required_paths:
+    - ~/.config/my-local-runtime
+```
+
+`status` accepts:
+
+- `auto`: available when all declared checks pass.
+- `available`: manually marked available, while still enforcing declared checks.
+- `unavailable`: always treated as unavailable.
+
+The validator never executes commands or calls provider APIs. It only checks
+environment-variable presence, command presence on `PATH`, and local path
+existence. Environment variable values are never printed.
+
+Run:
+
+```bash
+python -m hermes.plugins.model_router.cli validate-config
+python -m hermes.plugins.model_router.cli validate-config --json
+```
+
+Routing uses the same safe validation. If a selected engine is unavailable, the
+router follows its fallback chain. If no available fallback exists, the decision
+fails closed to `human_confirm` and includes availability reasons in the
+receipt.
 
 Each engine supports:
 
@@ -114,6 +157,8 @@ cost_tier: free
 latency_tier: medium
 enabled: true
 fallback: reasoning_local
+availability:
+  status: auto
 ```
 
 The required categories are:
@@ -180,6 +225,10 @@ Example receipt:
   "requires_tools": true,
   "requires_freshness": false,
   "requires_code_execution": true,
+  "availability_valid": true,
+  "availability_reasons": [
+    "code_agent: no availability requirements declared"
+  ],
   "config_valid": true
 }
 ```
@@ -188,8 +237,8 @@ Example receipt:
 
 - Scoring is heuristic and conservative.
 - The router does not use an LLM to classify prompts.
-- The router does not verify whether a configured model is installed or
-  reachable.
+- Availability checks are declarative and local; they do not prove a provider
+  API call will succeed.
 - Receipts intentionally do not include the raw prompt.
 - The CLI exits successfully when it emits a fail-closed receipt; the decision
   itself carries `config_valid: false`.
