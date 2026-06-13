@@ -76,7 +76,7 @@ The model catalog lives at `configs/model_router.yaml`. It defines engine
 categories and semantic routing targets rather than hardcoding provider model
 names throughout the code.
 
-For machine-specific setup, use one of three paths:
+For machine-specific setup, use one of these paths:
 
 1. Copy and edit `configs/model_router.local.example.yaml`.
 2. Run `setup scan` and `setup recommend` to inspect local models and commands.
@@ -91,6 +91,13 @@ python -m hermes.plugins.model_router.cli decide \
   "fix the repo and run tests"
 ```
 
+If your shell does not provide `python`, use `python3` or run through `uv`, for
+example:
+
+```bash
+uv run --python 3.11 --with PyYAML python -m hermes.plugins.model_router.cli setup wizard
+```
+
 ### Setup Assistant
 
 The setup assistant is intentionally safe and local-first. It scans:
@@ -100,6 +107,8 @@ The setup assistant is intentionally safe and local-first. It scans:
 - Optional `--model-dir` paths supplied by the user.
 - Command availability for tools such as `claude`, `codex`, `hf`, `ollama`,
   `llama-server`, and `lmstudio`.
+- Environment-variable presence for API keys such as `OPENAI_API_KEY`,
+  `ANTHROPIC_API_KEY`, and `HF_TOKEN`. Values are never printed.
 
 It does not execute model providers, call external APIs, download files, or
 modify the default catalog during `scan`, `recommend`, `write`, or `wizard`.
@@ -125,6 +134,14 @@ Interactive wizard:
 python -m hermes.plugins.model_router.cli setup wizard \
   --output configs/model_router.local.yaml
 ```
+
+The wizard is a guided configurator. It asks whether you want local LLMs,
+API-backed engines, or a mixed setup, then walks each main routing category:
+simple, balanced, reasoning, coding, research, vision, and image generation.
+You can accept the suggested default for each route or type another known engine
+name, such as `claude_code`, `codex`, `openai_api`, `anthropic_api`,
+`balanced_local`, or `reasoning_local`. It still asks for final confirmation
+before writing the local YAML file.
 
 Write a generated config:
 

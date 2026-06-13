@@ -119,6 +119,40 @@ engines:
       status: auto
       required_commands:
         - codex
+  openai_api:
+    provider: openai
+    model: configured-openai-model
+    adapter: openai_chat
+    strengths:
+      - API-backed chat
+      - summarization
+      - reasoning
+    max_context: 128000
+    cost_tier: paid
+    latency_tier: medium
+    enabled: false
+    fallback: balanced_local
+    availability:
+      status: auto
+      required_env:
+        - OPENAI_API_KEY
+  anthropic_api:
+    provider: anthropic
+    model: configured-anthropic-model
+    adapter: anthropic_chat
+    strengths:
+      - API-backed chat
+      - long-context reasoning
+      - writing
+    max_context: 200000
+    cost_tier: paid
+    latency_tier: medium
+    enabled: false
+    fallback: reasoning_local
+    availability:
+      status: auto
+      required_env:
+        - ANTHROPIC_API_KEY
   web_research:
     provider: local
     model: hermes-web-research

@@ -5,3 +5,4 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 uv.lock
+configs/model_router.local.yaml

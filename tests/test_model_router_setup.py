@@ -33,12 +33,15 @@ def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
 def _run_cli_with_input(
     *args: str,
     user_input: str,
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    env = {**os.environ, **(extra_env or {})}
     return subprocess.run(
         [sys.executable, "-m", "hermes.plugins.model_router.cli", *args],
         cwd=ROOT,
         text=True,
         input=user_input,
+        env=env,
         capture_output=True,
         check=False,
     )
@@ -60,6 +63,16 @@ def test_scan_detects_hugging_face_cache_models_and_commands(tmp_path, monkeypat
     assert payload["commands"]["claude"] is True
     assert payload["models"][0]["repo_id"] == "Qwen/Qwen3-0.6B"
     assert payload["models"][0]["source"] == "huggingface_cache"
+
+
+def test_scan_detects_api_key_presence_without_values(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "secret-value")
+
+    discovery = scan_local_environment(model_dirs=[], command_names=[])
+    payload = discovery.to_dict()
+
+    assert payload["env_vars"]["OPENAI_API_KEY"] is True
+    assert "secret-value" not in json.dumps(payload)
 
 
 def test_recommend_setup_prefers_available_claude_code(tmp_path, monkeypatch):
@@ -87,6 +100,18 @@ def test_recommend_setup_includes_download_plan_for_missing_roles():
 
     assert {"fast_local", "balanced_local", "multimodal_vision", "image_generation"} <= routes
     assert all(item["command"][0:2] == ["hf", "download"] for item in payload["download_suggestions"])
+
+
+def test_recommend_setup_enables_api_engines_when_keys_are_present(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "secret-value")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "secret-value")
+    discovery = scan_local_environment(model_dirs=[], command_names=[])
+
+    recommendation = recommend_setup(discovery)
+
+    assert recommendation.engine_overrides["openai_api"]["enabled"] is True
+    assert recommendation.engine_overrides["anthropic_api"]["enabled"] is True
+    assert "secret-value" not in json.dumps(recommendation.to_dict())
 
 
 def test_plan_model_downloads_filters_routes_and_rewrites_local_root(tmp_path):
@@ -238,6 +263,21 @@ def test_setup_scan_cli_emits_json():
     assert "models" in payload
 
 
+def test_setup_scan_cli_shows_api_key_presence_without_values():
+    result = _run_cli_with_input(
+        "setup",
+        "scan",
+        "--no-default-dirs",
+        user_input="",
+        extra_env={"OPENAI_API_KEY": "secret-value"},
+    )
+
+    assert result.returncode == 0
+    assert "API keys:" in result.stdout
+    assert "- OPENAI_API_KEY: present" in result.stdout
+    assert "secret-value" not in result.stdout
+
+
 def test_setup_recommend_cli_emits_download_suggestions():
     result = _run_cli("setup", "recommend", "--json", "--no-default-dirs")
 
@@ -345,10 +385,12 @@ def test_setup_wizard_asks_before_writing_config(tmp_path):
         "--no-default-dirs",
         "--output",
         str(output),
-        user_input="y\n",
+        user_input="3\n" + "\n" * 7 + "y\n",
     )
 
     assert result.returncode == 0
+    assert "Model source mode" in result.stdout
+    assert "Coding and repository work" in result.stdout
     assert "Write this config" in result.stdout
     assert output.exists()
 
@@ -362,12 +404,78 @@ def test_setup_wizard_can_decline_write(tmp_path):
         "--no-default-dirs",
         "--output",
         str(output),
-        user_input="n\n",
+        user_input="3\n" + "\n" * 7 + "n\n",
     )
 
     assert result.returncode == 0
     assert "No config written" in result.stdout
     assert not output.exists()
+
+
+def test_setup_wizard_local_mode_writes_local_routes(tmp_path):
+    output = tmp_path / "model_router.local.yaml"
+
+    result = _run_cli_with_input(
+        "setup",
+        "wizard",
+        "--no-default-dirs",
+        "--output",
+        str(output),
+        user_input="1\n" + "\n" * 7 + "y\n",
+    )
+    data = yaml.safe_load(output.read_text(encoding="utf-8"))
+
+    assert result.returncode == 0
+    assert data["routing_targets"]["coding"] == "code_agent"
+    assert data["routing_targets"]["balanced"] == "balanced_local"
+    assert data["engines"]["codex"]["enabled"] is False
+    assert "coding route set to codex" not in result.stdout
+
+
+def test_setup_wizard_api_mode_can_use_api_key_routes(tmp_path):
+    output = tmp_path / "model_router.local.yaml"
+
+    result = _run_cli_with_input(
+        "setup",
+        "wizard",
+        "--no-default-dirs",
+        "--output",
+        str(output),
+        user_input="2\n" + "\n" * 7 + "y\n",
+        extra_env={"OPENAI_API_KEY": "secret-value"},
+    )
+    data = yaml.safe_load(output.read_text(encoding="utf-8"))
+
+    assert result.returncode == 0
+    assert data["routing_targets"]["balanced"] == "openai_api"
+    assert data["engines"]["balanced_local"]["model"] == "hermes-balanced-local"
+    assert data["engines"]["openai_api"]["enabled"] is True
+    assert data["engines"]["openai_api"]["availability"]["required_env"] == [
+        "OPENAI_API_KEY"
+    ]
+    assert "secret-value" not in result.stdout
+
+
+def test_setup_wizard_can_explicitly_assign_claude_code(tmp_path):
+    output = tmp_path / "model_router.local.yaml"
+
+    result = _run_cli_with_input(
+        "setup",
+        "wizard",
+        "--no-default-dirs",
+        "--output",
+        str(output),
+        user_input="1\n" + "\n" * 3 + "claude_code\n" + "\n" * 3 + "y\n",
+        extra_env={"PATH": ""},
+    )
+    data = yaml.safe_load(output.read_text(encoding="utf-8"))
+
+    assert result.returncode == 0
+    assert data["routing_targets"]["coding"] == "claude_code"
+    assert data["engines"]["claude_code"]["enabled"] is True
+    assert data["engines"]["claude_code"]["availability"]["required_commands"] == [
+        "claude"
+    ]
 
 
 def test_local_example_config_is_structurally_valid():

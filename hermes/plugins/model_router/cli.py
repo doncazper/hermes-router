@@ -11,11 +11,23 @@ from hermes.plugins.model_router.config import RouterConfigError, load_router_co
 from hermes.plugins.model_router.policy import route_prompt
 from hermes.plugins.model_router.receipts import decision_to_receipt, receipt_to_json
 from hermes.plugins.model_router.setup_assistant import (
+    SetupRecommendation,
     execute_download_plan,
     plan_model_downloads,
     recommend_setup,
     scan_local_environment,
+    write_config_from_recommendation,
     write_recommended_config,
+)
+
+ROUTE_WIZARD_LABELS = (
+    ("simple", "Simple rewrites/extraction"),
+    ("balanced", "General chat and summarization"),
+    ("reasoning", "Deep reasoning and planning"),
+    ("coding", "Coding and repository work"),
+    ("research", "Web research and RAG"),
+    ("vision", "Vision, screenshots, OCR"),
+    ("image_generation", "Image generation"),
 )
 
 
@@ -297,18 +309,31 @@ def _cmd_setup_wizard(args: argparse.Namespace) -> int:
     print("")
     _print_discovery(discovery)
     print("")
-    _print_recommendation(recommendation)
+    mode = _ask_setup_mode()
+    known_engines = _known_engine_names()
+    routing_targets = _ask_route_targets(
+        mode=mode,
+        recommendation=recommendation,
+        discovery=discovery,
+        known_engines=known_engines,
+    )
+    wizard_recommendation = _build_wizard_recommendation(
+        recommendation=recommendation,
+        routing_targets=routing_targets,
+        mode=mode,
+    )
+    print("")
+    _print_recommendation(wizard_recommendation)
     print("")
     answer = input(f"Write this config to {args.output}? [y/N] ").strip().lower()
     if answer not in {"y", "yes"}:
         print("No config written.")
         return 0
 
-    result = write_recommended_config(
+    result = write_config_from_recommendation(
         args.output,
-        discovery=discovery,
+        recommendation=wizard_recommendation,
         force=args.force,
-        profile=args.profile,
     )
     print(result.message)
     return 0 if result.written else 1
@@ -344,6 +369,9 @@ def _print_discovery(discovery) -> None:
     print("Commands:")
     for name, available in sorted(discovery.commands.items()):
         print(f"- {name}: {'available' if available else 'missing'}")
+    print("API keys:")
+    for name, present in sorted(discovery.env_vars.items()):
+        print(f"- {name}: {'present' if present else 'missing'}")
     print("Model directories:")
     for path in discovery.model_dirs:
         print(f"- {path}")
@@ -375,6 +403,204 @@ def _print_recommendation(recommendation) -> None:
         print("- none")
     for note in recommendation.notes:
         print(f"- {note}")
+
+
+def _ask_setup_mode() -> str:
+    print("Model source mode:")
+    print("1. Local LLMs only")
+    print("2. API keys / hosted models")
+    print("3. Mix of local + API/agent tools")
+    answer = input("Choose model source mode [3]: ").strip().lower()
+    if answer in {"1", "local", "local llms", "local only"}:
+        return "local"
+    if answer in {"2", "api", "api keys", "hosted"}:
+        return "api"
+    return "mixed"
+
+
+def _ask_route_targets(
+    *,
+    mode: str,
+    recommendation: SetupRecommendation,
+    discovery,
+    known_engines: set[str],
+) -> dict[str, str]:
+    print("")
+    print("Choose an engine for each route. Press Enter to accept the default.")
+    print("You can type any known engine name to override a route.")
+    print("Known engines: " + ", ".join(sorted(known_engines)))
+    targets: dict[str, str] = {}
+    for route, label in ROUTE_WIZARD_LABELS:
+        default = _wizard_default_engine(
+            route=route,
+            mode=mode,
+            recommendation=recommendation,
+            discovery=discovery,
+        )
+        answer = input(f"{label} ({route}) [{default}]: ").strip()
+        selected = answer or default
+        if selected not in known_engines:
+            print(f"Unknown engine {selected!r}; keeping {default}.")
+            selected = default
+        targets[route] = selected
+    targets["confirmation"] = "human_confirm"
+    return targets
+
+
+def _wizard_default_engine(
+    *,
+    route: str,
+    mode: str,
+    recommendation: SetupRecommendation,
+    discovery,
+) -> str:
+    local_defaults = {
+        "simple": "fast_local",
+        "balanced": "balanced_local",
+        "reasoning": "reasoning_local",
+        "coding": "code_agent",
+        "research": "web_research",
+        "vision": "multimodal_vision",
+        "image_generation": "image_generation",
+    }
+    if mode == "local":
+        return local_defaults[route]
+    if mode == "api":
+        return _api_default_engine(route, discovery) or local_defaults[route]
+    return recommendation.routing_targets.get(route, local_defaults[route])
+
+
+def _api_default_engine(route: str, discovery) -> str | None:
+    if route == "coding":
+        if discovery.commands.get("claude"):
+            return "claude_code"
+        if discovery.commands.get("codex"):
+            return "codex"
+    if route in {"balanced", "simple"} and discovery.env_vars.get("OPENAI_API_KEY"):
+        return "openai_api"
+    if route == "reasoning":
+        if discovery.env_vars.get("ANTHROPIC_API_KEY"):
+            return "anthropic_api"
+        if discovery.env_vars.get("OPENAI_API_KEY"):
+            return "openai_api"
+    return None
+
+
+def _selected_api_overrides(routing_targets: dict[str, str]) -> dict[str, dict]:
+    overrides: dict[str, dict] = {}
+    if "openai_api" in routing_targets.values():
+        overrides["openai_api"] = {
+            "enabled": True,
+            "availability": {
+                "status": "auto",
+                "required_env": ["OPENAI_API_KEY"],
+            },
+        }
+    if "anthropic_api" in routing_targets.values():
+        overrides["anthropic_api"] = {
+            "enabled": True,
+            "availability": {
+                "status": "auto",
+                "required_env": ["ANTHROPIC_API_KEY"],
+            },
+        }
+    return overrides
+
+
+def _selected_command_overrides(routing_targets: dict[str, str]) -> dict[str, dict]:
+    overrides: dict[str, dict] = {}
+    if "claude_code" in routing_targets.values():
+        overrides["claude_code"] = {
+            "enabled": True,
+            "availability": {
+                "status": "auto",
+                "required_commands": ["claude"],
+            },
+        }
+    if "codex" in routing_targets.values():
+        overrides["codex"] = {
+            "enabled": True,
+            "availability": {
+                "status": "auto",
+                "required_commands": ["codex"],
+            },
+        }
+    return overrides
+
+
+def _build_wizard_recommendation(
+    *,
+    recommendation: SetupRecommendation,
+    routing_targets: dict[str, str],
+    mode: str,
+) -> SetupRecommendation:
+    selected_engines = set(routing_targets.values())
+    engine_overrides = {
+        engine_name: patch
+        for engine_name, patch in recommendation.engine_overrides.items()
+        if engine_name in selected_engines
+    }
+    engine_overrides.update(_selected_command_overrides(routing_targets))
+    engine_overrides.update(_selected_api_overrides(routing_targets))
+    download_suggestions = tuple(
+        suggestion
+        for suggestion in recommendation.download_suggestions
+        if suggestion.route in selected_engines
+    )
+    return SetupRecommendation(
+        routing_targets=routing_targets,
+        engine_overrides=engine_overrides,
+        download_suggestions=download_suggestions,
+        notes=_wizard_notes(
+            recommendation=recommendation,
+            routing_targets=routing_targets,
+            mode=mode,
+        ),
+    )
+
+
+def _wizard_notes(
+    *,
+    recommendation: SetupRecommendation,
+    routing_targets: dict[str, str],
+    mode: str,
+) -> tuple[str, ...]:
+    notes: list[str] = []
+    for note in recommendation.notes:
+        if (
+            "coding route set to claude_code" in note
+            and routing_targets.get("coding") != "claude_code"
+        ):
+            continue
+        if (
+            "coding route set to codex" in note
+            and routing_targets.get("coding") != "codex"
+        ):
+            continue
+        notes.append(note)
+    notes.append(f"Wizard mode selected: {mode}.")
+    notes.append("Route selections were confirmed interactively.")
+    return tuple(notes)
+
+
+def _known_engine_names() -> set[str]:
+    try:
+        return set(load_router_config().engines)
+    except RouterConfigError:
+        return {
+            "fast_local",
+            "balanced_local",
+            "reasoning_local",
+            "code_agent",
+            "claude_code",
+            "codex",
+            "openai_api",
+            "anthropic_api",
+            "web_research",
+            "multimodal_vision",
+            "image_generation",
+            "human_confirm",
+        }
 
 
 def _print_download_plan(plan) -> None:

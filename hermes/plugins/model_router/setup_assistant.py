@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import os
 from pathlib import Path
 from typing import Any, Sequence
 import shutil
@@ -22,6 +23,12 @@ DEFAULT_COMMANDS = (
     "ollama",
     "llama-server",
     "lmstudio",
+)
+
+DEFAULT_ENV_VARS = (
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "HF_TOKEN",
 )
 
 ROLE_TO_ENGINE = {
@@ -57,11 +64,13 @@ class DiscoveredModel:
 class SetupDiscovery:
     commands: dict[str, bool]
     model_dirs: tuple[str, ...]
+    env_vars: dict[str, bool] = field(default_factory=dict)
     models: tuple[DiscoveredModel, ...] = field(default_factory=tuple)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "commands": dict(sorted(self.commands.items())),
+            "env_vars": dict(sorted(self.env_vars.items())),
             "model_dirs": list(self.model_dirs),
             "models": [model.to_dict() for model in self.models],
         }
@@ -185,15 +194,18 @@ def scan_local_environment(
     *,
     model_dirs: Sequence[str | Path] | None = None,
     command_names: Sequence[str] = DEFAULT_COMMANDS,
+    env_var_names: Sequence[str] = DEFAULT_ENV_VARS,
 ) -> SetupDiscovery:
     paths = tuple(
         Path(path).expanduser()
         for path in (default_model_dirs() if model_dirs is None else model_dirs)
     )
     commands = {name: shutil.which(name) is not None for name in command_names}
+    env_vars = {name: bool(os.environ.get(name)) for name in env_var_names}
     models = _scan_model_dirs(paths)
     return SetupDiscovery(
         commands=commands,
+        env_vars=env_vars,
         model_dirs=tuple(str(path) for path in paths),
         models=models,
     )
@@ -228,6 +240,19 @@ def recommend_setup(
             },
         }
         notes.append("Codex CLI detected; coding route set to codex.")
+
+    if discovery.env_vars.get("OPENAI_API_KEY"):
+        engine_overrides["openai_api"] = _api_engine_override(
+            env_var="OPENAI_API_KEY",
+            adapter="openai_chat",
+        )
+        notes.append("OPENAI_API_KEY detected; openai_api can be enabled.")
+    if discovery.env_vars.get("ANTHROPIC_API_KEY"):
+        engine_overrides["anthropic_api"] = _api_engine_override(
+            env_var="ANTHROPIC_API_KEY",
+            adapter="anthropic_chat",
+        )
+        notes.append("ANTHROPIC_API_KEY detected; anthropic_api can be enabled.")
 
     matched_roles = _local_model_overrides(discovery.models, engine_overrides, notes)
     download_suggestions = tuple(
@@ -265,6 +290,23 @@ def write_recommended_config(
     discovery = discovery or scan_local_environment()
     recommendation = recommend_setup(discovery, profile=profile)
 
+    return write_config_from_recommendation(
+        output,
+        recommendation=recommendation,
+        force=force,
+        base_config_path=base_config_path,
+    )
+
+
+def write_config_from_recommendation(
+    output_path: str | Path,
+    *,
+    recommendation: SetupRecommendation,
+    force: bool = False,
+    base_config_path: str | Path | None = None,
+) -> ConfigWriteResult:
+    output = Path(output_path).expanduser()
+
     if output.exists() and not force:
         return ConfigWriteResult(
             written=False,
@@ -294,6 +336,17 @@ def write_recommended_config(
         message=f"wrote recommended config: {output}",
         recommendation=recommendation,
     )
+
+
+def _api_engine_override(*, env_var: str, adapter: str) -> dict[str, Any]:
+    return {
+        "enabled": True,
+        "adapter": adapter,
+        "availability": {
+            "status": "auto",
+            "required_env": [env_var],
+        },
+    }
 
 
 def plan_model_downloads(

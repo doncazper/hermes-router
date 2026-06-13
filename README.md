@@ -30,10 +30,12 @@ cd Hermes-Router
 python -m pip install -e ".[dev]"
 ```
 
-If your system Python is older, use `uv`:
+If your shell does not have a `python` command, use `python3` for the examples
+below. If your system Python is older, use `uv`:
 
 ```bash
 uv run --python 3.11 --with pytest --with PyYAML python -m pytest
+uv run --python 3.11 --with PyYAML python -m hermes.plugins.model_router.cli setup wizard
 ```
 
 ## CLI Usage
@@ -92,8 +94,10 @@ Example JSON receipt:
 Hermes supports a hybrid setup process:
 
 - Edit a plain YAML file directly.
-- Ask the setup assistant to scan local commands and model cache directories.
-- Use an interactive wizard that asks before writing anything.
+- Ask the setup assistant to scan local commands, API-key presence, and model
+  cache directories.
+- Use an interactive wizard that asks whether you want local LLMs, API-backed
+  engines, or a mix, then walks each route category.
 - Generate a recommended local config file.
 - Review Hugging Face download-plan commands before downloading anything.
 - Execute approved Hugging Face downloads with an explicit confirmation gate.
@@ -122,6 +126,15 @@ Use the interactive wizard:
 python -m hermes.plugins.model_router.cli setup wizard \
   --output configs/model_router.local.yaml
 ```
+
+The wizard asks for:
+
+- Local-only, API-only, or mixed setup.
+- Simple, balanced, reasoning, coding, research, vision, and image-generation
+  route choices.
+- Route overrides by engine name, such as `claude_code`, `codex`, `openai_api`,
+  `anthropic_api`, `balanced_local`, or `reasoning_local`.
+- Final confirmation before writing `configs/model_router.local.yaml`.
 
 Write a local config:
 
