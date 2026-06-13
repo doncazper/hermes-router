@@ -157,6 +157,15 @@ The command asks for confirmation before running `hf download`. For
 non-interactive scripts, pass `--yes`. This keeps large downloads, gated
 licenses, and hardware choices under user control.
 
+Users can also provide their own Hugging Face repo id:
+
+```bash
+python -m hermes.plugins.model_router.cli setup download \
+  --route balanced_local \
+  --repo-id custom-org/custom-model \
+  --execute
+```
+
 Users choose which model or agent handles each task class by editing
 `routing_targets`. For example, coding work can point to a local code engine,
 Claude Code, Codex, or any other configured engine:

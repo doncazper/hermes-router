@@ -302,7 +302,33 @@ def plan_model_downloads(
     profile: str = "balanced",
     routes: Sequence[str] | None = None,
     local_root: str | Path | None = None,
+    repo_id: str | None = None,
+    adapter: str | None = None,
 ) -> DownloadPlan:
+    if repo_id is not None:
+        route = _custom_download_route(routes)
+        suggestion = _with_local_root(
+            DownloadSuggestion(
+                route=route,
+                repo_id=repo_id,
+                provider="huggingface",
+                adapter=adapter or _adapter_for_route(route),
+                reason="User-selected Hugging Face model.",
+                command=(
+                    "hf",
+                    "download",
+                    repo_id,
+                    "--local-dir",
+                    f"models/{route}/{_repo_slug(repo_id)}",
+                ),
+            ),
+            local_root,
+        )
+        return DownloadPlan(
+            suggestions=(suggestion,),
+            notes=("Custom Hugging Face repo requested by user.",),
+        )
+
     discovery = discovery or scan_local_environment()
     recommendation = recommend_setup(discovery, profile=profile)
     selected_routes = set(routes or ())
@@ -320,6 +346,14 @@ def plan_model_downloads(
                 "No download suggestions for routes: " + ", ".join(sorted(missing)),
             )
     return DownloadPlan(suggestions=suggestions, notes=notes)
+
+
+def _custom_download_route(routes: Sequence[str] | None) -> str:
+    if not routes:
+        return "custom"
+    if len(routes) != 1:
+        raise ValueError("custom repo downloads require exactly one --route")
+    return routes[0]
 
 
 def execute_download_plan(

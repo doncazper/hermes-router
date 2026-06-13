@@ -102,6 +102,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Only include a route such as fast_local or multimodal_vision",
     )
     download.add_argument(
+        "--repo-id",
+        default=None,
+        help="Custom Hugging Face repo id to download for the selected route",
+    )
+    download.add_argument(
+        "--adapter",
+        default=None,
+        help="Adapter name for a custom repo download plan",
+    )
+    download.add_argument(
         "--local-root",
         type=Path,
         default=None,
@@ -243,6 +253,8 @@ def _cmd_setup_download(args: argparse.Namespace) -> int:
         profile=args.profile,
         routes=args.route,
         local_root=args.local_root,
+        repo_id=args.repo_id,
+        adapter=args.adapter,
     )
     confirmed = args.yes
     if args.execute and not confirmed and not args.json:

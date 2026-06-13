@@ -148,6 +148,15 @@ python -m hermes.plugins.model_router.cli setup download \
 For non-interactive use, add `--yes`. Downloads use the Hugging Face `hf`
 CLI and are never run by `decide`, `recommend`, `write`, or `wizard`.
 
+Download your own preferred Hugging Face model:
+
+```bash
+python -m hermes.plugins.model_router.cli setup download \
+  --route balanced_local \
+  --repo-id custom-org/custom-model \
+  --execute
+```
+
 The router separates semantic routes from concrete engines:
 
 ```yaml

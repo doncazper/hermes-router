@@ -104,6 +104,26 @@ def test_plan_model_downloads_filters_routes_and_rewrites_local_root(tmp_path):
     assert suggestion.command[-1] == str(tmp_path / "models" / "fast_local" / "Qwen--Qwen3-0.6B")
 
 
+def test_plan_model_downloads_supports_custom_repo_id(tmp_path):
+    plan = plan_model_downloads(
+        routes=["balanced_local"],
+        repo_id="custom-org/custom-model",
+        local_root=tmp_path / "models",
+    )
+
+    assert len(plan.suggestions) == 1
+    suggestion = plan.suggestions[0]
+    assert suggestion.route == "balanced_local"
+    assert suggestion.repo_id == "custom-org/custom-model"
+    assert suggestion.command == (
+        "hf",
+        "download",
+        "custom-org/custom-model",
+        "--local-dir",
+        str(tmp_path / "models" / "balanced_local" / "custom-org--custom-model"),
+    )
+
+
 def test_execute_download_plan_dry_run_does_not_call_runner(tmp_path):
     plan = plan_model_downloads(
         discovery=scan_local_environment(model_dirs=[], command_names=[]),
@@ -242,6 +262,26 @@ def test_setup_download_cli_defaults_to_dry_run(tmp_path):
     assert result.returncode == 0
     payload = json.loads(result.stdout)
     assert payload["executed"] is False
+    assert payload["results"][0]["status"] == "planned"
+
+
+def test_setup_download_cli_accepts_custom_repo_id(tmp_path):
+    result = _run_cli(
+        "setup",
+        "download",
+        "--json",
+        "--no-default-dirs",
+        "--route",
+        "balanced_local",
+        "--repo-id",
+        "custom-org/custom-model",
+        "--local-root",
+        str(tmp_path / "models"),
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["results"][0]["repo_id"] == "custom-org/custom-model"
     assert payload["results"][0]["status"] == "planned"
 
 
