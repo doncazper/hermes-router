@@ -65,6 +65,33 @@ def test_scan_detects_hugging_face_cache_models_and_commands(tmp_path, monkeypat
     assert payload["models"][0]["source"] == "huggingface_cache"
 
 
+def test_scan_skips_internal_non_model_directories(tmp_path):
+    root = tmp_path / "models"
+    (root / "manifests").mkdir(parents=True)
+    (root / "blobs").mkdir()
+    actual = root / "Qwen3-0.6B"
+    actual.mkdir()
+    (actual / "config.json").write_text("{}", encoding="utf-8")
+
+    discovery = scan_local_environment(model_dirs=[root], command_names=[])
+
+    repo_ids = {model.repo_id for model in discovery.models}
+    assert "Qwen3-0.6B" in repo_ids
+    assert "manifests" not in repo_ids
+    assert "blobs" not in repo_ids
+
+
+def test_scan_recurses_to_nested_model_directories(tmp_path):
+    root = tmp_path / "models"
+    nested = root / "vendor" / "Qwen3-0.6B"
+    nested.mkdir(parents=True)
+    (nested / "model.safetensors").write_text("placeholder", encoding="utf-8")
+
+    discovery = scan_local_environment(model_dirs=[root], command_names=[])
+
+    assert any(model.path == str(nested) for model in discovery.models)
+
+
 def test_scan_detects_api_key_presence_without_values(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "secret-value")
 
@@ -468,7 +495,7 @@ def test_setup_wizard_can_select_numbered_recommended_download(tmp_path):
         "--no-default-dirs",
         "--output",
         str(output),
-        user_input="1\n1\n" + "\n" * 6 + "y\n",
+        user_input="1\n1\n" + "\n" * 6 + "y\nn\n",
     )
     data = yaml.safe_load(output.read_text(encoding="utf-8"))
 
@@ -480,6 +507,35 @@ def test_setup_wizard_can_select_numbered_recommended_download(tmp_path):
         "models/fast_local/Qwen--Qwen3-0.6B"
     ]
     assert "- fast_local: Qwen/Qwen3-0.6B" in result.stdout
+    assert "Download selected recommended models now" in result.stdout
+
+
+def test_setup_wizard_can_download_selected_recommendations(tmp_path):
+    output = tmp_path / "model_router.local.yaml"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    marker = tmp_path / "hf-called.txt"
+    hf = bin_dir / "hf"
+    hf.write_text(
+        f"#!/bin/sh\nprintf '%s\\n' \"$@\" > {marker}\nexit 0\n",
+        encoding="utf-8",
+    )
+    hf.chmod(hf.stat().st_mode | stat.S_IXUSR)
+
+    result = _run_cli_with_input(
+        "setup",
+        "wizard",
+        "--no-default-dirs",
+        "--output",
+        str(output),
+        user_input="1\n1\n" + "\n" * 6 + "y\ny\n",
+        extra_env={"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"},
+    )
+
+    assert result.returncode == 0
+    assert "Download selected recommended models now" in result.stdout
+    assert "fast_local: completed" in result.stdout
+    assert "Qwen/Qwen3-0.6B" in marker.read_text(encoding="utf-8")
 
 
 def test_setup_wizard_api_mode_can_use_api_key_routes(tmp_path):

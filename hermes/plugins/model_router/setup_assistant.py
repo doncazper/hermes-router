@@ -31,6 +31,49 @@ DEFAULT_ENV_VARS = (
     "HF_TOKEN",
 )
 
+MODEL_SCAN_MAX_DEPTH = 4
+SKIP_MODEL_DIR_NAMES = {
+    "blobs",
+    "manifests",
+    "refs",
+    "snapshots",
+    "tmp",
+}
+MODEL_FILE_MARKERS = {
+    "config.json",
+    "generation_config.json",
+    "model_index.json",
+    "tokenizer.json",
+    "tokenizer.model",
+}
+MODEL_FILE_SUFFIXES = (
+    ".gguf",
+    ".safetensors",
+    ".bin",
+    ".onnx",
+    ".pt",
+    ".pth",
+    ".ckpt",
+)
+MODEL_NAME_HINTS = (
+    "qwen",
+    "llama",
+    "mistral",
+    "gemma",
+    "phi",
+    "deepseek",
+    "sdxl",
+    "flux",
+    "clip",
+    "embed",
+    "bge",
+    "vision",
+    "text",
+    "instruct",
+    "chat",
+    "diffusion",
+)
+
 ROLE_TO_ENGINE = {
     "fast_local": "fast_local",
     "balanced_local": "balanced_local",
@@ -183,10 +226,12 @@ class ConfigWriteResult:
 
 def default_model_dirs() -> tuple[Path, ...]:
     return (
+        Path("models"),
         Path("~/.cache/huggingface/hub").expanduser(),
         Path("~/.ollama/models").expanduser(),
         Path("~/Library/Application Support/LM Studio/models").expanduser(),
         Path("~/models").expanduser(),
+        Path("~/Downloads").expanduser(),
     )
 
 
@@ -497,15 +542,60 @@ def _scan_model_dirs(paths: Sequence[Path]) -> tuple[DiscoveredModel, ...]:
     for root in paths:
         if not root.exists() or not root.is_dir():
             continue
-        for child in sorted(root.iterdir()):
-            if not child.is_dir() or child.name.startswith("."):
-                continue
-            model = _model_from_dir(child)
+        for candidate in _iter_model_candidates(root):
+            model = _model_from_dir(candidate)
             if model.repo_id in seen:
                 continue
             seen.add(model.repo_id)
             models.append(model)
     return tuple(models)
+
+
+def _iter_model_candidates(root: Path) -> tuple[Path, ...]:
+    candidates: list[Path] = []
+    stack: list[tuple[Path, int]] = [(root, 0)]
+    while stack:
+        directory, depth = stack.pop()
+        if depth > MODEL_SCAN_MAX_DEPTH:
+            continue
+        if directory != root and _looks_like_model_dir(directory, depth):
+            candidates.append(directory)
+            continue
+        if depth >= MODEL_SCAN_MAX_DEPTH:
+            continue
+        try:
+            children = sorted(directory.iterdir())
+        except OSError:
+            continue
+        for child in reversed(children):
+            if child.is_dir() and not child.name.startswith("."):
+                stack.append((child, depth + 1))
+    return tuple(candidates)
+
+
+def _looks_like_model_dir(path: Path, depth: int) -> bool:
+    name = path.name.lower()
+    if name in SKIP_MODEL_DIR_NAMES:
+        return False
+    if path.name.startswith("models--"):
+        return True
+    if _has_model_file_marker(path):
+        return True
+    return depth <= 2 and any(hint in name for hint in MODEL_NAME_HINTS)
+
+
+def _has_model_file_marker(path: Path) -> bool:
+    try:
+        children = list(path.iterdir())
+    except OSError:
+        return False
+    for child in children:
+        if not child.is_file():
+            continue
+        name = child.name.lower()
+        if name in MODEL_FILE_MARKERS or name.endswith(MODEL_FILE_SUFFIXES):
+            return True
+    return False
 
 
 def _model_from_dir(path: Path) -> DiscoveredModel:

@@ -14,6 +14,7 @@ from hermes.plugins.model_router.policy import route_prompt
 from hermes.plugins.model_router.receipts import decision_to_receipt, receipt_to_json
 from hermes.plugins.model_router.setup_assistant import (
     DiscoveredModel,
+    DownloadPlan,
     DownloadSuggestion,
     SetupRecommendation,
     engine_override_for_download,
@@ -404,7 +405,28 @@ def _cmd_setup_wizard(args: argparse.Namespace) -> int:
         force=args.force,
     )
     print(result.message)
-    return 0 if result.written else 1
+    if not result.written:
+        return 1
+
+    if wizard_recommendation.download_suggestions:
+        print("")
+        download_answer = input(
+            "Download selected recommended models now? [y/N] "
+        ).strip().lower()
+        if download_answer in {"y", "yes"}:
+            download_result = execute_download_plan(
+                DownloadPlan(
+                    suggestions=wizard_recommendation.download_suggestions,
+                    notes=("Selected during setup wizard.",),
+                ),
+                execute=True,
+                confirmed=True,
+            )
+            _print_download_result(download_result)
+            return 0 if download_result.ok else 1
+        print("Downloads skipped.")
+
+    return 0
 
 
 def _add_setup_scan_args(parser: argparse.ArgumentParser) -> None:

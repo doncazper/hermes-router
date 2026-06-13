@@ -156,6 +156,7 @@ The wizard asks for:
 - Direct route overrides by engine name, such as `claude_code`, `codex`,
   `openai_api`, `anthropic_api`, `balanced_local`, or `reasoning_local`.
 - Final confirmation before writing `configs/model_router.local.yaml`.
+- Optional download confirmation for any recommended models you selected.
 
 Write a local config:
 
@@ -180,7 +181,9 @@ python -m hermes.plugins.model_router.cli setup download \
 ```
 
 For non-interactive use, add `--yes`. Downloads use the Hugging Face `hf`
-CLI and are never run by `decide`, `recommend`, `write`, or `wizard`.
+CLI and are never run by `decide`, `recommend`, or `write`. The interactive
+wizard only runs downloads for recommended models you selected, and only after
+it asks for a separate confirmation.
 
 Download your own preferred Hugging Face model:
 
