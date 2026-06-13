@@ -162,7 +162,8 @@ uv run --python 3.11 --with PyYAML python -m hermes.plugins.model_router.cli set
 The setup assistant is intentionally safe and local-first. It scans:
 
 - Known local model directories such as project `models/`, Hugging Face cache,
-  Ollama, LM Studio, `~/models`, and Downloads.
+  Ollama, modern LM Studio storage at `~/.lmstudio/models`, legacy LM Studio
+  storage, `~/models`, and Downloads.
 - Optional `--model-dir` paths supplied by the user.
 - Command availability for tools such as `claude`, `codex`, `hf`, `ollama`,
   `llama-server`, and `lmstudio`.
@@ -206,6 +207,11 @@ accept the default engine, or type another known engine name such as
 `reasoning_local`. It still asks for final confirmation before writing the local
 YAML file. If you selected recommended downloads, it then asks whether to run
 those `hf download` commands into the configured local model folders.
+
+When recommended downloads are possible but the Hugging Face `hf` CLI is missing,
+the wizard prompts at the beginning and can install it into the Python
+environment running Hermes Router. This prerequisite prompt is separate from the
+later model-download confirmation.
 
 Write a generated config:
 

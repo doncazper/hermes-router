@@ -5,9 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import os
 from pathlib import Path
+import re
 from typing import Any, Sequence
 import shutil
 import subprocess
+import sys
 
 import yaml
 
@@ -34,8 +36,10 @@ DEFAULT_ENV_VARS = (
 MODEL_SCAN_MAX_DEPTH = 4
 SKIP_MODEL_DIR_NAMES = {
     "blobs",
+    "library",
     "manifests",
     "refs",
+    "registry.ollama.ai",
     "snapshots",
     "tmp",
 }
@@ -229,6 +233,7 @@ def default_model_dirs() -> tuple[Path, ...]:
         Path("models"),
         Path("~/.cache/huggingface/hub").expanduser(),
         Path("~/.ollama/models").expanduser(),
+        Path("~/.lmstudio/models").expanduser(),
         Path("~/Library/Application Support/LM Studio/models").expanduser(),
         Path("~/models").expanduser(),
         Path("~/Downloads").expanduser(),
@@ -245,7 +250,9 @@ def scan_local_environment(
         Path(path).expanduser()
         for path in (default_model_dirs() if model_dirs is None else model_dirs)
     )
-    commands = {name: shutil.which(name) is not None for name in command_names}
+    commands = {
+        name: _resolve_command_executable(name) is not None for name in command_names
+    }
     env_vars = {name: bool(os.environ.get(name)) for name in env_var_names}
     models = _scan_model_dirs(paths)
     return SetupDiscovery(
@@ -542,12 +549,97 @@ def _scan_model_dirs(paths: Sequence[Path]) -> tuple[DiscoveredModel, ...]:
     for root in paths:
         if not root.exists() or not root.is_dir():
             continue
+        for model in _ollama_manifest_models(root):
+            if model.repo_id in seen:
+                continue
+            seen.add(model.repo_id)
+            models.append(model)
+        if _is_lm_studio_model_root(root):
+            for model in _lm_studio_models(root):
+                if model.repo_id in seen:
+                    continue
+                seen.add(model.repo_id)
+                models.append(model)
+            continue
         for candidate in _iter_model_candidates(root):
             model = _model_from_dir(candidate)
             if model.repo_id in seen:
                 continue
             seen.add(model.repo_id)
             models.append(model)
+    return tuple(models)
+
+
+def _ollama_manifest_models(root: Path) -> tuple[DiscoveredModel, ...]:
+    manifests = root / "manifests"
+    if not manifests.is_dir():
+        return ()
+    models: list[DiscoveredModel] = []
+    try:
+        registries = sorted(path for path in manifests.iterdir() if path.is_dir())
+    except OSError:
+        return ()
+    for registry in registries:
+        try:
+            namespaces = sorted(path for path in registry.iterdir() if path.is_dir())
+        except OSError:
+            continue
+        for namespace in namespaces:
+            try:
+                model_dirs = sorted(path for path in namespace.iterdir() if path.is_dir())
+            except OSError:
+                continue
+            for model_dir in model_dirs:
+                try:
+                    tags = sorted(path for path in model_dir.iterdir() if path.is_file())
+                except OSError:
+                    continue
+                for tag in tags:
+                    repo_id = (
+                        f"{model_dir.name}:{tag.name}"
+                        if namespace.name == "library"
+                        else f"{namespace.name}/{model_dir.name}:{tag.name}"
+                    )
+                    models.append(
+                        DiscoveredModel(
+                            name=f"{model_dir.name}:{tag.name}",
+                            repo_id=repo_id,
+                            path=str(tag),
+                            source="ollama",
+                            roles=_infer_roles(repo_id),
+                        )
+                    )
+    return tuple(models)
+
+
+def _is_lm_studio_model_root(root: Path) -> bool:
+    return root.name == "models" and root.parent.name in {".lmstudio", "LM Studio"}
+
+
+def _lm_studio_models(root: Path) -> tuple[DiscoveredModel, ...]:
+    models: list[DiscoveredModel] = []
+    try:
+        owners = sorted(path for path in root.iterdir() if path.is_dir())
+    except OSError:
+        return ()
+    for owner in owners:
+        try:
+            model_dirs = sorted(path for path in owner.iterdir() if path.is_dir())
+        except OSError:
+            continue
+        for model_dir in model_dirs:
+            if not _has_model_file_marker(model_dir):
+                continue
+            repo_id = f"{owner.name}/{model_dir.name}"
+            models.append(
+                DiscoveredModel(
+                    name=model_dir.name,
+                    repo_id=repo_id,
+                    path=str(model_dir),
+                    source="lm_studio",
+                    roles=_infer_roles(repo_id),
+                )
+            )
     return tuple(models)
 
 
@@ -624,6 +716,7 @@ def _hf_cache_repo_id(name: str) -> str:
 def _infer_roles(identifier: str) -> tuple[str, ...]:
     text = identifier.lower()
     roles: list[str] = []
+    size_b = _model_size_billions(text)
     if any(token in text for token in ("vl", "vision", "image-text", "ocr")):
         roles.append("multimodal_vision")
     if any(token in text for token in ("diffusion", "sdxl", "stable-diffusion", "flux")):
@@ -632,13 +725,29 @@ def _infer_roles(identifier: str) -> tuple[str, ...]:
         roles.append("code_agent")
     if any(token in text for token in ("embed", "bge", "e5", "rerank")):
         roles.append("web_research")
-    if any(token in text for token in ("0.5b", "0.6b", "1.5b", "small", "mini")):
+    if (
+        any(token in text for token in ("small", "mini"))
+        or size_b is not None
+        and size_b <= 1.5
+    ):
         roles.append("fast_local")
-    if any(token in text for token in ("3b", "4b", "7b", "8b", "instruct", "chat")):
+    if (
+        any(token in text for token in ("instruct", "chat"))
+        or size_b is not None
+        and 2 <= size_b <= 13
+    ):
         roles.append("balanced_local")
-    if any(token in text for token in ("7b", "8b", "14b", "32b", "reason")):
+    if any(token in text for token in ("reason",)) or size_b is not None and size_b >= 7:
         roles.append("reasoning_local")
     return tuple(dict.fromkeys(roles))
+
+
+def _model_size_billions(text: str) -> float | None:
+    sizes = [
+        float(match.group(1))
+        for match in re.finditer(r"(?<![a-z])(\d+(?:\.\d+)?)b\b", text)
+    ]
+    return max(sizes) if sizes else None
 
 
 def _local_model_overrides(
@@ -763,8 +872,22 @@ def _with_local_root(
 
 
 def _run_download_command(command: tuple[str, ...]) -> int:
-    completed = subprocess.run(command, check=False)
+    executable = _resolve_command_executable(command[0])
+    if executable is None:
+        raise FileNotFoundError(command[0])
+    completed = subprocess.run((executable, *command[1:]), check=False)
     return int(completed.returncode)
+
+
+def _resolve_command_executable(command_name: str) -> str | None:
+    executable = shutil.which(command_name)
+    if executable is not None:
+        return executable
+
+    sibling = Path(sys.executable).with_name(command_name)
+    if sibling.is_file() and os.access(sibling, os.X_OK):
+        return str(sibling)
+    return None
 
 
 def _adapter_for_route(route: str) -> str:

@@ -6,11 +6,14 @@ import argparse
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
+import subprocess
+import sys
 from typing import Any
 
 from hermes.plugins.model_router.availability import validate_router_availability
 from hermes.plugins.model_router.config import RouterConfigError, load_router_config
 from hermes.plugins.model_router.dispatch import build_dispatch_plan, dispatch_plan_to_json
+from hermes.plugins.model_router.models import ModelEngine, RouterConfig
 from hermes.plugins.model_router.policy import ModelRouter, route_prompt
 from hermes.plugins.model_router.receipts import decision_to_receipt, receipt_to_json
 from hermes.plugins.model_router.setup_assistant import (
@@ -47,6 +50,15 @@ ROUTE_LOCAL_ENGINES = {
     "vision": "multimodal_vision",
     "image_generation": "image_generation",
 }
+
+HF_CLI_INSTALL_COMMAND = (
+    sys.executable,
+    "-m",
+    "pip",
+    "install",
+    "--upgrade",
+    "huggingface_hub[cli]",
+)
 
 
 @dataclass(frozen=True)
@@ -441,10 +453,20 @@ def _cmd_setup_write(args: argparse.Namespace) -> int:
 
 
 def _cmd_setup_wizard(args: argparse.Namespace) -> int:
-    discovery = scan_local_environment(model_dirs=_model_dirs_from_args(args))
+    model_dirs = _model_dirs_from_args(args)
+    discovery = scan_local_environment(model_dirs=model_dirs)
     recommendation = recommend_setup(discovery, profile=args.profile)
+    output = Path(args.output).expanduser()
+    output_exists = output.exists()
+    current_config = _load_wizard_config(output)
     print("Hermes model-router setup wizard")
     print("")
+    discovery, recommendation = _maybe_install_hf_cli_for_wizard(
+        discovery=discovery,
+        recommendation=recommendation,
+        model_dirs=model_dirs,
+        profile=args.profile,
+    )
     _print_discovery(discovery)
     print("")
     mode = _ask_setup_mode()
@@ -454,6 +476,8 @@ def _cmd_setup_wizard(args: argparse.Namespace) -> int:
         recommendation=recommendation,
         discovery=discovery,
         known_engines=known_engines,
+        current_config=current_config,
+        use_current_defaults=output_exists,
     )
     wizard_recommendation = _build_wizard_recommendation(
         recommendation=recommendation,
@@ -468,10 +492,21 @@ def _cmd_setup_wizard(args: argparse.Namespace) -> int:
         print("No config written.")
         return 0
 
+    force = args.force
+    if output.exists() and not force:
+        overwrite_answer = input(
+            f"Config already exists: {output}. Overwrite? [y/N] "
+        ).strip().lower()
+        if overwrite_answer not in {"y", "yes"}:
+            print("No config written.")
+            return 0
+        force = True
+
     result = write_config_from_recommendation(
-        args.output,
+        output,
         recommendation=wizard_recommendation,
-        force=args.force,
+        force=force,
+        base_config_path=output if output_exists and current_config is not None else None,
     )
     print(result.message)
     if not result.written:
@@ -498,6 +533,44 @@ def _cmd_setup_wizard(args: argparse.Namespace) -> int:
     return 0
 
 
+def _maybe_install_hf_cli_for_wizard(
+    *,
+    discovery,
+    recommendation: SetupRecommendation,
+    model_dirs,
+    profile: str,
+):
+    if discovery.commands.get("hf") or not recommendation.download_suggestions:
+        return discovery, recommendation
+
+    print("Hugging Face `hf` CLI is missing.")
+    print("Recommended model downloads use `hf download`.")
+    answer = input("Install it into this Python environment now? [y/N] ").strip().lower()
+    if answer not in {"y", "yes"}:
+        print("Skipping hf CLI install for now.")
+        print("")
+        return discovery, recommendation
+
+    print("Installing Hugging Face `hf` CLI...")
+    returncode = _run_hf_cli_install()
+    if returncode != 0:
+        print(f"hf CLI install failed with return code {returncode}.")
+        print("Continuing without hf; downloads can be run after installing it.")
+        print("")
+        return discovery, recommendation
+
+    print("hf CLI install completed.")
+    refreshed = scan_local_environment(model_dirs=model_dirs)
+    refreshed_recommendation = recommend_setup(refreshed, profile=profile)
+    print("")
+    return refreshed, refreshed_recommendation
+
+
+def _run_hf_cli_install() -> int:
+    completed = subprocess.run(HF_CLI_INSTALL_COMMAND, check=False)
+    return int(completed.returncode)
+
+
 def _add_setup_scan_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--json",
@@ -522,6 +595,13 @@ def _model_dirs_from_args(args: argparse.Namespace):
     if args.no_default_dirs:
         return args.model_dir or []
     return args.model_dir
+
+
+def _load_wizard_config(output: Path) -> RouterConfig | None:
+    try:
+        return load_router_config(output if output.exists() else None)
+    except RouterConfigError:
+        return None
 
 
 def _print_discovery(discovery) -> None:
@@ -583,6 +663,8 @@ def _ask_route_targets(
     recommendation: SetupRecommendation,
     discovery,
     known_engines: set[str],
+    current_config: RouterConfig | None,
+    use_current_defaults: bool,
 ) -> WizardSelections:
     print("")
     print("Choose a model or engine for each route. Press Enter to keep the default.")
@@ -597,6 +679,8 @@ def _ask_route_targets(
             mode=mode,
             recommendation=recommendation,
             discovery=discovery,
+            current_config=current_config,
+            use_current_defaults=use_current_defaults,
         )
         choices = _wizard_choices_for_route(
             route=route,
@@ -605,7 +689,7 @@ def _ask_route_targets(
         )
         print("")
         print(f"{label} ({route})")
-        print(f"  0. Keep engine {default}")
+        print("  0. " + _keep_engine_label(default, current_config))
         for index, choice in enumerate(choices, start=1):
             print(f"  {index}. {choice.label}")
         answer = input(f"Select model/engine for {route} [0]: ").strip()
@@ -619,7 +703,7 @@ def _ask_route_targets(
                 download_suggestions.append(choice.download_suggestion)
         elif isinstance(choice, str):
             selected = choice
-        elif answer:
+        elif answer and answer != "0":
             print(f"Unknown choice {answer!r}; keeping {default}.")
         targets[route] = selected
     targets["confirmation"] = "human_confirm"
@@ -636,12 +720,36 @@ def _wizard_default_engine(
     mode: str,
     recommendation: SetupRecommendation,
     discovery,
+    current_config: RouterConfig | None,
+    use_current_defaults: bool,
 ) -> str:
+    if use_current_defaults and current_config is not None:
+        current = current_config.target_engine(route)
+        if current:
+            return current
     if mode == "local":
         return ROUTE_LOCAL_ENGINES[route]
     if mode == "api":
         return _api_default_engine(route, discovery) or ROUTE_LOCAL_ENGINES[route]
     return recommendation.routing_targets.get(route, ROUTE_LOCAL_ENGINES[route])
+
+
+def _keep_engine_label(engine_name: str, current_config: RouterConfig | None) -> str:
+    engine = current_config.get_engine(engine_name) if current_config is not None else None
+    if engine is None:
+        return f"Keep engine {engine_name}"
+    details = _engine_details(engine)
+    if not details:
+        return f"Keep engine {engine_name}"
+    return f"Keep engine {engine_name} ({details})"
+
+
+def _engine_details(engine: ModelEngine) -> str:
+    details = [f"model: {engine.model}", f"adapter: {engine.adapter}"]
+    paths = engine.availability.required_paths
+    if paths:
+        details.append("path: " + paths[0])
+    return "; ".join(details)
 
 
 def _api_default_engine(route: str, discovery) -> str | None:
@@ -675,7 +783,10 @@ def _wizard_choices_for_route(
         )
         choices.append(
             WizardChoice(
-                label=f"{model_label} {model.repo_id} ({model.source}; {roles})",
+                label=(
+                    f"{model_label} {model.repo_id} "
+                    f"({model.source}; {roles}; path: {model.path})"
+                ),
                 engine=local_engine,
                 engine_override=engine_override_for_local_model(local_engine, model),
             )
@@ -689,7 +800,7 @@ def _wizard_choices_for_route(
             WizardChoice(
                 label=(
                     f"Recommended download {suggestion.repo_id} "
-                    f"({suggestion.reason})"
+                    f"({suggestion.reason}; download offered after save)"
                 ),
                 engine=local_engine,
                 engine_override=engine_override_for_download(suggestion),

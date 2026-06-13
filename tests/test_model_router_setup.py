@@ -7,7 +7,11 @@ from pathlib import Path
 
 import yaml
 
+from hermes.plugins.model_router import setup_assistant as setup_assistant_module
 from hermes.plugins.model_router.setup_assistant import (
+    DownloadPlan,
+    DownloadSuggestion,
+    default_model_dirs,
     execute_download_plan,
     plan_model_downloads,
     recommend_setup,
@@ -92,6 +96,68 @@ def test_scan_recurses_to_nested_model_directories(tmp_path):
     assert any(model.path == str(nested) for model in discovery.models)
 
 
+def test_scan_detects_ollama_manifest_models(tmp_path):
+    root = tmp_path / "ollama" / "models"
+    manifest = (
+        root
+        / "manifests"
+        / "registry.ollama.ai"
+        / "library"
+        / "llama3.1"
+        / "latest"
+    )
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("{}", encoding="utf-8")
+
+    discovery = scan_local_environment(model_dirs=[root], command_names=[])
+    models = {model.repo_id: model for model in discovery.models}
+
+    assert "llama3.1:latest" in models
+    assert models["llama3.1:latest"].source == "ollama"
+    assert models["llama3.1:latest"].path == str(manifest)
+    assert "registry.ollama.ai" not in models
+
+
+def test_default_model_dirs_include_modern_lm_studio_path():
+    paths = {str(path) for path in default_model_dirs()}
+
+    assert str(Path("~/.lmstudio/models").expanduser()) in paths
+
+
+def test_scan_detects_lm_studio_owner_model_layout(tmp_path):
+    root = tmp_path / ".lmstudio" / "models"
+    qwen_8b = root / "Qwen" / "Qwen3-8B-GGUF"
+    qwen_8b.mkdir(parents=True)
+    (qwen_8b / "Qwen3-8B-Q5_K_M.gguf").write_text("placeholder", encoding="utf-8")
+    qwopus_9b = root / "Jackrong" / "Qwopus3.5-9B-v3-GGUF"
+    qwopus_9b.mkdir(parents=True)
+    (qwopus_9b / "Qwopus3.5-9B-v3.Q5_K_S.gguf").write_text(
+        "placeholder",
+        encoding="utf-8",
+    )
+    qwen_vl = root / "lmstudio-community" / "Qwen3-VL-8B-Instruct-MLX-8bit"
+    qwen_vl.mkdir(parents=True)
+    (qwen_vl / "config.json").write_text("{}", encoding="utf-8")
+
+    discovery = scan_local_environment(model_dirs=[root], command_names=[])
+    models = {model.repo_id: model for model in discovery.models}
+
+    assert "Qwen" not in models
+    assert models["Qwen/Qwen3-8B-GGUF"].source == "lm_studio"
+    assert models["Qwen/Qwen3-8B-GGUF"].path == str(qwen_8b)
+    assert models["Qwen/Qwen3-8B-GGUF"].roles == (
+        "balanced_local",
+        "reasoning_local",
+    )
+    assert models["Jackrong/Qwopus3.5-9B-v3-GGUF"].roles == (
+        "balanced_local",
+        "reasoning_local",
+    )
+    assert "multimodal_vision" in models[
+        "lmstudio-community/Qwen3-VL-8B-Instruct-MLX-8bit"
+    ].roles
+
+
 def test_scan_detects_api_key_presence_without_values(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "secret-value")
 
@@ -100,6 +166,22 @@ def test_scan_detects_api_key_presence_without_values(monkeypatch):
 
     assert payload["env_vars"]["OPENAI_API_KEY"] is True
     assert "secret-value" not in json.dumps(payload)
+
+
+def test_scan_detects_hf_cli_next_to_current_python(tmp_path, monkeypatch):
+    bin_dir = tmp_path / "venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    python = bin_dir / "python"
+    python.write_text("#!/bin/sh\n", encoding="utf-8")
+    hf = bin_dir / "hf"
+    hf.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    hf.chmod(hf.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setattr(setup_assistant_module.sys, "executable", str(python))
+    monkeypatch.setenv("PATH", "")
+
+    discovery = scan_local_environment(model_dirs=[], command_names=["hf"])
+
+    assert discovery.commands["hf"] is True
 
 
 def test_recommend_setup_prefers_available_claude_code(tmp_path, monkeypatch):
@@ -252,6 +334,46 @@ def test_execute_download_plan_reports_missing_command(tmp_path):
     assert result.ok is False
     assert result.results[0].status == "missing_command"
     assert result.results[0].returncode == 127
+
+
+def test_execute_download_plan_uses_hf_next_to_current_python(tmp_path, monkeypatch):
+    bin_dir = tmp_path / "venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    python = bin_dir / "python"
+    python.write_text("#!/bin/sh\n", encoding="utf-8")
+    marker = tmp_path / "hf-called.txt"
+    hf = bin_dir / "hf"
+    hf.write_text(
+        f"#!/bin/sh\nprintf '%s\\n' \"$@\" > {marker}\nexit 0\n",
+        encoding="utf-8",
+    )
+    hf.chmod(hf.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setattr(setup_assistant_module.sys, "executable", str(python))
+    monkeypatch.setenv("PATH", "")
+    plan = DownloadPlan(
+        suggestions=(
+            DownloadSuggestion(
+                route="fast_local",
+                repo_id="Qwen/Qwen3-0.6B",
+                provider="huggingface",
+                adapter="local_chat",
+                reason="test",
+                command=(
+                    "hf",
+                    "download",
+                    "Qwen/Qwen3-0.6B",
+                    "--local-dir",
+                    str(tmp_path / "models"),
+                ),
+            ),
+        ),
+    )
+
+    result = execute_download_plan(plan, execute=True, confirmed=True)
+
+    assert result.ok is True
+    assert result.results[0].status == "completed"
+    assert "download" in marker.read_text(encoding="utf-8")
 
 
 def test_write_recommended_config_is_safe_by_default(tmp_path):
@@ -412,7 +534,8 @@ def test_setup_wizard_asks_before_writing_config(tmp_path):
         "--no-default-dirs",
         "--output",
         str(output),
-        user_input="3\n" + "\n" * 7 + "y\n",
+        user_input="n\n3\n" + "\n" * 7 + "y\n",
+        extra_env={"PATH": ""},
     )
 
     assert result.returncode == 0
@@ -431,7 +554,8 @@ def test_setup_wizard_can_decline_write(tmp_path):
         "--no-default-dirs",
         "--output",
         str(output),
-        user_input="3\n" + "\n" * 7 + "n\n",
+        user_input="n\n3\n" + "\n" * 7 + "n\n",
+        extra_env={"PATH": ""},
     )
 
     assert result.returncode == 0
@@ -448,7 +572,8 @@ def test_setup_wizard_local_mode_writes_local_routes(tmp_path):
         "--no-default-dirs",
         "--output",
         str(output),
-        user_input="1\n" + "\n" * 7 + "y\n",
+        user_input="n\n1\n" + "\n" * 7 + "y\n",
+        extra_env={"PATH": ""},
     )
     data = yaml.safe_load(output.read_text(encoding="utf-8"))
 
@@ -473,7 +598,8 @@ def test_setup_wizard_can_select_numbered_local_model(tmp_path):
         str(hf_cache),
         "--output",
         str(output),
-        user_input="1\n\n1\n" + "\n" * 5 + "y\n",
+        user_input="n\n1\n\n1\n" + "\n" * 5 + "y\n",
+        extra_env={"PATH": ""},
     )
     data = yaml.safe_load(output.read_text(encoding="utf-8"))
 
@@ -495,7 +621,8 @@ def test_setup_wizard_can_select_numbered_recommended_download(tmp_path):
         "--no-default-dirs",
         "--output",
         str(output),
-        user_input="1\n1\n" + "\n" * 6 + "y\nn\n",
+        user_input="n\n1\n1\n" + "\n" * 6 + "y\nn\n",
+        extra_env={"PATH": ""},
     )
     data = yaml.safe_load(output.read_text(encoding="utf-8"))
 
@@ -508,6 +635,124 @@ def test_setup_wizard_can_select_numbered_recommended_download(tmp_path):
     ]
     assert "- fast_local: Qwen/Qwen3-0.6B" in result.stdout
     assert "Download selected recommended models now" in result.stdout
+
+
+def test_setup_wizard_prompts_for_missing_hf_cli_before_choices(tmp_path):
+    output = tmp_path / "model_router.local.yaml"
+
+    result = _run_cli_with_input(
+        "setup",
+        "wizard",
+        "--no-default-dirs",
+        "--output",
+        str(output),
+        user_input="n\n1\n1\n" + "\n" * 6 + "y\nn\n",
+        extra_env={"PATH": ""},
+    )
+
+    assert result.returncode == 0
+    assert "Hugging Face `hf` CLI is missing." in result.stdout
+    assert "Install it into this Python environment now?" in result.stdout
+    assert result.stdout.index("Install it into this Python environment now?") < (
+        result.stdout.index("Model source mode")
+    )
+    assert "Downloads skipped." in result.stdout
+
+
+def test_setup_wizard_accepts_zero_as_keep_default(tmp_path):
+    output = tmp_path / "model_router.local.yaml"
+
+    result = _run_cli_with_input(
+        "setup",
+        "wizard",
+        "--no-default-dirs",
+        "--output",
+        str(output),
+        user_input="n\n1\n0\n" + "\n" * 6 + "y\n",
+        extra_env={"PATH": ""},
+    )
+    data = yaml.safe_load(output.read_text(encoding="utf-8"))
+
+    assert result.returncode == 0
+    assert "Unknown choice '0'" not in result.stdout
+    assert data["routing_targets"]["simple"] == "fast_local"
+
+
+def test_setup_wizard_keep_option_shows_existing_engine_details(tmp_path):
+    output = tmp_path / "model_router.local.yaml"
+    model_path = tmp_path / "models" / "existing-fast"
+    data = yaml.safe_load((ROOT / "configs" / "model_router.yaml").read_text())
+    data["engines"]["fast_local"]["model"] = "existing-fast-model"
+    data["engines"]["fast_local"]["availability"] = {
+        "status": "auto",
+        "required_paths": [str(model_path)],
+    }
+    output.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    result = _run_cli_with_input(
+        "setup",
+        "wizard",
+        "--no-default-dirs",
+        "--output",
+        str(output),
+        user_input="n\n1\n0\n" + "\n" * 6 + "n\n",
+        extra_env={"PATH": ""},
+    )
+
+    assert result.returncode == 0
+    assert "0. Keep engine fast_local (model: existing-fast-model" in result.stdout
+    assert str(model_path) in result.stdout
+
+
+def test_setup_wizard_keep_preserves_existing_engine_config(tmp_path):
+    output = tmp_path / "model_router.local.yaml"
+    model_path = tmp_path / "models" / "existing-fast"
+    data = yaml.safe_load((ROOT / "configs" / "model_router.yaml").read_text())
+    data["engines"]["fast_local"]["model"] = "existing-fast-model"
+    data["engines"]["fast_local"]["availability"] = {
+        "status": "auto",
+        "required_paths": [str(model_path)],
+    }
+    output.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    result = _run_cli_with_input(
+        "setup",
+        "wizard",
+        "--no-default-dirs",
+        "--output",
+        str(output),
+        user_input="n\n1\n0\n" + "\n" * 6 + "y\ny\n",
+        extra_env={"PATH": ""},
+    )
+    written = yaml.safe_load(output.read_text(encoding="utf-8"))
+
+    assert result.returncode == 0
+    assert written["engines"]["fast_local"]["model"] == "existing-fast-model"
+    assert written["engines"]["fast_local"]["availability"]["required_paths"] == [
+        str(model_path)
+    ]
+
+
+def test_setup_wizard_prompts_before_overwriting_existing_config(tmp_path):
+    output = tmp_path / "model_router.local.yaml"
+    output.write_text("existing: true\n", encoding="utf-8")
+
+    result = _run_cli_with_input(
+        "setup",
+        "wizard",
+        "--no-default-dirs",
+        "--output",
+        str(output),
+        user_input="n\n1\n" + "\n" * 7 + "y\ny\n",
+        extra_env={"PATH": ""},
+    )
+    data = yaml.safe_load(output.read_text(encoding="utf-8"))
+
+    assert result.returncode == 0
+    assert "already exists" in result.stdout
+    assert "Overwrite" in result.stdout
+    assert "engines" in data
+    assert "existing" not in data
 
 
 def test_setup_wizard_can_download_selected_recommendations(tmp_path):
@@ -547,8 +792,8 @@ def test_setup_wizard_api_mode_can_use_api_key_routes(tmp_path):
         "--no-default-dirs",
         "--output",
         str(output),
-        user_input="2\n" + "\n" * 7 + "y\n",
-        extra_env={"OPENAI_API_KEY": "secret-value"},
+        user_input="n\n2\n" + "\n" * 7 + "y\n",
+        extra_env={"OPENAI_API_KEY": "secret-value", "PATH": ""},
     )
     data = yaml.safe_load(output.read_text(encoding="utf-8"))
 
@@ -571,7 +816,7 @@ def test_setup_wizard_can_explicitly_assign_claude_code(tmp_path):
         "--no-default-dirs",
         "--output",
         str(output),
-        user_input="1\n" + "\n" * 3 + "claude_code\n" + "\n" * 3 + "y\n",
+        user_input="n\n1\n" + "\n" * 3 + "claude_code\n" + "\n" * 3 + "y\n",
         extra_env={"PATH": ""},
     )
     data = yaml.safe_load(output.read_text(encoding="utf-8"))

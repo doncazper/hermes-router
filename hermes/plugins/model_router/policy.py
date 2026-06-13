@@ -54,22 +54,63 @@ _FAST_CONFIRMATION_PREFIXES = (
     "uninstall",
     "revoke",
     "send",
-    "message",
     "post",
     "publish",
     "submit",
     "reply",
-    "email",
     "buy",
     "purchase",
     "order",
     "pay",
     "transfer",
     "wire",
-    "book",
     "subscribe",
+    "schedule",
+    "reschedule",
+    "invite",
+    "deploy",
+    "merge",
+    "commit",
+    "push",
 )
 _FAST_CONFIRMATION_WORDS = frozenset(_FAST_CONFIRMATION_PREFIXES)
+_FAST_CONFIRMATION_VERBS_WITH_OBJECT = frozenset({"email", "message"})
+_FAST_BENIGN_MESSAGE_OBJECTS = frozenset(
+    {
+        "address",
+        "board",
+        "body",
+        "content",
+        "copy",
+        "draft",
+        "format",
+        "header",
+        "ideas",
+        "marketing",
+        "notification",
+        "preferences",
+        "settings",
+        "subject",
+        "summary",
+        "template",
+    }
+)
+_FAST_BOOK_ACTION_OBJECTS = frozenset(
+    {
+        "appointment",
+        "call",
+        "flight",
+        "hotel",
+        "meeting",
+        "reservation",
+        "ride",
+        "room",
+        "table",
+        "ticket",
+        "trip",
+    }
+)
+_FAST_ARTICLES = frozenset({"a", "an", "the", "my", "our"})
 _FAST_PUNCTUATION_STRIP = ".,!?;:"
 _FAST_CODING_MARKERS = (
     " code ",
@@ -588,11 +629,37 @@ def _fast_has_any(text: str, markers: tuple[str, ...]) -> bool:
 
 
 def _fast_has_confirmation_word(text: str) -> bool:
-    if text.startswith(_FAST_CONFIRMATION_PREFIXES):
-        return True
-    for token in text.split():
-        if token.strip(_FAST_PUNCTUATION_STRIP) in _FAST_CONFIRMATION_WORDS:
+    apply_pending = False
+    book_pending = False
+    message_pending = False
+    for raw_token in text.split():
+        token = raw_token.strip(_FAST_PUNCTUATION_STRIP)
+        if not token:
+            continue
+        if apply_pending:
+            if token == "for":
+                return True
+            apply_pending = False
+        if message_pending:
+            if token not in _FAST_BENIGN_MESSAGE_OBJECTS:
+                return True
+            message_pending = False
+        if book_pending:
+            if token in _FAST_ARTICLES:
+                continue
+            if token in _FAST_BOOK_ACTION_OBJECTS:
+                return True
+            book_pending = False
+        if token in _FAST_CONFIRMATION_WORDS:
             return True
+        if token == "apply":
+            apply_pending = True
+            continue
+        if token in _FAST_CONFIRMATION_VERBS_WITH_OBJECT:
+            message_pending = True
+            continue
+        if token == "book":
+            book_pending = True
     return False
 
 

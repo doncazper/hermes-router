@@ -306,6 +306,15 @@ It then walks each main route and shows numbered local model choices plus
 recommended downloads when a local role is missing. Downloads are never run by
 ordinary routing commands. They require explicit confirmation.
 
+The scanner includes current LM Studio model storage at
+`~/.lmstudio/models`, plus Ollama, Hugging Face cache, and common local model
+folders, so wizard choices should reflect the models your local tools can see.
+
+If recommended downloads are available and the Hugging Face `hf` CLI is missing,
+the wizard warns at the beginning and asks whether to install it into the current
+Python environment before model choices start. Declining is safe; Hermes can
+still write the config, and downloads can be run later.
+
 Plan downloads:
 
 ```bash

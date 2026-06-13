@@ -131,12 +131,54 @@ def test_route_fast_does_not_allow_force_engine_to_bypass_confirmation(tmp_path)
     assert selected == "human_confirm"
 
 
+def test_route_fast_requires_confirmation_for_high_impact_external_actions(tmp_path):
+    router = ModelRouter.from_config(_config_path(tmp_path))
+    prompts = (
+        "deploy to production",
+        "merge this pull request",
+        "push to main",
+        "schedule a meeting",
+        "apply for this job",
+    )
+
+    for prompt in prompts:
+        assert router.route_fast(prompt) == "human_confirm"
+        decision = router.route(prompt)
+        assert decision.selected_engine == "human_confirm"
+        assert decision.requires_confirmation is True
+
+
+def test_route_fast_does_not_confirm_benign_prefix_words(tmp_path):
+    router = ModelRouter.from_config(_config_path(tmp_path))
+    prompts = (
+        "message format ideas",
+        "postpone my meeting",
+        "email marketing draft",
+        "email address formatting",
+        "message board summary",
+        "book summary",
+    )
+
+    for prompt in prompts:
+        assert router.route_fast(prompt) != "human_confirm"
+        assert router.route(prompt).selected_engine != "human_confirm"
+
+
 def test_route_fast_requires_confirmation_for_punctuated_destructive_prompt(tmp_path):
     router = ModelRouter.from_config(_config_path(tmp_path))
 
     selected = router.route_fast("please delete.")
 
     assert selected == "human_confirm"
+
+
+def test_route_fast_uses_initialized_config_after_config_file_is_removed(tmp_path):
+    path = _config_path(tmp_path)
+    router = ModelRouter.from_config(path)
+    path.unlink()
+
+    assert router.route_fast("rewrite this text") == "fast_local"
+    assert router.route_fast("fix the repo and run tests") == "code_agent"
 
 
 def test_route_fast_resolves_disabled_target_through_safe_fallback(tmp_path):

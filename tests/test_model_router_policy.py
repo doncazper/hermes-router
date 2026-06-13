@@ -199,6 +199,24 @@ def test_ambiguous_high_impact_prompt_does_not_route_to_weak_engine(tmp_path):
     assert decision.selected_engine != "fast_local"
 
 
+def test_high_impact_external_actions_require_confirmation(tmp_path):
+    path = _config_path(tmp_path)
+    prompts = (
+        "deploy to production",
+        "merge this pull request",
+        "push to main",
+        "schedule a meeting",
+        "apply for this job",
+    )
+
+    for prompt in prompts:
+        decision = route_prompt(prompt, config_path=path)
+
+        assert decision.selected_engine == "human_confirm"
+        assert decision.requires_confirmation is True
+        assert decision.risk_score >= 70
+
+
 def test_missing_config_fails_closed_to_human_confirm(tmp_path):
     decision = route_prompt("rewrite this text", config_path=tmp_path / "missing.yaml")
 

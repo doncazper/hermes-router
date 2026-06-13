@@ -40,6 +40,23 @@ def test_short_destructive_prompts_require_confirmation():
     assert analysis.features.requires_confirmation is True
 
 
+def test_short_high_impact_external_actions_require_confirmation():
+    prompts = (
+        "deploy to production",
+        "merge this pull request",
+        "push to main",
+        "schedule a meeting",
+        "apply for this job",
+    )
+
+    for prompt in prompts:
+        analysis = score_prompt(prompt)
+
+        assert analysis.features.external_action is True
+        assert analysis.features.requires_confirmation is True
+        assert analysis.risk_score.value >= 70
+
+
 def test_vision_prompts_set_multimodal_features():
     analysis = score_prompt("Extract the text from this screenshot and describe the chart.")
 

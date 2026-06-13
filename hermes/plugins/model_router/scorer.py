@@ -94,7 +94,7 @@ def score_prompt(
         normalized,
         r"\b(file|files|folder|directory|write|edit|create|patch)\b",
     )
-    email_intent = _matches(normalized, r"\b(email|emails|mail|inbox)\b")
+    email_intent = _matches(normalized, r"\b(emails|mail|inbox)\b")
     calendar_intent = _matches(
         normalized,
         r"\b(calendar|invite|appointment|schedule|reschedule)\b",
@@ -122,7 +122,7 @@ def score_prompt(
     tool_intent = _matches(
         normalized,
         r"\b(run|execute|open|browse|search|send|schedule|download|upload|"
-        r"install|call|use tool|github|calendar|email)\b",
+        r"install|call|use tool|github|calendar)\b",
     )
 
     legal_domain = _matches(
@@ -162,21 +162,31 @@ def score_prompt(
     )
     send_action = _matches(
         normalized,
-        r"\b(send|message|post|publish|submit|reply|email)\b",
+        r"\b(send|post|publish|submit|reply)\b|"
+        r"\b(message|email)\s+"
+        r"(?!format|marketing|draft|summary|template|copy|ideas|address|board|"
+        r"body|subject|header|content|notification|settings|preferences)\w+",
     )
     purchase_action = _matches(
         normalized,
-        r"\b(buy|purchase|order|pay|transfer|wire|book|subscribe)\b",
+        r"\b(buy|purchase|order|pay|transfer|wire|subscribe)\b|"
+        r"\bbook\s+(?:(?:a|an|the|my|our)\s+)?"
+        r"(flight|hotel|room|ticket|appointment|reservation|meeting|call|table|"
+        r"ride|trip)\b",
+    )
+    high_impact_external_action = _matches(
+        normalized,
+        r"\b(schedule|reschedule|invite|deploy|merge|commit|push)\b|"
+        r"\bapply\s+for\b",
     )
     external_action = (
         destructive_action
         or send_action
         or purchase_action
-        or _matches(
-            normalized,
-            r"\b(schedule|reschedule|invite|apply|deploy|merge|commit|push)\b",
-        )
+        or high_impact_external_action
     )
+    if send_action and _matches(normalized, r"\b(email|message|mail|inbox)\b"):
+        email_intent = True
     structured_output = _matches(
         normalized,
         r"\b(json|yaml|csv|table|schema|structured|bullets?|checklist)\b",
@@ -203,6 +213,8 @@ def score_prompt(
         or calendar_intent
         or shell_intent
         or github_intent
+        or send_action
+        or purchase_action
         or requires_freshness
         or requires_code_execution
         or requires_vision
@@ -252,11 +264,17 @@ def score_prompt(
     risk = _saturate_weight_sum(risk_signals, config.saturation_k)
     if destructive_action:
         risk = max(risk, 70)
+    if high_impact_external_action:
+        risk = max(risk, 70)
     if send_action or purchase_action:
         risk = max(risk, 60)
 
     requires_confirmation = (
-        risk >= 70 or destructive_action or send_action or purchase_action
+        risk >= 70
+        or destructive_action
+        or send_action
+        or purchase_action
+        or high_impact_external_action
     )
     confidence = _confidence_score(
         prompt_length=prompt_length,
