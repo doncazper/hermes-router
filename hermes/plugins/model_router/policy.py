@@ -112,6 +112,11 @@ _FAST_BOOK_ACTION_OBJECTS = frozenset(
 )
 _FAST_ARTICLES = frozenset({"a", "an", "the", "my", "our"})
 _FAST_PUNCTUATION_STRIP = ".,!?;:"
+# Vague verbs/pronouns that make a short prompt ambiguous; mirrors the scorer's
+# ``ambiguous`` regex so the fast path routes such prompts upward like ``route``.
+_FAST_AMBIGUOUS_WORDS = frozenset(
+    {"handle", "help", "fix", "manage", "do", "this", "that", "it"}
+)
 _FAST_CODING_MARKERS = (
     " code ",
     " coding ",
@@ -122,6 +127,7 @@ _FAST_CODING_MARKERS = (
     " pytest ",
     " ruff ",
     " unit test",
+    " test ",
     " tests",
     " debug ",
     " bug ",
@@ -226,9 +232,12 @@ _FAST_IMAGE_VERB_MARKERS = (
     " produce ",
     " design ",
 )
-_FAST_TOOL_TARGETS = frozenset(
-    {"coding", "research", "vision", "image_generation", "confirmation"}
-)
+# Targets whose selected engine must itself be tool-capable. simple/balanced/
+# reasoning are model-only roles; any tool orchestration for them happens above
+# the router, so they must not be rejected for lacking tool support. Shared by the
+# rich and fast paths to keep their tool requirements identical.
+TOOL_TARGETS = frozenset({"coding", "research", "vision", "image_generation"})
+_FAST_TOOL_TARGETS = TOOL_TARGETS
 _FAST_TARGET_NAMES = (
     "simple",
     "balanced",
@@ -328,29 +337,34 @@ class ModelRouter:
                 requirements=RoutingRequirements(),
             )
 
-        requirements = _derive_requirements(analysis, routing_hints)
+        required_modalities = _required_modalities(routing_hints)
+
+        if routing_hints.force_engine and not (
+            analysis.features.requires_confirmation
+            and routing_hints.force_engine != FAIL_CLOSED_ENGINE
+        ):
+            classified_target, _ = _target_route(analysis, required_modalities)
+            requirements = _derive_requirements(routing_hints, classified_target)
+            return _route_forced_engine(
+                analysis,
+                self.config,
+                requirements,
+                routing_hints.force_engine,
+                routing_hints,
+                self._availability_results,
+                include_alternatives=include_alternatives,
+            )
 
         if routing_hints.force_engine:
-            if analysis.features.requires_confirmation and (
-                routing_hints.force_engine != FAIL_CLOSED_ENGINE
-            ):
-                target = "confirmation"
-                target_reason = (
-                    f"force_engine ignored for high-risk request: "
-                    f"{routing_hints.force_engine}"
-                )
-            else:
-                return _route_forced_engine(
-                    analysis,
-                    self.config,
-                    requirements,
-                    routing_hints.force_engine,
-                    routing_hints,
-                    self._availability_results,
-                    include_alternatives=include_alternatives,
-                )
+            target = "confirmation"
+            target_reason = (
+                f"force_engine ignored for high-risk request: "
+                f"{routing_hints.force_engine}"
+            )
         else:
-            target, target_reason = _target_route(analysis, requirements)
+            target, target_reason = _target_route(analysis, required_modalities)
+
+        requirements = _derive_requirements(routing_hints, target)
 
         (
             selected,
@@ -420,7 +434,13 @@ class ModelRouter:
         """Return only the selected engine through the precompiled hot path.
 
         This path is for latency-sensitive callers that need a safe engine choice,
-        not a scored receipt. It still sends high-risk prompts to human_confirm.
+        not a scored receipt. It sends lexical high-risk actions (delete, send,
+        buy, deploy, ...) to human_confirm, matching ``route``.
+
+        It does not run the full scorer, so it cannot reproduce confirmation that
+        ``route`` derives from accumulated risk (many sensitive signals with no
+        explicit action verb) or from an ambiguous sensitive-domain prompt. For
+        safety-critical routing of such prompts, use ``route`` instead.
         """
         target_index = _fast_target_route_index(prompt)
         if hints is None:
@@ -565,7 +585,7 @@ def route_prompt(
         analysis = score_prompt(prompt)
         try:
             routing_hints = _coerce_hints(hints)
-            requirements = _derive_requirements(analysis, routing_hints)
+            requirements = _derive_requirements(routing_hints, None)
         except ValueError:
             requirements = RoutingRequirements()
         return _fail_closed(
@@ -602,19 +622,13 @@ def _fast_target_route_index(prompt: str) -> int:
         return _FAST_VISION_INDEX
     if _fast_has_any(text, _FAST_CODING_MARKERS):
         return _FAST_CODING_INDEX
-    if (
-        "latest" in raw_text
-        or "current" in raw_text
-        or "today" in raw_text
-        or "news" in raw_text
-    ) and _fast_has_any(text, _FAST_RESEARCH_MARKERS):
-        return _FAST_RESEARCH_INDEX
-    if _fast_has_any(text, _FAST_RESEARCH_MARKERS) and _fast_has_any(
-        text,
-        _FAST_CURRENT_MARKERS,
+    if _fast_has_any(text, _FAST_RESEARCH_MARKERS) and (
+        _fast_has_any(text, _FAST_CURRENT_MARKERS) or _fast_has_recent_year(raw_text)
     ):
         return _FAST_RESEARCH_INDEX
     if prompt_length >= 4000 or _fast_has_any(text, _FAST_REASONING_MARKERS):
+        return _FAST_REASONING_INDEX
+    if _fast_is_ambiguous(raw_text):
         return _FAST_REASONING_INDEX
     if _fast_has_any(text, _FAST_SIMPLE_MARKERS):
         return _FAST_SIMPLE_INDEX
@@ -626,6 +640,30 @@ def _fast_has_any(text: str, markers: tuple[str, ...]) -> bool:
         if marker in text:
             return True
     return False
+
+
+def _fast_has_recent_year(raw_text: str) -> bool:
+    for year in range(2020, 2030):
+        if str(year) in raw_text:
+            return True
+    return False
+
+
+def _fast_is_ambiguous(raw_text: str) -> bool:
+    tokens = [
+        token
+        for token in (
+            raw.strip(_FAST_PUNCTUATION_STRIP) for raw in raw_text.split()
+        )
+        if token
+    ]
+    if not tokens or len(tokens) > 4:
+        return False
+    return any(token in _FAST_AMBIGUOUS_WORDS for token in tokens)
+
+
+def _fast_starts_with_benign(token: str) -> bool:
+    return any(token.startswith(obj) for obj in _FAST_BENIGN_MESSAGE_OBJECTS)
 
 
 def _fast_has_confirmation_word(text: str) -> bool:
@@ -641,7 +679,7 @@ def _fast_has_confirmation_word(text: str) -> bool:
                 return True
             apply_pending = False
         if message_pending:
-            if token not in _FAST_BENIGN_MESSAGE_OBJECTS:
+            if not _fast_starts_with_benign(token):
                 return True
             message_pending = False
         if book_pending:
@@ -669,15 +707,19 @@ def _coerce_hints(hints: dict | RoutingHints | None) -> RoutingHints:
     return RoutingHints.from_dict(hints)
 
 
-def _derive_requirements(
-    analysis: PromptAnalysis,
-    hints: RoutingHints,
-) -> RoutingRequirements:
-    required_modalities = tuple(
+def _required_modalities(hints: RoutingHints) -> tuple[str, ...]:
+    return tuple(
         attachment for attachment in hints.attachments if attachment != "code"
     )
+
+
+def _derive_requirements(
+    hints: RoutingHints,
+    target: str | None,
+) -> RoutingRequirements:
+    required_modalities = _required_modalities(hints)
     return RoutingRequirements(
-        needs_tools=analysis.features.requires_tools or bool(required_modalities),
+        needs_tools=target in TOOL_TARGETS or bool(required_modalities),
         required_modalities=required_modalities,
         max_cost_tier=hints.max_cost_tier,
         max_latency_tier=hints.max_latency_tier
@@ -765,7 +807,7 @@ def _requires_vision(
 
 def _target_route(
     analysis: PromptAnalysis,
-    requirements: RoutingRequirements,
+    required_modalities: tuple[str, ...],
 ) -> tuple[str, str]:
     features = analysis.features
     if features.requires_confirmation:
@@ -774,7 +816,7 @@ def _target_route(
         return "confirmation", "ambiguous high-impact request"
     if features.requires_image_generation:
         return "image_generation", "image generation required"
-    if requirements.required_modalities:
+    if required_modalities:
         return "vision", "attachment modality requires vision or extraction"
     if features.requires_vision and not features.requires_code_execution:
         return "vision", "multimodal vision or OCR required"
