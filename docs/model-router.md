@@ -121,10 +121,9 @@ should measure and emit metrics around router calls at the service boundary so
 `route_fast(...)` stays allocation-light and privacy policy remains explicit.
 See `docs/production-readiness.md` for SLOs and benchmark guardrails.
 
-When installed into Hermes Agent or Hermes Desktop, the package registers the
-official plugin entry point and exposes `hermes router ...` plus `/router`
-diagnostics. Those commands are for inspection only; automatic per-turn model
-switching remains a future Hermes core integration point.
+The installed package exposes the `hermes-router` console command for
+diagnostics and scripts. Desktop or host-app integrations should call the
+Python API directly or implement the host application's actual plugin contract.
 
 ## Dry-Run Dispatch Plans
 

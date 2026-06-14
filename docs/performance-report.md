@@ -194,10 +194,9 @@ requests. The guard enforces the documented initialized `route_fast(...)` SLO:
 <= 25 us best sample and <= 50 us mean sample for ordinary mixed prompts on a
 shared-runner-friendly threshold.
 
-Packaging now exposes a `hermes-router` console command and a Hermes Agent
-plugin entry point for Desktop/CLI diagnostics. These interfaces stay outside
-the high-QPS boundary; services should still call initialized `route_fast(...)`
-in process.
+Packaging now exposes a `hermes-router` console command for diagnostics and
+scripts. This interface stays outside the high-QPS boundary; services should
+still call initialized `route_fast(...)` in process.
 
 ## Historical Improvement Opportunities
 

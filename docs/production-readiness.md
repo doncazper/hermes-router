@@ -15,9 +15,6 @@ traffic.
   a router for the call and is not a high-QPS runtime boundary.
 - The CLI is for humans, diagnostics, CI, and scripts. Production services
   should not spawn the CLI per prompt.
-- Hermes Agent and Hermes Desktop discover the package through the
-  `hermes_agent.plugins` entry point, which registers `hermes router ...` and
-  `/router` diagnostics.
 
 `route_fast(...)` is intentionally not receipt-compatible. Callers that need
 receipts, explanations, audit logs, or ranked alternatives should use
@@ -73,10 +70,6 @@ and emit only the fields they are allowed to retain, such as selected engine,
 route type, fallback status, caller-owned request id, and elapsed time. Do not
 log raw prompts unless a separate privacy review explicitly permits it.
 
-The Hermes plugin shim does not register `pre_llm_call` hooks and does not
-inject routing output into prompts. Automatic per-turn model switching requires
-a public Hermes model-routing hook or core integration.
-
 ## Startup Checks
 
 Production processes should validate config during startup:
@@ -93,8 +86,12 @@ If startup must proceed without external availability checks, use
 deploying service.
 
 The default catalog ships as package data. Explicit `--config` paths and
-`ModelRouter.from_config(path)` still override it for local or Desktop-specific
-catalogs.
+`ModelRouter.from_config(path)` still override it for local or application-
+specific catalogs.
+
+Hermes Router does not currently include a Desktop-specific manifest or adapter.
+Embeddings should use the stable Python API unless and until the target Desktop
+application's actual integration contract is implemented.
 
 ## Regression Coverage
 

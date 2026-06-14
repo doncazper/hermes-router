@@ -1,4 +1,3 @@
-import importlib
 from importlib import resources
 from pathlib import Path
 import subprocess
@@ -10,7 +9,7 @@ import tomllib
 from hermes.plugins.model_router.config import default_config_path, load_router_config
 
 
-def test_pyproject_declares_console_script_and_hermes_plugin_entry_point():
+def test_pyproject_declares_console_script_without_unverified_plugin_entry_point():
     with open("pyproject.toml", "rb") as handle:
         pyproject = tomllib.load(handle)
 
@@ -19,13 +18,7 @@ def test_pyproject_declares_console_script_and_hermes_plugin_entry_point():
         project["scripts"]["hermes-router"]
         == "hermes.plugins.model_router.cli:main"
     )
-    assert (
-        project["entry-points"]["hermes_agent.plugins"]["hermes-router"]
-        == "hermes.plugins.model_router.hermes_plugin"
-    )
-
-    module = importlib.import_module("hermes.plugins.model_router.hermes_plugin")
-    assert hasattr(module, "register")
+    assert "entry-points" not in project
 
 
 def test_default_config_loads_from_package_resource_outside_repo_cwd(
@@ -46,12 +39,8 @@ def test_packaged_default_config_resource_exists():
         "data",
         "model_router.yaml",
     )
-    plugin_resource = resources.files("hermes.plugins.model_router").joinpath(
-        "plugin.yaml",
-    )
 
     assert config_resource.is_file()
-    assert plugin_resource.is_file()
 
 
 def test_packaged_default_config_matches_repo_default_config():
@@ -65,7 +54,7 @@ def test_packaged_default_config_matches_repo_default_config():
     ).read_text(encoding="utf-8")
 
 
-def test_wheel_contains_entry_points_config_and_plugin_metadata(tmp_path):
+def test_wheel_contains_console_script_and_packaged_config(tmp_path):
     result = subprocess.run(
         [
             sys.executable,
@@ -94,9 +83,5 @@ def test_wheel_contains_entry_points_config_and_plugin_metadata(tmp_path):
         entry_points = wheel.read(entry_points_name).decode("utf-8")
 
     assert "hermes/plugins/model_router/data/model_router.yaml" in names
-    assert "hermes/plugins/model_router/plugin.yaml" in names
     assert "hermes-router = hermes.plugins.model_router.cli:main" in entry_points
-    assert (
-        "hermes-router = hermes.plugins.model_router.hermes_plugin"
-        in entry_points
-    )
+    assert "hermes_agent.plugins" not in entry_points

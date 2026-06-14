@@ -419,36 +419,28 @@ enforces those budgets in CI. See
 [Production readiness](docs/production-readiness.md) for the API contract,
 benchmark command, SLOs, and logging guidance.
 
-## Hermes Desktop
+## Install For Local Testing
 
-Hermes Desktop uses the same Hermes Agent runtime, config, and plugin system as
-the CLI and gateway. Install Hermes Router into that Python environment:
-
-```bash
-# pipx-managed Hermes Agent
-pipx inject hermes-agent /path/to/hermes-router
-
-# venv or source install
-python -m pip install /path/to/hermes-router
-
-# local development
-python -m pip install -e /path/to/hermes-router
-```
-
-The package exposes the official Hermes plugin entry point
-`hermes_agent.plugins = hermes-router`. Restart Hermes Desktop or the Hermes
-Agent process after installation, then verify:
+Use a virtual environment so the router does not modify a managed Python
+installation:
 
 ```bash
-hermes plugins list
-HERMES_PLUGINS_DEBUG=1 hermes plugins list
-hermes router decide "fix the repo and run tests"
+cd /path/to/hermes-router
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[dev]"
+hermes-router decide --json "fix the repo and run tests"
 ```
 
-In Desktop chat, use `/router status` or `/router decide <prompt>` for
-diagnostics. V1 does not automatically switch the active model per turn; that
-requires a public Hermes model-routing hook or core integration. The importable
-production API is ready for that integration:
+For a non-editable install from GitHub:
+
+```bash
+python -m pip install "git+https://github.com/doncazper/hermes-router.git@v0.3.0"
+hermes-router decide "rewrite this text"
+```
+
+The package exposes a console command, `hermes-router`, and the importable
+Python API:
 
 ```python
 from hermes.plugins.model_router import ModelRouter
@@ -456,6 +448,14 @@ from hermes.plugins.model_router import ModelRouter
 router = ModelRouter.from_config()
 engine = router.route_fast(prompt)
 ```
+
+The default catalog is included as package data, so `ModelRouter.from_config()`
+works after wheel installation without relying on the repository checkout. Pass
+an explicit config path when an embedding app needs its own engine catalog.
+
+Hermes Router does not currently claim a Desktop plugin manifest or automatic
+per-turn model switching. Any Desktop integration should use that app's actual
+plugin/API contract and call the stable `route_fast(...)` production API.
 
 ## Development
 
@@ -487,7 +487,6 @@ hermes/plugins/model_router/
   config.py           # YAML catalog loading and validation
   data/               # Packaged default config
   dispatch.py         # Safe dry-run dispatch plans
-  hermes_plugin.py    # Hermes Agent plugin registration
   models.py           # Dataclass models and JSON-safe serialization
   policy.py           # Engine selection and fail-closed fallback rules
   receipts.py         # Routing receipt helpers

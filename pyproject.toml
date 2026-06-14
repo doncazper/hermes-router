@@ -15,9 +15,6 @@ dependencies = [
 [project.scripts]
 hermes-router = "hermes.plugins.model_router.cli:main"
 
-[project.entry-points."hermes_agent.plugins"]
-hermes-router = "hermes.plugins.model_router.hermes_plugin"
-
 [project.optional-dependencies]
 dev = [
   "pytest>=8,<9",
@@ -28,7 +25,7 @@ dev = [
 include = ["hermes*"]
 
 [tool.setuptools.package-data]
-"hermes.plugins.model_router" = ["data/*.yaml", "plugin.yaml"]
+"hermes.plugins.model_router" = ["data/*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
