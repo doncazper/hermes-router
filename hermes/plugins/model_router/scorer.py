@@ -107,11 +107,15 @@ def score_prompt(
         normalized,
         r"\b(github|pull request|pr|issue|branch|commit|merge|git)\b",
     )
+    # A generation verb must be close to the image noun (its object), not just
+    # somewhere earlier in the prompt; a bare ".*" matched "generate a summary of
+    # this image's metadata". "diffusion" on its own still implies generation.
     image_generation_intent = _matches(
         normalized,
         r"\b(generate|create|make|draw|render|produce|design)\b"
-        r".*\b(image|picture|photo|illustration|logo|icon|wallpaper|poster|"
-        r"diffusion|stable diffusion)\b",
+        r"(?:\s+\w+){0,2}\s+"
+        r"(image|picture|photo|illustration|logo|icon|wallpaper|poster)s?\b"
+        r"|\b(?:stable\s+)?diffusion\b",
     )
     vision_intent = _matches(
         normalized,
@@ -151,8 +155,8 @@ def score_prompt(
     )
     pii_risk = _matches(
         normalized,
-        r"\b(ssn|passport|password|secret|social security|credit card|api key|"
-        r"private key)\b",
+        r"\b(ssns?|passports?|passwords?|secrets?|social security|"
+        r"credit cards?|api keys?|private keys?)\b",
     )
 
     destructive_action = _matches(
@@ -169,11 +173,11 @@ def score_prompt(
     )
     purchase_action = _matches(
         normalized,
-        r"\b(buy|purchase|order|pay|transfer|wire|subscribe)\b|"
+        r"\b(buy|purchase|pay|transfer|wire|subscribe)\b|"
         r"\bbook\s+(?:(?:a|an|the|my|our)\s+)?"
         r"(flight|hotel|room|ticket|appointment|reservation|meeting|call|table|"
         r"ride|trip)\b",
-    )
+    ) or _order_is_purchase(normalized)
     high_impact_external_action = _matches(
         normalized,
         r"\b(schedule|reschedule|invite|deploy|merge|commit|push)\b|"
@@ -351,6 +355,20 @@ def score_prompt(
 
 def _matches(text: str, pattern: str) -> bool:
     return bool(re.search(pattern, text, flags=re.IGNORECASE))
+
+
+# "order" is verb (purchase) and noun (sorting/idiom). Treat it as a purchase
+# only when it is not one of these common non-purchase usages.
+_ORDER_NON_PURCHASE = re.compile(
+    r"\b(in|alphabetical|chronological|numerical|numeric|reverse|ascending|"
+    r"descending|sort|sorted|sorting|random|word|priority|of|that)\s+order\b"
+    r"|\border\s+(?:of|to|by|in)\b",
+    re.IGNORECASE,
+)
+
+
+def _order_is_purchase(text: str) -> bool:
+    return bool(re.search(r"\border\b", text)) and not _ORDER_NON_PURCHASE.search(text)
 
 
 def _merged_weights(config: ScoringConfig) -> dict[str, dict[str, int]]:
