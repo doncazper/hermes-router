@@ -2,15 +2,27 @@
 
 Deterministic, fast, safety-first model routing for Hermes.
 
-Hermes Router scores an incoming prompt, decides which configured engine should
-handle it, and emits a JSON-safe receipt explaining why. It is designed to make
-AI systems feel snappy and efficient by sending simple work to cheap/fast
-engines, complex work to stronger engines, current research to research tools,
-repo work to code agents, and risky actions to human confirmation.
+Hermes Router is a small Python decision layer that scores an incoming prompt,
+selects the configured engine that should handle it, and emits a JSON-safe
+receipt explaining why. It keeps routing cheap and predictable: simple work can
+go to fast local engines, complex work to stronger reasoning engines, fresh
+research to research tools, repo work to code agents, and risky actions to human
+confirmation.
 
-This project is a decision router only. It does not execute prompts, call model
-providers, load local model weights, browse the web, run shell commands, send
-messages, delete files, or purchase anything.
+This project is intentionally a decision router only. It does not execute
+prompts, call model providers, load local model weights, browse the web, run
+shell commands, send messages, delete files, or purchase anything.
+
+## At a Glance
+
+| Need | Hermes Router provides |
+| --- | --- |
+| Fast hot-path routing | `ModelRouter.route_fast(prompt)` returns an engine string |
+| Explainable decisions | `ModelRouter.route(prompt)` returns scores, flags, reasons, and alternatives |
+| CLI integration | `decide`, `validate-config`, `dispatch-plan`, and `setup` commands |
+| Local/API flexibility | YAML routing targets for local models, hosted APIs, Codex, Claude Code, vision, image generation, and custom adapters |
+| Safety boundaries | High-risk or invalid requests fail closed to `human_confirm` |
+| Setup help | Safe local scans, config recommendations, and opt-in Hugging Face download plans |
 
 ## Highlights
 
@@ -47,8 +59,8 @@ behind explicit adapter boundaries and confirmation gates.
 Requires Python 3.11 or newer.
 
 ```bash
-git clone https://github.com/doncazper/Hermes-Router.git
-cd Hermes-Router
+git clone https://github.com/doncazper/hermes-router.git
+cd hermes-router
 python -m pip install -e ".[dev]"
 ```
 
@@ -296,6 +308,15 @@ python -m hermes.plugins.model_router.cli setup wizard \
   --output configs/model_router.local.yaml
 ```
 
+Write a recommended config non-interactively:
+
+```bash
+python -m hermes.plugins.model_router.cli setup write \
+  --output configs/model_router.local.yaml
+```
+
+`setup write` will not overwrite an existing file unless `--force` is passed.
+
 The wizard asks whether you want:
 
 - Local LLMs only.
@@ -370,8 +391,10 @@ python scripts/benchmark_route_fast.py --json
 ```
 
 `route_fast(...)` is the intended hot path. It returns only the selected engine
-string. The richer `route(...)` path does more work by design because it builds
-scores, explanations, rejected-engine details, alternatives, and receipt fields.
+string. The scorer precompiles its stable regex patterns at import time, and
+initialized routers keep YAML config and availability results in memory. The
+richer `route(...)` path does more work by design because it builds scores,
+explanations, rejected-engine details, alternatives, and receipt fields.
 
 ## Development
 
