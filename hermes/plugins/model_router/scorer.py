@@ -109,13 +109,14 @@ def score_prompt(
     )
     # A generation verb must be close to the image noun (its object), not just
     # somewhere earlier in the prompt; a bare ".*" matched "generate a summary of
-    # this image's metadata". "diffusion" on its own still implies generation.
+    # this image's metadata". "stable diffusion" (the tool) implies generation on
+    # its own; bare "diffusion" does not (e.g. "heat diffusion").
     image_generation_intent = _matches(
         normalized,
         r"\b(generate|create|make|draw|render|produce|design)\b"
         r"(?:\s+\w+){0,2}\s+"
         r"(image|picture|photo|illustration|logo|icon|wallpaper|poster)s?\b"
-        r"|\b(?:stable\s+)?diffusion\b",
+        r"|\bstable diffusion\b",
     )
     vision_intent = _matches(
         normalized,

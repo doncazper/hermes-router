@@ -53,8 +53,14 @@ def test_design_company_image_is_not_image_generation():
     assert features.image_generation_intent is False
 
 
-def test_diffusion_is_image_generation():
+def test_stable_diffusion_is_image_generation():
     assert score_prompt("run stable diffusion locally").features.image_generation_intent
+
+
+def test_bare_diffusion_is_not_image_generation():
+    # "diffusion" as a physics/chemistry concept must not route to image gen.
+    features = score_prompt("explain heat diffusion in gases").features
+    assert features.image_generation_intent is False
 
 
 # --- "order" noun vs purchase verb ------------------------------------------
