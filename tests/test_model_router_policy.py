@@ -40,8 +40,9 @@ def _engine(
             "image_generation",
             "human_confirm",
         },
-        "modalities": modalities or [],
     }
+    if modalities is not None:
+        data["modalities"] = modalities
     if capability is not None:
         data["capability"] = capability
     if trust is not None:
