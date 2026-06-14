@@ -54,6 +54,11 @@ DEFAULT_SCORING_WEIGHTS: dict[str, dict[str, int]] = {
 # per-call pattern-cache lookup that re.search(pattern_str, ...) performs (~0.2us
 # per pattern; ~30 per call). The pattern text is unchanged; inputs are already
 # lowercased but IGNORECASE is kept so behavior is identical.
+#
+# image_generation_intent, pii_risk and purchase_action are intentionally NOT
+# precompiled here: the scorer-precision change edits those exact patterns, so
+# they are kept inline (via _matches) below to keep the two changes on disjoint
+# lines and avoid a silent merge revert.
 _RE_SIMPLE_TRANSFORM = re.compile(
     r"\b(rewrite|rephrase|format|extract|clean up|copyedit|proofread)\b",
     re.IGNORECASE,
@@ -185,10 +190,6 @@ def score_prompt(
     calendar_intent = bool(_RE_CALENDAR_INTENT.search(normalized))
     shell_intent = bool(_RE_SHELL_INTENT.search(normalized))
     github_intent = bool(_RE_GITHUB_INTENT.search(normalized))
-    # image_generation_intent, pii_risk and purchase_action are deliberately left
-    # inline (not precompiled): the scorer-precision change edits these exact
-    # patterns, so keeping them inline here means the two changes touch disjoint
-    # lines and neither can silently revert the other on merge.
     image_generation_intent = _matches(
         normalized,
         r"\b(generate|create|make|draw|render|produce|design)\b"
