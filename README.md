@@ -167,10 +167,13 @@ Create a dry-run dispatch plan:
 ```bash
 python -m hermes.plugins.model_router.cli dispatch-plan "fix the repo and run tests"
 python -m hermes.plugins.model_router.cli dispatch-plan --json "rewrite this text"
+python -m hermes.plugins.model_router.cli dispatch-plan --include-alternatives --json "rewrite this text"
 ```
 
 Dispatch plans only describe what a future adapter would do. They do not execute
-models, tools, shell commands, provider calls, or external actions.
+models, tools, shell commands, provider calls, or external actions. They skip
+ranked alternatives by default for speed; pass `--include-alternatives` when a
+full receipt is useful.
 
 ## Example Receipt
 
@@ -395,6 +398,10 @@ string. The scorer precompiles its stable regex patterns at import time, and
 initialized routers keep YAML config and availability results in memory. The
 richer `route(...)` path does more work by design because it builds scores,
 explanations, rejected-engine details, alternatives, and receipt fields.
+
+The CLI is intended for humans, diagnostics, and scripts. Latency-sensitive
+services should not spawn a Python process per prompt; instantiate `ModelRouter`
+once and call the Python API in process.
 
 ## Development
 

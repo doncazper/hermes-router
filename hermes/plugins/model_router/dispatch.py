@@ -46,9 +46,14 @@ def build_dispatch_plan(
     router: ModelRouter | None = None,
     config_path: str | Path | None = None,
     hints: dict | RoutingHints | None = None,
+    include_alternatives: bool = False,
 ) -> DispatchPlan:
     active_router = router or ModelRouter.from_config(config_path)
-    decision = active_router.route(prompt, hints=hints)
+    decision = active_router.route(
+        prompt,
+        hints=hints,
+        include_alternatives=include_alternatives,
+    )
     receipt = decision_to_receipt(decision)
     engine = active_router.config.get_engine(decision.selected_engine)
 

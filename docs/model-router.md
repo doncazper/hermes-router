@@ -122,12 +122,16 @@ The router can produce a dispatch plan without executing adapters:
 ```bash
 python -m hermes.plugins.model_router.cli dispatch-plan "rewrite this text"
 python -m hermes.plugins.model_router.cli dispatch-plan --json "fix the repo and run tests"
+python -m hermes.plugins.model_router.cli dispatch-plan --include-alternatives --json "rewrite this text"
 ```
 
 Dispatch plans name the selected provider, model, and adapter and include the
 routing receipt. They never call providers, load local model weights, run tools,
-or perform external actions. The adapter boundary and lazy-loading policy are
-documented in `docs/adapter-contract.md`.
+or perform external actions. Dispatch plans skip ranked alternatives by default
+for speed; pass `--include-alternatives` in the CLI or
+`include_alternatives=True` in Python when a full alternatives list is useful.
+The adapter boundary and lazy-loading policy are documented in
+`docs/adapter-contract.md`.
 
 ## Model Catalog And User Setup
 

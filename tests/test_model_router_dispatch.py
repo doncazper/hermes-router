@@ -32,7 +32,17 @@ def test_dispatch_plan_allows_safe_dry_run_without_execution():
     assert plan.adapter == "local_chat"
     assert plan.provider == "local"
     assert plan.receipt.selected_engine == "fast_local"
+    assert plan.receipt.alternatives == ()
     assert any("dry-run" in reason for reason in plan.reasons)
+
+
+def test_dispatch_plan_can_include_alternatives_when_requested():
+    plan = build_dispatch_plan(
+        "rewrite this text",
+        include_alternatives=True,
+    )
+
+    assert plan.receipt.alternatives
 
 
 def test_dispatch_plan_blocks_high_risk_confirmation_routes():
@@ -67,6 +77,20 @@ def test_dispatch_plan_cli_json_emits_parseable_dry_run_plan():
     assert payload["selected_engine"] == "code_agent"
     assert payload["can_dispatch"] is True
     assert payload["receipt"]["requires_code_execution"] is True
+    assert payload["receipt"]["alternatives"] == []
+
+
+def test_dispatch_plan_cli_json_can_include_alternatives():
+    result = _run_cli(
+        "dispatch-plan",
+        "--json",
+        "--include-alternatives",
+        "rewrite this text",
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["receipt"]["alternatives"]
 
 
 def test_dispatch_plan_cli_readable_output_names_adapter():

@@ -14,6 +14,7 @@ The current dispatch surface is dry-run only:
 ```bash
 python -m hermes.plugins.model_router.cli dispatch-plan "fix the repo and run tests"
 python -m hermes.plugins.model_router.cli dispatch-plan --json "rewrite this text"
+python -m hermes.plugins.model_router.cli dispatch-plan --include-alternatives --json "rewrite this text"
 ```
 
 Programmatic use:
@@ -22,11 +23,14 @@ Programmatic use:
 from hermes.plugins.model_router import build_dispatch_plan
 
 plan = build_dispatch_plan("rewrite this text")
+full_plan = build_dispatch_plan("rewrite this text", include_alternatives=True)
 print(plan.selected_engine, plan.adapter, plan.can_dispatch)
 ```
 
 The dry-run plan never calls a provider, starts a local server, loads model
 weights, runs a shell command, sends a message, or performs an external action.
+It skips ranked alternatives by default for speed; request them explicitly when
+callers need a full diagnostic receipt.
 
 ## Runtime Principles
 

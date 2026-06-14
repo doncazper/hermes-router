@@ -22,7 +22,7 @@ from hermes.plugins.model_router.models import (
     RoutingHints,
     RoutingRequirements,
 )
-from hermes.plugins.model_router.scorer import score_prompt
+from hermes.plugins.model_router.scorer import _merged_weights, score_prompt
 
 FAIL_CLOSED_ENGINE = "human_confirm"
 COST_TIER_ORDER = {
@@ -281,6 +281,7 @@ class ModelRouter:
         self._availability_results = (
             availability_report.engines if availability_report is not None else None
         )
+        self._scoring_weights = _merged_weights(config.scoring)
         self._fast_target_engines = self._compile_fast_target_engines()
         self._fast_engine_data = {
             name: (
@@ -327,7 +328,11 @@ class ModelRouter:
         *,
         include_alternatives: bool = True,
     ) -> RoutingDecision:
-        analysis = score_prompt(prompt, scoring_config=self.config.scoring)
+        analysis = score_prompt(
+            prompt,
+            scoring_config=self.config.scoring,
+            scoring_weights=self._scoring_weights,
+        )
         try:
             routing_hints = _coerce_hints(hints)
         except ValueError as exc:
@@ -613,6 +618,8 @@ def _fast_target_route_index(prompt: str) -> int:
         or "fix the repo" in raw_text
     ):
         return _FAST_CODING_INDEX
+    if prompt_length >= 4000:
+        return _FAST_REASONING_INDEX
 
     text = f" {raw_text} "
     image_request = _fast_has_any(text, _FAST_IMAGE_NOUN_MARKERS)
@@ -626,7 +633,7 @@ def _fast_target_route_index(prompt: str) -> int:
         _fast_has_any(text, _FAST_CURRENT_MARKERS) or _fast_has_recent_year(raw_text)
     ):
         return _FAST_RESEARCH_INDEX
-    if prompt_length >= 4000 or _fast_has_any(text, _FAST_REASONING_MARKERS):
+    if _fast_has_any(text, _FAST_REASONING_MARKERS):
         return _FAST_REASONING_INDEX
     if _fast_is_ambiguous(raw_text):
         return _FAST_REASONING_INDEX

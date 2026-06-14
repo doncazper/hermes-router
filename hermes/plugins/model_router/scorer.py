@@ -61,10 +61,6 @@ DEFAULT_SCORING_WEIGHTS: dict[str, dict[str, int]] = {
 # per pattern; ~30 per call). The pattern text is unchanged; inputs are already
 # lowercased but IGNORECASE is kept so behavior is identical.
 #
-# image_generation_intent, pii_risk and purchase_action are intentionally NOT
-# precompiled here: the scorer-precision change edits those exact patterns, so
-# they are kept inline (via _matches) below to keep the two changes on disjoint
-# lines and avoid a silent merge revert.
 _RE_SIMPLE_TRANSFORM = re.compile(
     r"\b(rewrite|rephrase|format|extract|clean up|copyedit|proofread)\b",
     re.IGNORECASE,
@@ -110,6 +106,13 @@ _RE_GITHUB_INTENT = re.compile(
     r"\b(github|pull request|pr|issue|branch|commit|merge|git)\b",
     re.IGNORECASE,
 )
+_RE_IMAGE_GENERATION_INTENT = re.compile(
+    r"\b(generate|create|make|draw|render|produce|design)\b"
+    r"(?:\s+\w+){0,2}\s+"
+    r"(image|picture|photo|illustration|logo|icon|wallpaper|poster)s?\b"
+    r"|\bstable diffusion\b",
+    re.IGNORECASE,
+)
 _RE_VISION_INTENT = re.compile(
     r"\b(image|picture|photo|screenshot|screen shot|chart|diagram|graph|"
     r"ocr|vision|visual|scan|extract text from|describe .*image|"
@@ -144,6 +147,11 @@ _RE_SECURITY_RISK = re.compile(
     r"\b(exploit|malware|xss|csrf|breach|vulnerabilit|sql injection)\b",
     re.IGNORECASE,
 )
+_RE_PII_RISK = re.compile(
+    r"\b(ssns?|passports?|passwords?|secrets?|social security|"
+    r"credit cards?|api keys?|private keys?)\b",
+    re.IGNORECASE,
+)
 _RE_DESTRUCTIVE_ACTION = re.compile(
     r"\b(delete|remove|wipe|destroy|drop|erase|cancel|terminate|purge|"
     r"truncate|shutdown|uninstall|revoke)\b",
@@ -154,6 +162,13 @@ _RE_SEND_ACTION = re.compile(
     r"\b(message|email)\s+"
     r"(?!format|marketing|draft|summary|template|copy|ideas|address|board|"
     r"body|subject|header|content|notification|settings|preferences)\w+",
+    re.IGNORECASE,
+)
+_RE_PURCHASE_ACTION = re.compile(
+    r"\b(buy|purchase|pay|transfer|wire|subscribe)\b|"
+    r"\bbook\s+(?:(?:a|an|the|my|our)\s+)?"
+    r"(flight|hotel|room|ticket|appointment|reservation|meeting|call|table|"
+    r"ride|trip)\b",
     re.IGNORECASE,
 )
 _RE_HIGH_IMPACT_EXTERNAL_ACTION = re.compile(
@@ -171,15 +186,17 @@ _RE_AMBIGUOUS = re.compile(
     re.IGNORECASE,
 )
 _RE_WORD = re.compile(r"\b\w+\b")
+_RE_ORDER_WORD = re.compile(r"\border\b")
 
 
 def score_prompt(
     prompt: str,
     *,
     scoring_config: ScoringConfig | None = None,
+    scoring_weights: dict[str, dict[str, int]] | None = None,
 ) -> PromptAnalysis:
     config = scoring_config or ScoringConfig()
-    weights = _merged_weights(config)
+    weights = scoring_weights or _merged_weights(config)
     text = prompt or ""
     normalized = " ".join(text.lower().split())
     prompt_length = len(text)
@@ -200,13 +217,7 @@ def score_prompt(
     # somewhere earlier in the prompt; a bare ".*" matched "generate a summary of
     # this image's metadata". "stable diffusion" (the tool) implies generation on
     # its own; bare "diffusion" does not (e.g. "heat diffusion").
-    image_generation_intent = _matches(
-        normalized,
-        r"\b(generate|create|make|draw|render|produce|design)\b"
-        r"(?:\s+\w+){0,2}\s+"
-        r"(image|picture|photo|illustration|logo|icon|wallpaper|poster)s?\b"
-        r"|\bstable diffusion\b",
-    )
+    image_generation_intent = bool(_RE_IMAGE_GENERATION_INTENT.search(normalized))
     vision_intent = bool(_RE_VISION_INTENT.search(normalized))
     tool_intent = bool(_RE_TOOL_INTENT.search(normalized))
 
@@ -216,21 +227,13 @@ def score_prompt(
     sensitive_domain = legal_domain or medical_domain or financial_domain
     production_risk = bool(_RE_PRODUCTION_RISK.search(normalized))
     security_risk = bool(_RE_SECURITY_RISK.search(normalized))
-    pii_risk = _matches(
-        normalized,
-        r"\b(ssns?|passports?|passwords?|secrets?|social security|"
-        r"credit cards?|api keys?|private keys?)\b",
-    )
+    pii_risk = bool(_RE_PII_RISK.search(normalized))
 
     destructive_action = bool(_RE_DESTRUCTIVE_ACTION.search(normalized))
     send_action = bool(_RE_SEND_ACTION.search(normalized))
-    purchase_action = _matches(
-        normalized,
-        r"\b(buy|purchase|pay|transfer|wire|subscribe)\b|"
-        r"\bbook\s+(?:(?:a|an|the|my|our)\s+)?"
-        r"(flight|hotel|room|ticket|appointment|reservation|meeting|call|table|"
-        r"ride|trip)\b",
-    ) or _order_is_purchase(normalized)
+    purchase_action = bool(_RE_PURCHASE_ACTION.search(normalized)) or (
+        _order_is_purchase(normalized)
+    )
     high_impact_external_action = bool(
         _RE_HIGH_IMPACT_EXTERNAL_ACTION.search(normalized)
     )
@@ -399,10 +402,6 @@ def score_prompt(
     )
 
 
-def _matches(text: str, pattern: str) -> bool:
-    return bool(re.search(pattern, text, flags=re.IGNORECASE))
-
-
 # "order" is verb (purchase) and noun (sorting/idiom). Treat it as a purchase
 # only when it is not one of these common non-purchase usages.
 _ORDER_NON_PURCHASE = re.compile(
@@ -414,7 +413,7 @@ _ORDER_NON_PURCHASE = re.compile(
 
 
 def _order_is_purchase(text: str) -> bool:
-    return bool(re.search(r"\border\b", text)) and not _ORDER_NON_PURCHASE.search(text)
+    return bool(_RE_ORDER_WORD.search(text)) and not _ORDER_NON_PURCHASE.search(text)
 
 
 def _merged_weights(config: ScoringConfig) -> dict[str, dict[str, int]]:

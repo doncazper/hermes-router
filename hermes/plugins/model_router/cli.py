@@ -135,6 +135,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Emit a JSON dry-run dispatch plan",
     )
+    dispatch.add_argument(
+        "--include-alternatives",
+        action="store_true",
+        help="Include ranked alternative engines in the embedded receipt",
+    )
     dispatch.add_argument("prompt", nargs="+", help="Prompt text to plan")
     dispatch.set_defaults(func=_cmd_dispatch_plan)
 
@@ -304,6 +309,7 @@ def _cmd_dispatch_plan(args: argparse.Namespace) -> int:
         prompt,
         config_path=args.config,
         hints=hints,
+        include_alternatives=args.include_alternatives,
     )
     if args.json:
         print(dispatch_plan_to_json(plan))
