@@ -130,6 +130,13 @@ class ModelEngine:
         cost_tier = _require_string(data, "cost_tier", name)
         latency_tier = _require_string(data, "latency_tier", name)
 
+        declared_modalities = _optional_string_tuple(data, "modalities", name)
+        modalities = (
+            declared_modalities
+            if declared_modalities is not None
+            else _default_modalities(name, data)
+        )
+
         return cls(
             name=name,
             provider=_require_string(data, "provider", name),
@@ -148,8 +155,7 @@ class ModelEngine:
                 _default_supports_tools(name, data),
                 name,
             ),
-            modalities=_optional_string_tuple(data, "modalities", name)
-            or _default_modalities(name, data),
+            modalities=modalities,
             capability_tier=capability_tier,
             trust_tier=trust_tier,
             capability=_optional_score(
@@ -287,8 +293,15 @@ def _optional_string_tuple(
     data: dict[str, Any],
     key: str,
     engine_name: str,
-) -> tuple[str, ...]:
-    value = data.get(key, [])
+) -> tuple[str, ...] | None:
+    """Return the parsed tuple, or ``None`` when the key is absent.
+
+    Returning ``None`` for an absent key lets callers distinguish "not declared"
+    (apply a default) from an explicit empty list (honor it).
+    """
+    if key not in data:
+        return None
+    value = data[key]
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise ValueError(f"engine {engine_name!r} field {key!r} must be strings")
     return tuple(item for item in value if item.strip())
@@ -431,6 +444,8 @@ def _default_latency_score(tier: str) -> int:
 
 
 VALID_ATTACHMENTS = ("image", "pdf", "audio", "code")
+VALID_COST_TIERS = ("none", "free", "low", "medium", "paid", "high")
+VALID_LATENCY_TIERS = ("low", "medium", "high", "manual")
 SCORING_DIMENSIONS = ("complexity", "risk", "confidence")
 
 
@@ -543,8 +558,8 @@ class RoutingHints:
         return cls(
             force_engine=force_engine,
             latency_sensitive=_hint_bool(data, "latency_sensitive"),
-            max_cost_tier=_hint_optional_string(data, "max_cost_tier"),
-            max_latency_tier=_hint_optional_string(data, "max_latency_tier"),
+            max_cost_tier=_hint_tier(data, "max_cost_tier", VALID_COST_TIERS),
+            max_latency_tier=_hint_tier(data, "max_latency_tier", VALID_LATENCY_TIERS),
             attachments=tuple(attachments),
         )
 
@@ -565,12 +580,16 @@ def _hint_bool(data: dict[str, Any], key: str) -> bool:
     return value
 
 
-def _hint_optional_string(data: dict[str, Any], key: str) -> str | None:
+def _hint_tier(
+    data: dict[str, Any],
+    key: str,
+    valid: tuple[str, ...],
+) -> str | None:
     value = data.get(key)
     if value is None:
         return None
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"routing hint {key} must be a string")
+    if not isinstance(value, str) or value not in valid:
+        raise ValueError(f"routing hint {key} must be one of: {', '.join(valid)}")
     return value
 
 

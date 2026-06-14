@@ -47,6 +47,12 @@ DEFAULT_SCORING_WEIGHTS: dict[str, dict[str, int]] = {
         "security": 15,
         "pii": 20,
     },
+    "confidence": {
+        "ambiguous": 25,
+        "short_high_risk": 15,
+        "weak_feature_match": 10,
+        "empty_prompt": 40,
+    },
 }
 
 
@@ -277,6 +283,7 @@ def score_prompt(
         or high_impact_external_action
     )
     confidence = _confidence_score(
+        weights=weights["confidence"],
         prompt_length=prompt_length,
         ambiguous=ambiguous,
         high_risk=requires_confirmation,
@@ -601,6 +608,7 @@ def _saturate_weight_sum(signals: list[PromptSignal], saturation_k: int) -> int:
 
 def _confidence_score(
     *,
+    weights: dict[str, int],
     prompt_length: int,
     ambiguous: bool,
     high_risk: bool,
@@ -608,11 +616,11 @@ def _confidence_score(
 ) -> int:
     score = 90
     if ambiguous:
-        score -= 25
+        score -= weights.get("ambiguous", 25)
     if high_risk and prompt_length < 80:
-        score -= 15
+        score -= weights.get("short_high_risk", 15)
     if not has_clear_signal:
-        score -= 10
+        score -= weights.get("weak_feature_match", 10)
     if prompt_length == 0:
-        score -= 40
+        score -= weights.get("empty_prompt", 40)
     return max(0, min(score, 100))
