@@ -99,12 +99,6 @@ _RE_GITHUB_INTENT = re.compile(
     r"\b(github|pull request|pr|issue|branch|commit|merge|git)\b",
     re.IGNORECASE,
 )
-_RE_IMAGE_GENERATION_INTENT = re.compile(
-    r"\b(generate|create|make|draw|render|produce|design)\b"
-    r".*\b(image|picture|photo|illustration|logo|icon|wallpaper|poster|"
-    r"diffusion|stable diffusion)\b",
-    re.IGNORECASE,
-)
 _RE_VISION_INTENT = re.compile(
     r"\b(image|picture|photo|screenshot|screen shot|chart|diagram|graph|"
     r"ocr|vision|visual|scan|extract text from|describe .*image|"
@@ -139,11 +133,6 @@ _RE_SECURITY_RISK = re.compile(
     r"\b(exploit|malware|xss|csrf|breach|vulnerabilit|sql injection)\b",
     re.IGNORECASE,
 )
-_RE_PII_RISK = re.compile(
-    r"\b(ssn|passport|password|secret|social security|credit card|api key|"
-    r"private key)\b",
-    re.IGNORECASE,
-)
 _RE_DESTRUCTIVE_ACTION = re.compile(
     r"\b(delete|remove|wipe|destroy|drop|erase|cancel|terminate|purge|"
     r"truncate|shutdown|uninstall|revoke)\b",
@@ -154,13 +143,6 @@ _RE_SEND_ACTION = re.compile(
     r"\b(message|email)\s+"
     r"(?!format|marketing|draft|summary|template|copy|ideas|address|board|"
     r"body|subject|header|content|notification|settings|preferences)\w+",
-    re.IGNORECASE,
-)
-_RE_PURCHASE_ACTION = re.compile(
-    r"\b(buy|purchase|order|pay|transfer|wire|subscribe)\b|"
-    r"\bbook\s+(?:(?:a|an|the|my|our)\s+)?"
-    r"(flight|hotel|room|ticket|appointment|reservation|meeting|call|table|"
-    r"ride|trip)\b",
     re.IGNORECASE,
 )
 _RE_HIGH_IMPACT_EXTERNAL_ACTION = re.compile(
@@ -203,7 +185,16 @@ def score_prompt(
     calendar_intent = bool(_RE_CALENDAR_INTENT.search(normalized))
     shell_intent = bool(_RE_SHELL_INTENT.search(normalized))
     github_intent = bool(_RE_GITHUB_INTENT.search(normalized))
-    image_generation_intent = bool(_RE_IMAGE_GENERATION_INTENT.search(normalized))
+    # image_generation_intent, pii_risk and purchase_action are deliberately left
+    # inline (not precompiled): the scorer-precision change edits these exact
+    # patterns, so keeping them inline here means the two changes touch disjoint
+    # lines and neither can silently revert the other on merge.
+    image_generation_intent = _matches(
+        normalized,
+        r"\b(generate|create|make|draw|render|produce|design)\b"
+        r".*\b(image|picture|photo|illustration|logo|icon|wallpaper|poster|"
+        r"diffusion|stable diffusion)\b",
+    )
     vision_intent = bool(_RE_VISION_INTENT.search(normalized))
     tool_intent = bool(_RE_TOOL_INTENT.search(normalized))
 
@@ -213,11 +204,21 @@ def score_prompt(
     sensitive_domain = legal_domain or medical_domain or financial_domain
     production_risk = bool(_RE_PRODUCTION_RISK.search(normalized))
     security_risk = bool(_RE_SECURITY_RISK.search(normalized))
-    pii_risk = bool(_RE_PII_RISK.search(normalized))
+    pii_risk = _matches(
+        normalized,
+        r"\b(ssn|passport|password|secret|social security|credit card|api key|"
+        r"private key)\b",
+    )
 
     destructive_action = bool(_RE_DESTRUCTIVE_ACTION.search(normalized))
     send_action = bool(_RE_SEND_ACTION.search(normalized))
-    purchase_action = bool(_RE_PURCHASE_ACTION.search(normalized))
+    purchase_action = _matches(
+        normalized,
+        r"\b(buy|purchase|order|pay|transfer|wire|subscribe)\b|"
+        r"\bbook\s+(?:(?:a|an|the|my|our)\s+)?"
+        r"(flight|hotel|room|ticket|appointment|reservation|meeting|call|table|"
+        r"ride|trip)\b",
+    )
     high_impact_external_action = bool(
         _RE_HIGH_IMPACT_EXTERNAL_ACTION.search(normalized)
     )
