@@ -74,7 +74,7 @@ engines:
     supports_tools: false
     modalities: []
     enabled: true
-    fallback: balanced_local
+    fallback: human_confirm
     availability:
       status: auto
   code_agent:
