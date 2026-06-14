@@ -1,16 +1,20 @@
 from importlib import resources
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import zipfile
 
 import tomllib
 
-from hermes.plugins.model_router.config import default_config_path, load_router_config
+from hermes.plugins.model_router.config import default_config_source, load_router_config
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_pyproject_declares_console_script_without_unverified_plugin_entry_point():
-    with open("pyproject.toml", "rb") as handle:
+    with open(ROOT / "pyproject.toml", "rb") as handle:
         pyproject = tomllib.load(handle)
 
     project = pyproject["project"]
@@ -29,7 +33,7 @@ def test_default_config_loads_from_package_resource_outside_repo_cwd(
 
     config = load_router_config()
 
-    assert config.source_path == str(default_config_path())
+    assert config.source_path == default_config_source()
     assert config.routing_targets["coding"] == "code_agent"
     assert config.get_engine("fast_local") is not None
 
@@ -49,27 +53,32 @@ def test_packaged_default_config_matches_repo_default_config():
         "model_router.yaml",
     )
 
-    assert config_resource.read_text(encoding="utf-8") == Path(
-        "configs/model_router.yaml"
+    assert config_resource.read_text(encoding="utf-8") == (
+        ROOT / "configs" / "model_router.yaml"
     ).read_text(encoding="utf-8")
 
 
 def test_wheel_contains_console_script_and_packaged_config(tmp_path):
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "wheel",
-            ".",
-            "--no-deps",
-            "--wheel-dir",
-            str(tmp_path),
-        ],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "wheel",
+                str(ROOT),
+                "--no-deps",
+                "--wheel-dir",
+                str(tmp_path),
+            ],
+            cwd=tmp_path,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    finally:
+        shutil.rmtree(ROOT / "build", ignore_errors=True)
+        shutil.rmtree(ROOT / "hermes_router.egg-info", ignore_errors=True)
 
     assert result.returncode == 0, result.stderr
     wheels = sorted(tmp_path.glob("hermes_router-*.whl"))

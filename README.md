@@ -435,7 +435,7 @@ hermes-router decide --json "fix the repo and run tests"
 For a non-editable install from GitHub:
 
 ```bash
-python -m pip install "git+https://github.com/doncazper/hermes-router.git@v0.3.0"
+python -m pip install "git+https://github.com/doncazper/hermes-router.git@v0.3.1"
 hermes-router decide "rewrite this text"
 ```
 
@@ -502,6 +502,9 @@ scripts/
   benchmark_route_fast.py
 tests/
 ```
+
+The `hermes/plugins` path is a Python package namespace used by Hermes Router.
+It is not a Hermes Agent/Desktop plugin registration point.
 
 ## Documentation
 

@@ -15,8 +15,8 @@ import yaml
 
 from hermes.plugins.model_router.config import (
     DEFAULT_ROUTING_TARGETS,
+    default_config_source,
     default_config_text,
-    default_config_path,
 )
 
 DEFAULT_COMMANDS = (
@@ -911,7 +911,7 @@ def _load_config_mapping(config_path: str | Path | None) -> dict[str, Any]:
         source = str(path)
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
     else:
-        source = str(default_config_path())
+        source = default_config_source()
         data = yaml.safe_load(default_config_text())
     if not isinstance(data, dict):
         raise ValueError(f"config must be a mapping: {source}")

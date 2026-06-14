@@ -4,6 +4,7 @@ from pathlib import Path
 import yaml
 
 import hermes.plugins.model_router as public_api
+import hermes.plugins.model_router.policy as policy
 from hermes.plugins.model_router import ModelRouter
 from hermes.plugins.model_router.config import REQUIRED_ENGINE_CATEGORIES
 from hermes.plugins.model_router.models import RoutingDecision
@@ -105,7 +106,14 @@ def test_route_fast_does_not_call_rich_scorer(monkeypatch, tmp_path):
 
 
 def test_route_fast_source_has_no_hot_path_logging_or_scorer_call():
-    source = inspect.getsource(ModelRouter.route_fast)
+    hot_path_objects = (
+        policy.ModelRouter.route_fast,
+        policy.ModelRouter._resolve_target_fast,
+        policy.ModelRouter._resolve_engine_fast,
+        policy._fast_target_route_index,
+        policy._fast_has_confirmation_word,
+    )
+    source = "\n".join(inspect.getsource(obj) for obj in hot_path_objects)
 
     assert "score_prompt" not in source
     assert "logging" not in source

@@ -51,17 +51,15 @@ class RouterConfigError(ValueError):
 
 DEFAULT_CONFIG_PACKAGE = "hermes.plugins.model_router.data"
 DEFAULT_CONFIG_NAME = "model_router.yaml"
+DEFAULT_CONFIG_SOURCE = f"resource://{DEFAULT_CONFIG_PACKAGE}/{DEFAULT_CONFIG_NAME}"
 
 
 def default_config_resource() -> resources.abc.Traversable:
     return resources.files(DEFAULT_CONFIG_PACKAGE).joinpath(DEFAULT_CONFIG_NAME)
 
 
-def default_config_path() -> Path:
-    resource = default_config_resource()
-    if isinstance(resource, Path):
-        return resource
-    return Path(str(resource))
+def default_config_source() -> str:
+    return DEFAULT_CONFIG_SOURCE
 
 
 def default_config_text() -> str:
@@ -73,7 +71,7 @@ def load_router_config(config_path: str | Path | None = None) -> RouterConfig:
     source_path: str
     try:
         if config_path is None:
-            source_path = str(default_config_path())
+            source_path = default_config_source()
             data = yaml.safe_load(default_config_text())
         else:
             path = Path(config_path).expanduser()

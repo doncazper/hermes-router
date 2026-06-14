@@ -52,6 +52,17 @@ def _env_float(name: str, default: float) -> float:
     return parsed
 
 
+def _env_float_or_error(
+    parser: argparse.ArgumentParser,
+    name: str,
+    default: float,
+) -> float:
+    try:
+        return _env_float(name, default)
+    except argparse.ArgumentTypeError as exc:
+        parser.error(str(exc))
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Benchmark route_fast() and fail if it exceeds latency budgets.",
@@ -78,7 +89,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-best-us",
         type=_positive_float,
-        default=_env_float("ROUTE_FAST_MAX_BEST_US", DEFAULT_MAX_BEST_US),
+        default=_env_float_or_error(
+            parser,
+            "ROUTE_FAST_MAX_BEST_US",
+            DEFAULT_MAX_BEST_US,
+        ),
         help=(
             "Maximum allowed best route_fast latency in microseconds. "
             "Default: 25 or ROUTE_FAST_MAX_BEST_US."
@@ -87,7 +102,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-mean-us",
         type=_positive_float,
-        default=_env_float("ROUTE_FAST_MAX_MEAN_US", DEFAULT_MAX_MEAN_US),
+        default=_env_float_or_error(
+            parser,
+            "ROUTE_FAST_MAX_MEAN_US",
+            DEFAULT_MAX_MEAN_US,
+        ),
         help=(
             "Maximum allowed mean route_fast latency in microseconds. "
             "Default: 50 or ROUTE_FAST_MAX_MEAN_US."

@@ -12,7 +12,8 @@ to an agent. It only decides.
 
 ## Architecture
 
-The router is implemented under `hermes/plugins/model_router/`.
+The router is implemented under `hermes/plugins/model_router/`. This is a
+Python package namespace, not Hermes Agent/Desktop plugin registration.
 
 - `models.py` defines JSON-safe dataclass models for engines, prompt features,
   scoring config, alternatives, decisions, receipts, and config.

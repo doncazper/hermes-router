@@ -123,11 +123,11 @@ Top internal-time costs:
 - string `strip(...)`: 0.010 s
 - `_fast_is_ambiguous(...)`: 0.005 s
 
-Relevant code:
+Relevant code areas:
 
-- `hermes/plugins/model_router/policy.py:599`
-- `hermes/plugins/model_router/policy.py:638`
-- `hermes/plugins/model_router/policy.py:669`
+- `hermes/plugins/model_router/policy.py`: `_fast_target_route_index(...)`
+- `hermes/plugins/model_router/policy.py`: `_fast_has_any(...)`
+- `hermes/plugins/model_router/policy.py`: `_fast_has_confirmation_word(...)`
 
 Interpretation: normal `route_fast(...)` time is mostly repeated marker scans
 and token cleanup. This is fine for short prompts, but the same approach is
@@ -145,11 +145,11 @@ Top internal-time costs:
 - `_rank_alternatives(...)`: 0.022 s internal, 0.091 s cumulative
 - `ModelRouter.route(...)`: 0.015 s internal, 0.362 s cumulative
 
-Relevant code:
+Relevant code areas:
 
-- `hermes/plugins/model_router/scorer.py:176`
-- `hermes/plugins/model_router/policy.py:1014`
-- `hermes/plugins/model_router/policy.py:1052`
+- `hermes/plugins/model_router/scorer.py`: `score_prompt(...)`
+- `hermes/plugins/model_router/policy.py`: `_rank_alternatives(...)`
+- `hermes/plugins/model_router/policy.py`: `_rank_engine(...)`
 
 Interpretation: rich routing spends most of its time in scoring and alternative
 ranking. Disabling alternatives saves about 10 us per ordinary prompt.
@@ -168,13 +168,12 @@ Top internal-time costs:
 - `_complexity_signals(...)`: 0.009 s
 - `_matches(...)`: 0.046 s cumulative
 
-Relevant code:
+Relevant code areas:
 
-- `hermes/plugins/model_router/scorer.py:188`
-- `hermes/plugins/model_router/scorer.py:203`
-- `hermes/plugins/model_router/scorer.py:219`
-- `hermes/plugins/model_router/scorer.py:227`
-- `hermes/plugins/model_router/scorer.py:420`
+- `hermes/plugins/model_router/scorer.py`: precompiled `_RE_*` patterns
+- `hermes/plugins/model_router/scorer.py`: `score_prompt(...)`
+- `hermes/plugins/model_router/scorer.py`: `_order_is_purchase(...)`
+- `hermes/plugins/model_router/scorer.py`: `_merged_weights(...)`
 
 Interpretation: the recent precompile work helped the stable patterns, but the
 remaining inline `_matches(...)` calls still pay function and `re` cache lookup
@@ -202,9 +201,9 @@ still call initialized `route_fast(...)` in process.
 
 ### 1. Short-Circuit Long Prompts Earlier In `route_fast(...)`
 
-Current behavior in `policy.py:599` checks confirmation, simple/coding special
-cases, image markers, vision markers, coding markers, research markers, and
-only then checks `prompt_length >= 4000` at `policy.py:629`.
+The original behavior in `policy.py` checked confirmation, simple/coding special
+cases, image markers, vision markers, coding markers, and research markers
+before the long-context threshold.
 
 For a long-context prompt, `route_fast(...)` measured about 250 us versus
 sub-5 us for ordinary prompts.
@@ -231,10 +230,10 @@ compiled regex constants.
 
 Candidates:
 
-- `scorer.py:203` image generation pattern
-- `scorer.py:219` PII pattern
-- `scorer.py:227` purchase pattern
-- `scorer.py:416` order word check
+- image-generation intent pattern
+- PII-risk pattern
+- purchase-intent pattern
+- order-word check
 
 Expected impact:
 
@@ -243,9 +242,9 @@ Expected impact:
 
 ### 3. Cache Merged Scoring Weights
 
-`score_prompt(...)` calls `_merged_weights(config)` on every prompt at
-`scorer.py:182`. The profile shows this at about 0.020 s cumulative for 6,000
-scores, roughly 3.3 us per score.
+`score_prompt(...)` originally called `_merged_weights(config)` on every prompt.
+The profile showed this at about 0.020 s cumulative for 6,000 scores, roughly
+3.3 us per score.
 
 Recommended change:
 

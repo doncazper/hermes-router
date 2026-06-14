@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -61,3 +62,30 @@ def test_route_fast_latency_guard_script_emits_parseable_metrics():
     assert payload["failures"] == []
     assert payload["route_fast_mean_us"] > 0
     assert payload["route_fast_best_us"] > 0
+
+
+def test_route_fast_latency_guard_rejects_invalid_env_budget_cleanly():
+    env = {
+        **os.environ,
+        "ROUTE_FAST_MAX_MEAN_US": "not-a-number",
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/check_route_fast_latency.py",
+            "--iterations",
+            "10",
+            "--repeat",
+            "1",
+            "--json",
+        ],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "ROUTE_FAST_MAX_MEAN_US must be a positive float" in result.stderr
+    assert "Traceback" not in result.stderr
