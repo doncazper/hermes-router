@@ -1,0 +1,287 @@
+routing_targets:
+  simple: fast_local
+  balanced: balanced_local
+  reasoning: reasoning_local
+  coding: code_agent
+  research: web_research
+  vision: multimodal_vision
+  image_generation: image_generation
+  confirmation: human_confirm
+engines:
+  intent_router:
+    provider: local
+    model: hermes-intent-router
+    adapter: heuristic_router
+    strengths:
+      - intent classification
+      - routing decisions
+      - low-latency prompt analysis
+    max_context: 8192
+    cost_tier: free
+    latency_tier: low
+    supports_tools: false
+    modalities: []
+    enabled: true
+    fallback: fast_local
+    availability:
+      status: auto
+  fast_local:
+    provider: local
+    model: hermes-fast-local
+    adapter: local_chat
+    strengths:
+      - rewrite
+      - extraction
+      - formatting
+    max_context: 8192
+    cost_tier: free
+    latency_tier: low
+    supports_tools: false
+    modalities: []
+    enabled: true
+    fallback: balanced_local
+    availability:
+      status: auto
+  balanced_local:
+    provider: local
+    model: hermes-balanced-local
+    adapter: local_chat
+    strengths:
+      - summarization
+      - general tasks
+      - moderate reasoning
+    max_context: 16384
+    cost_tier: free
+    latency_tier: medium
+    supports_tools: false
+    modalities: []
+    enabled: true
+    fallback: reasoning_local
+    availability:
+      status: auto
+  reasoning_local:
+    provider: local
+    model: hermes-reasoning-local
+    adapter: local_reasoning
+    strengths:
+      - architecture
+      - planning
+      - long-context reasoning
+      - complex logic
+    max_context: 65536
+    cost_tier: free
+    latency_tier: high
+    supports_tools: false
+    modalities: []
+    enabled: true
+    fallback: human_confirm
+    availability:
+      status: auto
+  code_agent:
+    provider: local
+    model: hermes-local-code-agent
+    adapter: local_code
+    strengths:
+      - deep reasoning and coding
+      - code modification
+      - repository inspection
+      - tests
+    max_context: 65536
+    cost_tier: free
+    latency_tier: medium
+    supports_tools: true
+    modalities: []
+    enabled: true
+    fallback: reasoning_local
+    availability:
+      status: auto
+  claude_code:
+    provider: anthropic
+    model: claude-code
+    adapter: claude_code
+    strengths:
+      - code modification
+      - repository inspection
+      - tests
+    max_context: 200000
+    cost_tier: high
+    latency_tier: medium
+    supports_tools: true
+    modalities: []
+    enabled: false
+    fallback: code_agent
+    availability:
+      status: auto
+      required_commands:
+        - claude
+  codex:
+    provider: openai
+    model: codex
+    adapter: codex
+    strengths:
+      - code modification
+      - repository inspection
+      - tests
+    max_context: 200000
+    cost_tier: high
+    latency_tier: medium
+    supports_tools: true
+    modalities: []
+    enabled: false
+    fallback: code_agent
+    availability:
+      status: auto
+      required_commands:
+        - codex
+  openai_api:
+    provider: openai
+    model: configured-openai-model
+    adapter: openai_chat
+    strengths:
+      - API-backed chat
+      - summarization
+      - reasoning
+    max_context: 128000
+    cost_tier: paid
+    latency_tier: medium
+    supports_tools: true
+    modalities:
+      - image
+    enabled: false
+    fallback: balanced_local
+    availability:
+      status: auto
+      required_env:
+        - OPENAI_API_KEY
+  anthropic_api:
+    provider: anthropic
+    model: configured-anthropic-model
+    adapter: anthropic_chat
+    strengths:
+      - API-backed chat
+      - long-context reasoning
+      - writing
+    max_context: 200000
+    cost_tier: paid
+    latency_tier: medium
+    supports_tools: true
+    modalities:
+      - image
+      - pdf
+    enabled: false
+    fallback: reasoning_local
+    availability:
+      status: auto
+      required_env:
+        - ANTHROPIC_API_KEY
+  web_research:
+    provider: local
+    model: hermes-web-research
+    adapter: web_research
+    strengths:
+      - current information
+      - citations
+      - source-grounded research
+      - local RAG
+      - HTML extraction
+    max_context: 32768
+    cost_tier: medium
+    latency_tier: high
+    supports_tools: true
+    modalities: []
+    enabled: true
+    fallback: reasoning_local
+    availability:
+      status: auto
+  multimodal_vision:
+    provider: local
+    model: hermes-vision-local
+    adapter: local_vision
+    strengths:
+      - screenshots
+      - image description
+      - OCR
+      - charts
+      - diagrams
+    max_context: 32768
+    cost_tier: medium
+    latency_tier: medium
+    supports_tools: true
+    modalities:
+      - image
+      - pdf
+    enabled: true
+    fallback: reasoning_local
+    availability:
+      status: auto
+  image_generation:
+    provider: local
+    model: hermes-local-diffusion
+    adapter: local_image_generation
+    strengths:
+      - image generation
+      - local diffusion
+      - visual asset creation
+    max_context: 4096
+    cost_tier: medium
+    latency_tier: high
+    supports_tools: true
+    modalities:
+      - image
+    enabled: true
+    fallback: human_confirm
+    availability:
+      status: auto
+  human_confirm:
+    provider: human
+    model: human-confirmation
+    adapter: confirmation_gate
+    strengths:
+      - high-risk review
+      - external-action confirmation
+      - fail-closed routing
+    max_context: 4096
+    cost_tier: none
+    latency_tier: manual
+    supports_tools: true
+    modalities: []
+    enabled: true
+    fallback: null
+    availability:
+      status: available
+
+scoring:
+  saturation_k: 50
+  weights:
+    complexity:
+      medium_prompt: 10
+      long_prompt: 20
+      very_long_prompt: 25
+      coding_intent: 30
+      research_intent: 20
+      current_info_intent: 20
+      multi_step_reasoning: 25
+      architecture: 25
+      tool_intent: 12
+      structured_output: 10
+      ambiguous: 15
+      long_context: 35
+      sensitive_domain: 8
+      vision_intent: 20
+      image_generation_intent: 22
+    risk:
+      destructive_action: 100
+      send_action: 80
+      purchase_action: 80
+      external_action: 50
+      file_shell_github: 30
+      sensitive_domain: 25
+      legal_domain: 8
+      medical_domain: 8
+      financial_domain: 8
+      ambiguous_high_impact: 25
+    confidence:
+      ambiguous: 25
+      short_high_risk: 15
+      weak_feature_match: 10
+      empty_prompt: 40

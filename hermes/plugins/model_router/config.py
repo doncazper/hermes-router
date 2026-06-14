@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
@@ -48,18 +49,38 @@ class RouterConfigError(ValueError):
     """Raised when the model router catalog cannot be trusted."""
 
 
+DEFAULT_CONFIG_PACKAGE = "hermes.plugins.model_router.data"
+DEFAULT_CONFIG_NAME = "model_router.yaml"
+
+
+def default_config_resource() -> resources.abc.Traversable:
+    return resources.files(DEFAULT_CONFIG_PACKAGE).joinpath(DEFAULT_CONFIG_NAME)
+
+
 def default_config_path() -> Path:
-    return Path(__file__).resolve().parents[3] / "configs" / "model_router.yaml"
+    resource = default_config_resource()
+    if isinstance(resource, Path):
+        return resource
+    return Path(str(resource))
+
+
+def default_config_text() -> str:
+    return default_config_resource().read_text(encoding="utf-8")
 
 
 def load_router_config(config_path: str | Path | None = None) -> RouterConfig:
-    path = Path(config_path) if config_path is not None else default_config_path()
-    path = path.expanduser()
-    if not path.exists():
-        raise RouterConfigError(f"model router config missing: {path}")
-
+    path: Path | None = None
+    source_path: str
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if config_path is None:
+            source_path = str(default_config_path())
+            data = yaml.safe_load(default_config_text())
+        else:
+            path = Path(config_path).expanduser()
+            source_path = str(path)
+            if not path.exists():
+                raise RouterConfigError(f"model router config missing: {path}")
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
         raise RouterConfigError(f"model router config invalid YAML: {exc}") from exc
     except OSError as exc:
@@ -106,7 +127,7 @@ def load_router_config(config_path: str | Path | None = None) -> RouterConfig:
     return RouterConfig(
         engines=engines,
         routing_targets=routing_targets,
-        source_path=str(path),
+        source_path=source_path,
         scoring=scoring,
     )
 

@@ -180,7 +180,26 @@ Interpretation: the recent precompile work helped the stable patterns, but the
 remaining inline `_matches(...)` calls still pay function and `re` cache lookup
 cost. Merged scoring weights are also recomputed for every prompt.
 
-## Improvement Opportunities
+## Implemented Guardrails
+
+The current production contract is now guarded by CI, API contract tests,
+adversarial/fuzz tests, and a dedicated route-fast latency check:
+
+```bash
+python scripts/check_route_fast_latency.py --json
+```
+
+CI runs lint, the full test suite, and the benchmark guard on pushes and pull
+requests. The guard enforces the documented initialized `route_fast(...)` SLO:
+<= 25 us best sample and <= 50 us mean sample for ordinary mixed prompts on a
+shared-runner-friendly threshold.
+
+Packaging now exposes a `hermes-router` console command and a Hermes Agent
+plugin entry point for Desktop/CLI diagnostics. These interfaces stay outside
+the high-QPS boundary; services should still call initialized `route_fast(...)`
+in process.
+
+## Historical Improvement Opportunities
 
 ### 1. Short-Circuit Long Prompts Earlier In `route_fast(...)`
 

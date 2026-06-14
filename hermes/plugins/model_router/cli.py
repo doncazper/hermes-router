@@ -81,6 +81,11 @@ def build_parser() -> argparse.ArgumentParser:
         prog="python -m hermes.plugins.model_router.cli",
         description="Decide which Hermes engine category should handle a prompt.",
     )
+    configure_parser(parser)
+    return parser
+
+
+def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     decide = subparsers.add_parser("decide", help="Score and route a prompt")

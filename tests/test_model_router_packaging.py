@@ -1,0 +1,102 @@
+import importlib
+from importlib import resources
+from pathlib import Path
+import subprocess
+import sys
+import zipfile
+
+import tomllib
+
+from hermes.plugins.model_router.config import default_config_path, load_router_config
+
+
+def test_pyproject_declares_console_script_and_hermes_plugin_entry_point():
+    with open("pyproject.toml", "rb") as handle:
+        pyproject = tomllib.load(handle)
+
+    project = pyproject["project"]
+    assert (
+        project["scripts"]["hermes-router"]
+        == "hermes.plugins.model_router.cli:main"
+    )
+    assert (
+        project["entry-points"]["hermes_agent.plugins"]["hermes-router"]
+        == "hermes.plugins.model_router.hermes_plugin"
+    )
+
+    module = importlib.import_module("hermes.plugins.model_router.hermes_plugin")
+    assert hasattr(module, "register")
+
+
+def test_default_config_loads_from_package_resource_outside_repo_cwd(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+
+    config = load_router_config()
+
+    assert config.source_path == str(default_config_path())
+    assert config.routing_targets["coding"] == "code_agent"
+    assert config.get_engine("fast_local") is not None
+
+
+def test_packaged_default_config_resource_exists():
+    config_resource = resources.files("hermes.plugins.model_router").joinpath(
+        "data",
+        "model_router.yaml",
+    )
+    plugin_resource = resources.files("hermes.plugins.model_router").joinpath(
+        "plugin.yaml",
+    )
+
+    assert config_resource.is_file()
+    assert plugin_resource.is_file()
+
+
+def test_packaged_default_config_matches_repo_default_config():
+    config_resource = resources.files("hermes.plugins.model_router").joinpath(
+        "data",
+        "model_router.yaml",
+    )
+
+    assert config_resource.read_text(encoding="utf-8") == Path(
+        "configs/model_router.yaml"
+    ).read_text(encoding="utf-8")
+
+
+def test_wheel_contains_entry_points_config_and_plugin_metadata(tmp_path):
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "wheel",
+            ".",
+            "--no-deps",
+            "--wheel-dir",
+            str(tmp_path),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    wheels = sorted(tmp_path.glob("hermes_router-*.whl"))
+    assert wheels
+
+    with zipfile.ZipFile(wheels[-1]) as wheel:
+        names = set(wheel.namelist())
+        entry_points_name = next(
+            name for name in names if name.endswith(".dist-info/entry_points.txt")
+        )
+        entry_points = wheel.read(entry_points_name).decode("utf-8")
+
+    assert "hermes/plugins/model_router/data/model_router.yaml" in names
+    assert "hermes/plugins/model_router/plugin.yaml" in names
+    assert "hermes-router = hermes.plugins.model_router.cli:main" in entry_points
+    assert (
+        "hermes-router = hermes.plugins.model_router.hermes_plugin"
+        in entry_points
+    )

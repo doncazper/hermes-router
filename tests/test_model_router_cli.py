@@ -1,4 +1,5 @@
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -98,3 +99,21 @@ def test_readable_cli_emits_ranked_alternatives():
 
     assert result.returncode == 0
     assert "Alternatives:" in result.stdout
+
+
+def test_console_script_emits_parseable_receipt_when_installed():
+    executable = shutil.which("hermes-router") or str(
+        Path(sys.executable).with_name("hermes-router")
+    )
+    assert Path(executable).is_file()
+    result = subprocess.run(
+        [executable, "decide", "--json", "fix the repo and run tests"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["selected_engine"] == "code_agent"

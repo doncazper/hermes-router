@@ -108,12 +108,23 @@ decision = router.route("fix the repo and run tests")
 availability once. Per-prompt routing uses the in-memory config and does not run
 setup scans or parse YAML again.
 
-Use `route_fast(...)` when the runtime only needs an engine choice. It returns
-the selected engine string through a precompiled in-memory path and still keeps
-the hard safety rule that high-risk actions route to `human_confirm`. Use
-`route(...)` when callers need scores, reasons, rejected engines, alternatives,
-or receipt serialization. For a lighter rich decision, pass
+Use `route_fast(...)` as the production API when the runtime only needs an
+engine choice. It returns the selected engine string through a precompiled
+in-memory path and still keeps the hard safety rule that high-risk actions route
+to `human_confirm`. Use `route(...)` as the diagnostic and audit API when
+callers need scores, reasons, rejected engines, alternatives, or receipt
+serialization. For a lighter diagnostic decision, pass
 `include_alternatives=False` to skip candidate ranking on that call.
+
+The hot path does not perform built-in logging. Services that need telemetry
+should measure and emit metrics around router calls at the service boundary so
+`route_fast(...)` stays allocation-light and privacy policy remains explicit.
+See `docs/production-readiness.md` for SLOs and benchmark guardrails.
+
+When installed into Hermes Agent or Hermes Desktop, the package registers the
+official plugin entry point and exposes `hermes router ...` plus `/router`
+diagnostics. Those commands are for inspection only; automatic per-turn model
+switching remains a future Hermes core integration point.
 
 ## Dry-Run Dispatch Plans
 

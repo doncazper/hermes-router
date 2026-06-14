@@ -18,7 +18,7 @@ shell commands, send messages, delete files, or purchase anything.
 | Need | Hermes Router provides |
 | --- | --- |
 | Fast hot-path routing | `ModelRouter.route_fast(prompt)` returns an engine string |
-| Explainable decisions | `ModelRouter.route(prompt)` returns scores, flags, reasons, and alternatives |
+| Diagnostic decisions | `ModelRouter.route(prompt)` returns scores, flags, reasons, and alternatives |
 | CLI integration | `decide`, `validate-config`, `dispatch-plan`, and `setup` commands |
 | Local/API flexibility | YAML routing targets for local models, hosted APIs, Codex, Claude Code, vision, image generation, and custom adapters |
 | Safety boundaries | High-risk or invalid requests fail closed to `human_confirm` |
@@ -43,10 +43,11 @@ shell commands, send messages, delete files, or purchase anything.
 
 ## Project Status
 
-Hermes Router is an MVP decision layer. The stable surface today is:
+Hermes Router is a lean production-ready decision layer when embedded through
+the initialized Python API. The stable surface today is:
 
-- CLI decision receipts.
-- Initialized Python router API.
+- `ModelRouter.route_fast(...)` for production routing.
+- `ModelRouter.route(...)` for diagnostic and audit receipts.
 - Config-driven model/agent catalog.
 - Safe dry-run dispatch plans.
 - Local setup wizard and recommendations.
@@ -108,19 +109,20 @@ from hermes.plugins.model_router import ModelRouter
 
 router = ModelRouter.from_config("configs/model_router.yaml")
 
-# Fast hot path: selected engine only.
+# Production hot path: selected engine only.
 engine = router.route_fast("fix the repo and run tests")
 
-# Rich path: scores, reasons, rejected engines, alternatives, and flags.
+# Diagnostic path: scores, reasons, rejected engines, alternatives, and flags.
 decision = router.route("fix the repo and run tests")
 
 print(engine)
 print(decision.requires_code_execution)
 ```
 
-Use `route_fast(...)` for live routing loops, UI responsiveness, and
-high-volume classification. Use `route(...)` when you need a receipt or
-explanation. If you need a rich decision but not ranked alternatives:
+Use `route_fast(...)` for production routing, live routing loops, UI
+responsiveness, and high-volume classification. Use `route(...)` when you need
+a receipt, explanation, audit trail, or ranked alternatives. If you need a rich
+decision but not ranked alternatives:
 
 ```python
 decision = router.route("rewrite this text", include_alternatives=False)
@@ -135,6 +137,13 @@ decision = route_prompt("research current GLP-1 supplement trends")
 ```
 
 ## CLI
+
+After installation, you can use the console command:
+
+```bash
+hermes-router decide "rewrite this text"
+hermes-router decide --json "fix the repo and run tests"
+```
 
 Use a custom catalog:
 
@@ -391,10 +400,11 @@ Use the initialized API for runtime performance:
 ```bash
 python scripts/benchmark_route_fast.py
 python scripts/benchmark_route_fast.py --json
+python scripts/check_route_fast_latency.py --json
 ```
 
-`route_fast(...)` is the intended hot path. It returns only the selected engine
-string. The scorer precompiles its stable regex patterns at import time, and
+`route_fast(...)` is the production hot path. It returns only the selected
+engine string. The scorer precompiles its stable regex patterns at import time, and
 initialized routers keep YAML config and availability results in memory. The
 richer `route(...)` path does more work by design because it builds scores,
 explanations, rejected-engine details, alternatives, and receipt fields.
@@ -402,6 +412,50 @@ explanations, rejected-engine details, alternatives, and receipt fields.
 The CLI is intended for humans, diagnostics, and scripts. Latency-sensitive
 services should not spawn a Python process per prompt; instantiate `ModelRouter`
 once and call the Python API in process.
+
+The default production SLO for initialized ordinary prompts is <= 25 us best
+sample and <= 50 us mean sample for `route_fast(...)`. The benchmark guard
+enforces those budgets in CI. See
+[Production readiness](docs/production-readiness.md) for the API contract,
+benchmark command, SLOs, and logging guidance.
+
+## Hermes Desktop
+
+Hermes Desktop uses the same Hermes Agent runtime, config, and plugin system as
+the CLI and gateway. Install Hermes Router into that Python environment:
+
+```bash
+# pipx-managed Hermes Agent
+pipx inject hermes-agent /path/to/hermes-router
+
+# venv or source install
+python -m pip install /path/to/hermes-router
+
+# local development
+python -m pip install -e /path/to/hermes-router
+```
+
+The package exposes the official Hermes plugin entry point
+`hermes_agent.plugins = hermes-router`. Restart Hermes Desktop or the Hermes
+Agent process after installation, then verify:
+
+```bash
+hermes plugins list
+HERMES_PLUGINS_DEBUG=1 hermes plugins list
+hermes router decide "fix the repo and run tests"
+```
+
+In Desktop chat, use `/router status` or `/router decide <prompt>` for
+diagnostics. V1 does not automatically switch the active model per turn; that
+requires a public Hermes model-routing hook or core integration. The importable
+production API is ready for that integration:
+
+```python
+from hermes.plugins.model_router import ModelRouter
+
+router = ModelRouter.from_config()
+engine = router.route_fast(prompt)
+```
 
 ## Development
 
@@ -431,7 +485,9 @@ hermes/plugins/model_router/
   availability.py     # Non-executing availability validation
   cli.py              # CLI entrypoint
   config.py           # YAML catalog loading and validation
+  data/               # Packaged default config
   dispatch.py         # Safe dry-run dispatch plans
+  hermes_plugin.py    # Hermes Agent plugin registration
   models.py           # Dataclass models and JSON-safe serialization
   policy.py           # Engine selection and fail-closed fallback rules
   receipts.py         # Routing receipt helpers
@@ -451,12 +507,12 @@ tests/
 ## Documentation
 
 - [Model router details](docs/model-router.md)
+- [Production readiness](docs/production-readiness.md)
 - [Future adapter contract](docs/adapter-contract.md)
 
 ## Roadmap
 
 - Keep the router small, deterministic, and fast.
-- Add benchmark regression checks for the hot path.
 - Add opt-in provider health checks that do not execute user tasks.
 - Add gateway dispatch only behind explicit adapter contracts and confirmation
   gates.

@@ -4,13 +4,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-router"
-version = "0.1.0"
+version = "0.3.0"
 description = "Deterministic Hermes model routing decisions"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "PyYAML>=6,<7",
 ]
+
+[project.scripts]
+hermes-router = "hermes.plugins.model_router.cli:main"
+
+[project.entry-points."hermes_agent.plugins"]
+hermes-router = "hermes.plugins.model_router.hermes_plugin"
 
 [project.optional-dependencies]
 dev = [
@@ -20,6 +26,9 @@ dev = [
 
 [tool.setuptools.packages.find]
 include = ["hermes*"]
+
+[tool.setuptools.package-data]
+"hermes.plugins.model_router" = ["data/*.yaml", "plugin.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
