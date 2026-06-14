@@ -56,6 +56,123 @@ DEFAULT_SCORING_WEIGHTS: dict[str, dict[str, int]] = {
 }
 
 
+# Patterns are precompiled at import time so each score_prompt() call skips the
+# per-call pattern-cache lookup that re.search(pattern_str, ...) performs (~0.2us
+# per pattern; ~30 per call). The pattern text is unchanged; inputs are already
+# lowercased but IGNORECASE is kept so behavior is identical.
+#
+# image_generation_intent, pii_risk and purchase_action are intentionally NOT
+# precompiled here: the scorer-precision change edits those exact patterns, so
+# they are kept inline (via _matches) below to keep the two changes on disjoint
+# lines and avoid a silent merge revert.
+_RE_SIMPLE_TRANSFORM = re.compile(
+    r"\b(rewrite|rephrase|format|extract|clean up|copyedit|proofread)\b",
+    re.IGNORECASE,
+)
+_RE_CODING_INTENT = re.compile(
+    r"\b(code|coding|repo|repository|implement|implementation|pytest|ruff|"
+    r"unit test|tests?|debug|bug|fix the repo|edit .*file|pull request|pr)\b",
+    re.IGNORECASE,
+)
+_RE_RESEARCH_INTENT = re.compile(
+    r"\b(research|look up|search|browse|cite|citation|sources?|trend|trends)\b",
+    re.IGNORECASE,
+)
+_RE_CURRENT_INFO_INTENT = re.compile(
+    r"\b(current|latest|recent|today|yesterday|now|news|202[0-9]|"
+    r"up-to-date|fresh)\b",
+    re.IGNORECASE,
+)
+_RE_MULTI_STEP_REASONING = re.compile(
+    r"\b(architecture|architect|design|plan|multi-step|strategy|roadmap|"
+    r"trade-?offs?|edge cases?|data flow|rollout|migration|system)\b",
+    re.IGNORECASE,
+)
+_RE_ARCHITECTURE_INTENT = re.compile(
+    r"\b(distributed|architecture|scalab|concurren|consensus|throughput|"
+    r"backpressure|exactly-once)\b",
+    re.IGNORECASE,
+)
+_RE_FILE_INTENT = re.compile(
+    r"\b(file|files|folder|directory|write|edit|create|patch)\b",
+    re.IGNORECASE,
+)
+_RE_EMAIL_INTENT = re.compile(r"\b(emails|mail|inbox)\b", re.IGNORECASE)
+_RE_CALENDAR_INTENT = re.compile(
+    r"\b(calendar|invite|appointment|schedule|reschedule)\b",
+    re.IGNORECASE,
+)
+_RE_SHELL_INTENT = re.compile(
+    r"\b(shell|terminal|command|execute|run tests?|pytest|ruff|npm|git)\b",
+    re.IGNORECASE,
+)
+_RE_GITHUB_INTENT = re.compile(
+    r"\b(github|pull request|pr|issue|branch|commit|merge|git)\b",
+    re.IGNORECASE,
+)
+_RE_VISION_INTENT = re.compile(
+    r"\b(image|picture|photo|screenshot|screen shot|chart|diagram|graph|"
+    r"ocr|vision|visual|scan|extract text from|describe .*image|"
+    r"look at .*screenshot)\b",
+    re.IGNORECASE,
+)
+_RE_TOOL_INTENT = re.compile(
+    r"\b(run|execute|open|browse|search|send|schedule|download|upload|"
+    r"install|call|use tool|github|calendar)\b",
+    re.IGNORECASE,
+)
+_RE_LEGAL_DOMAIN = re.compile(
+    r"\b(legal|lawyer|lawsuit|contract|settlement|liability|compliance|"
+    r"regulation|regulations)\b",
+    re.IGNORECASE,
+)
+_RE_MEDICAL_DOMAIN = re.compile(
+    r"\b(medical|doctor|diagnosis|diagnose|treatment|symptom|prescription|"
+    r"clinical|health|patient)\b",
+    re.IGNORECASE,
+)
+_RE_FINANCIAL_DOMAIN = re.compile(
+    r"\b(financial|finance|tax|taxes|investment|invest|liability|loan|"
+    r"insurance|bank|trading|stock|portfolio|payment|invoice|refund)\b",
+    re.IGNORECASE,
+)
+_RE_PRODUCTION_RISK = re.compile(
+    r"\b(production|prod|customer data|live system|main branch)\b",
+    re.IGNORECASE,
+)
+_RE_SECURITY_RISK = re.compile(
+    r"\b(exploit|malware|xss|csrf|breach|vulnerabilit|sql injection)\b",
+    re.IGNORECASE,
+)
+_RE_DESTRUCTIVE_ACTION = re.compile(
+    r"\b(delete|remove|wipe|destroy|drop|erase|cancel|terminate|purge|"
+    r"truncate|shutdown|uninstall|revoke)\b",
+    re.IGNORECASE,
+)
+_RE_SEND_ACTION = re.compile(
+    r"\b(send|post|publish|submit|reply)\b|"
+    r"\b(message|email)\s+"
+    r"(?!format|marketing|draft|summary|template|copy|ideas|address|board|"
+    r"body|subject|header|content|notification|settings|preferences)\w+",
+    re.IGNORECASE,
+)
+_RE_HIGH_IMPACT_EXTERNAL_ACTION = re.compile(
+    r"\b(schedule|reschedule|invite|deploy|merge|commit|push)\b|"
+    r"\bapply\s+for\b",
+    re.IGNORECASE,
+)
+_RE_EMAIL_MENTION = re.compile(r"\b(email|message|mail|inbox)\b", re.IGNORECASE)
+_RE_STRUCTURED_OUTPUT = re.compile(
+    r"\b(json|yaml|csv|table|schema|structured|bullets?|checklist)\b",
+    re.IGNORECASE,
+)
+_RE_AMBIGUOUS = re.compile(
+    r"\b(handle|help|fix|manage|do|deal with|this|that|it)\b",
+    re.IGNORECASE,
+)
+_RE_WORD = re.compile(r"\b\w+\b")
+
+
 def score_prompt(
     prompt: str,
     *,
@@ -68,51 +185,17 @@ def score_prompt(
     prompt_length = len(text)
     estimated_tokens = math.ceil(prompt_length / 4) if prompt_length else 0
 
-    simple_transform = _matches(
-        normalized,
-        r"\b(rewrite|rephrase|format|extract|clean up|copyedit|proofread)\b",
-    )
-    coding_intent = _matches(
-        normalized,
-        r"\b(code|coding|repo|repository|implement|implementation|pytest|ruff|"
-        r"unit test|tests?|debug|bug|fix the repo|edit .*file|pull request|pr)\b",
-    )
-    research_intent = _matches(
-        normalized,
-        r"\b(research|look up|search|browse|cite|citation|sources?|trend|trends)\b",
-    )
-    current_info_intent = _matches(
-        normalized,
-        r"\b(current|latest|recent|today|yesterday|now|news|202[0-9]|"
-        r"up-to-date|fresh)\b",
-    )
-    multi_step_reasoning = _matches(
-        normalized,
-        r"\b(architecture|architect|design|plan|multi-step|strategy|roadmap|"
-        r"trade-?offs?|edge cases?|data flow|rollout|migration|system)\b",
-    )
-    architecture_intent = _matches(
-        normalized,
-        r"\b(distributed|architecture|scalab|concurren|consensus|throughput|"
-        r"backpressure|exactly-once)\b",
-    )
-    file_intent = _matches(
-        normalized,
-        r"\b(file|files|folder|directory|write|edit|create|patch)\b",
-    )
-    email_intent = _matches(normalized, r"\b(emails|mail|inbox)\b")
-    calendar_intent = _matches(
-        normalized,
-        r"\b(calendar|invite|appointment|schedule|reschedule)\b",
-    )
-    shell_intent = _matches(
-        normalized,
-        r"\b(shell|terminal|command|execute|run tests?|pytest|ruff|npm|git)\b",
-    )
-    github_intent = _matches(
-        normalized,
-        r"\b(github|pull request|pr|issue|branch|commit|merge|git)\b",
-    )
+    simple_transform = bool(_RE_SIMPLE_TRANSFORM.search(normalized))
+    coding_intent = bool(_RE_CODING_INTENT.search(normalized))
+    research_intent = bool(_RE_RESEARCH_INTENT.search(normalized))
+    current_info_intent = bool(_RE_CURRENT_INFO_INTENT.search(normalized))
+    multi_step_reasoning = bool(_RE_MULTI_STEP_REASONING.search(normalized))
+    architecture_intent = bool(_RE_ARCHITECTURE_INTENT.search(normalized))
+    file_intent = bool(_RE_FILE_INTENT.search(normalized))
+    email_intent = bool(_RE_EMAIL_INTENT.search(normalized))
+    calendar_intent = bool(_RE_CALENDAR_INTENT.search(normalized))
+    shell_intent = bool(_RE_SHELL_INTENT.search(normalized))
+    github_intent = bool(_RE_GITHUB_INTENT.search(normalized))
     # A generation verb must be close to the image noun (its object), not just
     # somewhere earlier in the prompt; a bare ".*" matched "generate a summary of
     # this image's metadata". "stable diffusion" (the tool) implies generation on
@@ -124,60 +207,23 @@ def score_prompt(
         r"(image|picture|photo|illustration|logo|icon|wallpaper|poster)s?\b"
         r"|\bstable diffusion\b",
     )
-    vision_intent = _matches(
-        normalized,
-        r"\b(image|picture|photo|screenshot|screen shot|chart|diagram|graph|"
-        r"ocr|vision|visual|scan|extract text from|describe .*image|"
-        r"look at .*screenshot)\b",
-    )
-    tool_intent = _matches(
-        normalized,
-        r"\b(run|execute|open|browse|search|send|schedule|download|upload|"
-        r"install|call|use tool|github|calendar)\b",
-    )
+    vision_intent = bool(_RE_VISION_INTENT.search(normalized))
+    tool_intent = bool(_RE_TOOL_INTENT.search(normalized))
 
-    legal_domain = _matches(
-        normalized,
-        r"\b(legal|lawyer|lawsuit|contract|settlement|liability|compliance|"
-        r"regulation|regulations)\b",
-    )
-    medical_domain = _matches(
-        normalized,
-        r"\b(medical|doctor|diagnosis|diagnose|treatment|symptom|prescription|"
-        r"clinical|health|patient)\b",
-    )
-    financial_domain = _matches(
-        normalized,
-        r"\b(financial|finance|tax|taxes|investment|invest|liability|loan|"
-        r"insurance|bank|trading|stock|portfolio|payment|invoice|refund)\b",
-    )
+    legal_domain = bool(_RE_LEGAL_DOMAIN.search(normalized))
+    medical_domain = bool(_RE_MEDICAL_DOMAIN.search(normalized))
+    financial_domain = bool(_RE_FINANCIAL_DOMAIN.search(normalized))
     sensitive_domain = legal_domain or medical_domain or financial_domain
-    production_risk = _matches(
-        normalized,
-        r"\b(production|prod|customer data|live system|main branch)\b",
-    )
-    security_risk = _matches(
-        normalized,
-        r"\b(exploit|malware|xss|csrf|breach|vulnerabilit|sql injection)\b",
-    )
+    production_risk = bool(_RE_PRODUCTION_RISK.search(normalized))
+    security_risk = bool(_RE_SECURITY_RISK.search(normalized))
     pii_risk = _matches(
         normalized,
         r"\b(ssns?|passports?|passwords?|secrets?|social security|"
         r"credit cards?|api keys?|private keys?)\b",
     )
 
-    destructive_action = _matches(
-        normalized,
-        r"\b(delete|remove|wipe|destroy|drop|erase|cancel|terminate|purge|"
-        r"truncate|shutdown|uninstall|revoke)\b",
-    )
-    send_action = _matches(
-        normalized,
-        r"\b(send|post|publish|submit|reply)\b|"
-        r"\b(message|email)\s+"
-        r"(?!format|marketing|draft|summary|template|copy|ideas|address|board|"
-        r"body|subject|header|content|notification|settings|preferences)\w+",
-    )
+    destructive_action = bool(_RE_DESTRUCTIVE_ACTION.search(normalized))
+    send_action = bool(_RE_SEND_ACTION.search(normalized))
     purchase_action = _matches(
         normalized,
         r"\b(buy|purchase|pay|transfer|wire|subscribe)\b|"
@@ -185,10 +231,8 @@ def score_prompt(
         r"(flight|hotel|room|ticket|appointment|reservation|meeting|call|table|"
         r"ride|trip)\b",
     ) or _order_is_purchase(normalized)
-    high_impact_external_action = _matches(
-        normalized,
-        r"\b(schedule|reschedule|invite|deploy|merge|commit|push)\b|"
-        r"\bapply\s+for\b",
+    high_impact_external_action = bool(
+        _RE_HIGH_IMPACT_EXTERNAL_ACTION.search(normalized)
     )
     external_action = (
         destructive_action
@@ -196,21 +240,15 @@ def score_prompt(
         or purchase_action
         or high_impact_external_action
     )
-    if send_action and _matches(normalized, r"\b(email|message|mail|inbox)\b"):
+    if send_action and _RE_EMAIL_MENTION.search(normalized):
         email_intent = True
-    structured_output = _matches(
-        normalized,
-        r"\b(json|yaml|csv|table|schema|structured|bullets?|checklist)\b",
-    )
+    structured_output = bool(_RE_STRUCTURED_OUTPUT.search(normalized))
 
-    word_count = len(re.findall(r"\b\w+\b", normalized))
-    ambiguous = (
+    word_count = len(_RE_WORD.findall(normalized))
+    ambiguous = bool(
         not simple_transform
         and word_count <= 4
-        and _matches(
-            normalized,
-            r"\b(handle|help|fix|manage|do|deal with|this|that|it)\b",
-        )
+        and _RE_AMBIGUOUS.search(normalized)
     )
     long_context = estimated_tokens >= 1000 or prompt_length >= 4000
     requires_freshness = bool(research_intent and current_info_intent)
