@@ -1,4 +1,4 @@
-"""Safe dry-run dispatch planning for routed Hermes prompts."""
+"""Safe dry-run dispatch planning for routed prompts."""
 
 from __future__ import annotations
 

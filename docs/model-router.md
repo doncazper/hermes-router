@@ -118,7 +118,7 @@ cycles.
 For embedded use, initialize the router once and reuse it:
 
 ```python
-from hermes.plugins.model_router import ModelRouter
+from model_router import ModelRouter
 
 router = ModelRouter.from_config("configs/model_router.local.yaml")
 engine = router.route_fast("fix the repo and run tests")
@@ -142,18 +142,19 @@ should measure and emit metrics around router calls at the service boundary so
 `route_fast(...)` stays allocation-light and privacy policy remains explicit.
 See `docs/production-readiness.md` for SLOs and benchmark guardrails.
 
-The installed package exposes the `hermes-router` console command for
-diagnostics and scripts. Host-app integrations should call the Python API
-directly or implement the host application's actual plugin contract.
+The installed package exposes `model-router` as the generic console command and
+`hermes-router` as a backward-compatible alias for diagnostics and scripts.
+Host-app integrations should call the Python API directly or implement the host
+application's actual plugin contract.
 
 ## Dry-Run Dispatch Plans
 
 The router can produce a dispatch plan without executing adapters:
 
 ```bash
-python -m hermes.plugins.model_router.cli dispatch-plan "rewrite this text"
-python -m hermes.plugins.model_router.cli dispatch-plan --json "fix the repo and run tests"
-python -m hermes.plugins.model_router.cli dispatch-plan --include-alternatives --json "rewrite this text"
+model-router dispatch-plan "rewrite this text"
+model-router dispatch-plan --json "fix the repo and run tests"
+model-router dispatch-plan --include-alternatives --json "rewrite this text"
 ```
 
 Dispatch plans name the selected provider, model, and adapter and include the
@@ -180,7 +181,7 @@ For machine-specific setup, use one of these paths:
 The generated local config can be passed explicitly:
 
 ```bash
-python -m hermes.plugins.model_router.cli decide \
+model-router decide \
   --config configs/model_router.local.yaml \
   "fix the repo and run tests"
 ```
@@ -189,7 +190,7 @@ If your shell does not provide `python`, use `python3` or run through `uv`, for
 example:
 
 ```bash
-uv run --python 3.11 --with PyYAML python -m hermes.plugins.model_router.cli setup wizard
+uv run --python 3.11 --with-editable . model-router setup wizard
 ```
 
 ### Setup Assistant
@@ -214,15 +215,15 @@ the explicit `setup download --execute` path.
 Scan:
 
 ```bash
-python -m hermes.plugins.model_router.cli setup scan
-python -m hermes.plugins.model_router.cli setup scan --json
+model-router setup scan
+model-router setup scan --json
 ```
 
 Recommend:
 
 ```bash
-python -m hermes.plugins.model_router.cli setup recommend
-python -m hermes.plugins.model_router.cli setup recommend --json
+model-router setup recommend
+model-router setup recommend --json
 ```
 
 Recommendations come from the packaged setup-time model advisor catalog at
@@ -235,7 +236,7 @@ by `ModelRouter`, and hardware detection never runs inside `route_fast(...)` or
 Interactive wizard:
 
 ```bash
-python -m hermes.plugins.model_router.cli setup wizard \
+model-router setup wizard \
   --output configs/model_router.local.yaml
 ```
 
@@ -252,13 +253,13 @@ those `hf download` commands into the configured local model folders.
 
 When recommended downloads are possible but the Hugging Face `hf` CLI is missing,
 the wizard prompts at the beginning and can install it into the Python
-environment running Hermes Router. This prerequisite prompt is separate from the
+environment running the setup assistant. This prerequisite prompt is separate from the
 later model-download confirmation.
 
 Write a generated config:
 
 ```bash
-python -m hermes.plugins.model_router.cli setup write \
+model-router setup write \
   --output configs/model_router.local.yaml
 ```
 
@@ -270,14 +271,14 @@ Setup recommendations include `hf download` commands for missing local roles,
 and `setup download` shows the same plan without running it:
 
 ```bash
-python -m hermes.plugins.model_router.cli setup download
-python -m hermes.plugins.model_router.cli setup download --route fast_local
+model-router setup download
+model-router setup download --route fast_local
 ```
 
 Execution is a separate opt-in:
 
 ```bash
-python -m hermes.plugins.model_router.cli setup download \
+model-router setup download \
   --route fast_local \
   --execute
 ```
@@ -289,7 +290,7 @@ licenses, and hardware choices under user control.
 Users can also provide their own Hugging Face repo id:
 
 ```bash
-python -m hermes.plugins.model_router.cli setup download \
+model-router setup download \
   --route balanced_local \
   --repo-id custom-org/custom-model \
   --execute
@@ -378,8 +379,8 @@ existence. Environment variable values are never printed.
 Run:
 
 ```bash
-python -m hermes.plugins.model_router.cli validate-config
-python -m hermes.plugins.model_router.cli validate-config --json
+model-router validate-config
+model-router validate-config --json
 ```
 
 Routing uses the same safe validation. If a selected engine is unavailable, the
@@ -479,25 +480,25 @@ provider call.
 Readable output:
 
 ```bash
-python -m hermes.plugins.model_router.cli decide "rewrite this text"
+model-router decide "rewrite this text"
 ```
 
 JSON receipt output:
 
 ```bash
-python -m hermes.plugins.model_router.cli decide --json "fix the repo and run tests"
+model-router decide --json "fix the repo and run tests"
 ```
 
 Custom catalog:
 
 ```bash
-python -m hermes.plugins.model_router.cli decide --config configs/model_router.yaml "research current GLP-1 supplement trends"
+model-router decide --config configs/model_router.yaml "research current GLP-1 supplement trends"
 ```
 
 Routing hints:
 
 ```bash
-python -m hermes.plugins.model_router.cli decide \
+model-router decide \
   --attachment image \
   --force-engine multimodal_vision \
   --max-cost-tier medium \

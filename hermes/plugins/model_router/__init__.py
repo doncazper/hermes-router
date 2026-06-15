@@ -1,4 +1,7 @@
-"""Deterministic model routing decisions for Hermes."""
+"""Backward-compatible package path for Hermes Router.
+
+New custom-agent integrations should prefer ``import model_router``.
+"""
 
 from hermes.plugins.model_router.dispatch import build_dispatch_plan
 from hermes.plugins.model_router.policy import ModelRouter, route_prompt

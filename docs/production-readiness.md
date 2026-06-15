@@ -87,7 +87,7 @@ fallbacks, and fallback cycles still fail closed to `human_confirm`.
 Production processes should validate config during startup:
 
 ```python
-from hermes.plugins.model_router import ModelRouter
+from model_router import ModelRouter
 
 router = ModelRouter.from_config("configs/model_router.yaml")
 ```

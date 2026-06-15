@@ -9,22 +9,44 @@ import zipfile
 
 import tomllib
 
+import model_router
 from hermes.plugins.model_router.config import default_config_source, load_router_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_pyproject_declares_console_script_without_extra_entry_points():
+def test_pyproject_declares_generic_package_metadata():
     with open(ROOT / "pyproject.toml", "rb") as handle:
         pyproject = tomllib.load(handle)
 
     project = pyproject["project"]
+    assert project["version"] == "0.4.1"
+    assert project["license"] == "MIT"
+    assert project["license-files"] == ["LICENSE"]
+    assert (
+        project["description"]
+        == "Fast deterministic model routing for custom AI agents"
+    )
     assert (
         project["scripts"]["hermes-router"]
         == "hermes.plugins.model_router.cli:main"
     )
+    assert (
+        project["scripts"]["model-router"]
+        == "hermes.plugins.model_router.cli:main"
+    )
     assert "entry-points" not in project
+    assert "model_router*" in pyproject["tool"]["setuptools"]["packages"]["find"][
+        "include"
+    ]
+
+
+def test_generic_public_import_path_reexports_router_api():
+    assert model_router.ModelRouter.__name__ == "ModelRouter"
+    assert callable(model_router.route_prompt)
+    assert callable(model_router.score_prompt)
+    assert callable(model_router.build_dispatch_plan)
 
 
 def test_default_config_loads_from_package_resource_outside_repo_cwd(
@@ -69,7 +91,7 @@ def test_packaged_default_config_matches_repo_default_config():
     ).read_text(encoding="utf-8")
 
 
-def test_wheel_contains_console_script_and_packaged_config(tmp_path):
+def test_wheel_contains_console_scripts_generic_package_and_packaged_config(tmp_path):
     try:
         result = subprocess.run(
             [
@@ -105,7 +127,10 @@ def test_wheel_contains_console_script_and_packaged_config(tmp_path):
     parser = configparser.ConfigParser()
     parser.read_file(io.StringIO(entry_points))
 
+    assert "hermes-router = hermes.plugins.model_router.cli:main" in entry_points
+    assert "model-router = hermes.plugins.model_router.cli:main" in entry_points
+    assert "model_router/__init__.py" in names
+    assert any(name.endswith(".dist-info/licenses/LICENSE") for name in names)
     assert "hermes/plugins/model_router/data/model_router.yaml" in names
     assert "hermes/plugins/model_router/data/model_catalog.yaml" in names
-    assert "hermes-router = hermes.plugins.model_router.cli:main" in entry_points
     assert set(parser.sections()) == {"console_scripts"}

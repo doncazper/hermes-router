@@ -4,16 +4,27 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-router"
-version = "0.3.1"
-description = "Deterministic Hermes model routing decisions"
+version = "0.4.1"
+description = "Fast deterministic model routing for custom AI agents"
 readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name = "Samuel Behjou" },
+]
 dependencies = [
   "PyYAML>=6,<7",
 ]
 
+[project.urls]
+Homepage = "https://github.com/doncazper/hermes-router"
+Repository = "https://github.com/doncazper/hermes-router"
+Issues = "https://github.com/doncazper/hermes-router/issues"
+
 [project.scripts]
 hermes-router = "hermes.plugins.model_router.cli:main"
+model-router = "hermes.plugins.model_router.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -22,7 +33,7 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["hermes*"]
+include = ["hermes*", "model_router*"]
 
 [tool.setuptools.package-data]
 "hermes.plugins.model_router" = ["data/*.yaml"]

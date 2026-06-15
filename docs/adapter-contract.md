@@ -12,15 +12,15 @@ called, and future adapters can run only after the caller chooses to dispatch.
 The current dispatch surface is dry-run only:
 
 ```bash
-python -m hermes.plugins.model_router.cli dispatch-plan "fix the repo and run tests"
-python -m hermes.plugins.model_router.cli dispatch-plan --json "rewrite this text"
-python -m hermes.plugins.model_router.cli dispatch-plan --include-alternatives --json "rewrite this text"
+model-router dispatch-plan "fix the repo and run tests"
+model-router dispatch-plan --json "rewrite this text"
+model-router dispatch-plan --include-alternatives --json "rewrite this text"
 ```
 
 Programmatic use:
 
 ```python
-from hermes.plugins.model_router import build_dispatch_plan
+from model_router import build_dispatch_plan
 
 plan = build_dispatch_plan("rewrite this text")
 full_plan = build_dispatch_plan("rewrite this text", include_alternatives=True)

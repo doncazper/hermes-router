@@ -1,13 +1,13 @@
 # Hermes Router
 
-Deterministic, fast, safety-first model routing for Hermes.
+Deterministic, fast, safety-first model routing for custom AI agents.
 
 Hermes Router is a small Python decision layer that scores an incoming prompt,
 selects the configured engine that should handle it, and emits a JSON-safe
-receipt explaining why. It keeps routing cheap and predictable: simple work can
-go to fast local engines, complex work to stronger reasoning engines, fresh
-research to research tools, repo work to code agents, and risky actions to human
-confirmation.
+receipt explaining why. It is built for people making their own agents: simple
+work can go to fast local models, complex work to stronger reasoning models,
+fresh research to research tools, repo work to code agents, and risky actions to
+human confirmation.
 
 This project is intentionally a decision router only. It does not execute
 prompts, call model providers, load local model weights, browse the web, run
@@ -19,8 +19,8 @@ shell commands, send messages, delete files, or purchase anything.
 | --- | --- |
 | Fast hot-path routing | `ModelRouter.route_fast(prompt)` returns an engine string |
 | Diagnostic decisions | `ModelRouter.route(prompt)` returns scores, flags, reasons, and alternatives |
-| CLI integration | `decide`, `validate-config`, `dispatch-plan`, and `setup` commands |
-| Local/API flexibility | YAML routing targets for local models, hosted APIs, Codex, Claude Code, vision, image generation, and custom adapters |
+| CLI tooling | `decide`, `validate-config`, `dispatch-plan`, and `setup` commands |
+| Local/API flexibility | YAML routing targets for local models, hosted APIs, vision, image generation, and custom adapters |
 | Safety boundaries | High-risk or invalid requests fail closed to `human_confirm` |
 | Setup help | Safe local scans, config recommendations, and opt-in Hugging Face download plans |
 
@@ -33,8 +33,8 @@ shell commands, send messages, delete files, or purchase anything.
   engines, alternatives, requirements, and safety flags.
 - YAML-driven engine catalog; model names are not hardcoded throughout the
   router.
-- User-configurable routing targets for local models, hosted APIs, Codex,
-  Claude Code, web/RAG tools, vision, image generation, or custom adapters.
+- User-configurable routing targets for local models, hosted APIs, web/RAG
+  tools, vision, image generation, or custom adapters.
 - Fail-closed safety: missing/invalid config and high-risk actions route to
   `human_confirm`.
 - Declarative availability checks for env vars, commands, and local paths.
@@ -77,13 +77,13 @@ uv run --python 3.11 --with pytest --with PyYAML python -m pytest
 Readable CLI output:
 
 ```bash
-python -m hermes.plugins.model_router.cli decide "rewrite this text"
+model-router decide "rewrite this text"
 ```
 
 JSON receipt:
 
 ```bash
-python -m hermes.plugins.model_router.cli decide --json "fix the repo and run tests"
+model-router decide --json "fix the repo and run tests"
 ```
 
 Expected default routing examples:
@@ -105,7 +105,7 @@ Initialize once and reuse the router. Runtime calls stay in memory and do not
 re-read YAML, scan disk, or run setup helpers.
 
 ```python
-from hermes.plugins.model_router import ModelRouter
+from model_router import ModelRouter
 
 router = ModelRouter.from_config("configs/model_router.yaml")
 
@@ -131,10 +131,14 @@ decision = router.route("rewrite this text", include_alternatives=False)
 For one-off scripts, the compatibility function remains available:
 
 ```python
-from hermes.plugins.model_router import route_prompt
+from model_router import route_prompt
 
 decision = route_prompt("research current GLP-1 supplement trends")
 ```
+
+The historical `hermes.plugins.model_router` import path remains available for
+backward compatibility, but new custom-agent integrations should use
+`model_router`.
 
 ## CLI
 
@@ -143,12 +147,13 @@ After installation, you can use the console command:
 ```bash
 hermes-router decide "rewrite this text"
 hermes-router decide --json "fix the repo and run tests"
+model-router decide "rewrite this text"
 ```
 
 Use a custom catalog:
 
 ```bash
-python -m hermes.plugins.model_router.cli decide \
+model-router decide \
   --config configs/model_router.local.yaml \
   "research current GLP-1 supplement trends"
 ```
@@ -156,7 +161,7 @@ python -m hermes.plugins.model_router.cli decide \
 Pass routing hints:
 
 ```bash
-python -m hermes.plugins.model_router.cli decide \
+model-router decide \
   --attachment image \
   --force-engine multimodal_vision \
   --max-cost-tier medium \
@@ -167,16 +172,16 @@ python -m hermes.plugins.model_router.cli decide \
 Validate a config:
 
 ```bash
-python -m hermes.plugins.model_router.cli validate-config
-python -m hermes.plugins.model_router.cli validate-config --json
+model-router validate-config
+model-router validate-config --json
 ```
 
 Create a dry-run dispatch plan:
 
 ```bash
-python -m hermes.plugins.model_router.cli dispatch-plan "fix the repo and run tests"
-python -m hermes.plugins.model_router.cli dispatch-plan --json "rewrite this text"
-python -m hermes.plugins.model_router.cli dispatch-plan --include-alternatives --json "rewrite this text"
+model-router dispatch-plan "fix the repo and run tests"
+model-router dispatch-plan --json "rewrite this text"
+model-router dispatch-plan --include-alternatives --json "rewrite this text"
 ```
 
 Dispatch plans only describe what a future adapter would do. They do not execute
@@ -311,20 +316,20 @@ target when that target is enabled, available, and compatible.
 
 ## Setup Assistant
 
-Hermes can help create a local config without guessing what you want.
+The setup assistant can create a local config without guessing what you want.
 
 Scan your machine:
 
 ```bash
-python -m hermes.plugins.model_router.cli setup scan
-python -m hermes.plugins.model_router.cli setup scan --json
+model-router setup scan
+model-router setup scan --json
 ```
 
 Get recommendations:
 
 ```bash
-python -m hermes.plugins.model_router.cli setup recommend
-python -m hermes.plugins.model_router.cli setup recommend --json
+model-router setup recommend
+model-router setup recommend --json
 ```
 
 Recommendations are produced by a bundled, versioned model advisor catalog at
@@ -336,14 +341,14 @@ does not run during `route_fast(...)`, `route(...)`, or ordinary `decide` calls.
 Run the wizard:
 
 ```bash
-python -m hermes.plugins.model_router.cli setup wizard \
+model-router setup wizard \
   --output configs/model_router.local.yaml
 ```
 
 Write a recommended config non-interactively:
 
 ```bash
-python -m hermes.plugins.model_router.cli setup write \
+model-router setup write \
   --output configs/model_router.local.yaml
 ```
 
@@ -365,20 +370,20 @@ folders, so wizard choices should reflect the models your local tools can see.
 
 If recommended downloads are available and the Hugging Face `hf` CLI is missing,
 the wizard warns at the beginning and asks whether to install it into the current
-Python environment before model choices start. Declining is safe; Hermes can
+Python environment before model choices start. Declining is safe; the router can
 still write the config, and downloads can be run later.
 
 Plan downloads:
 
 ```bash
-python -m hermes.plugins.model_router.cli setup download
-python -m hermes.plugins.model_router.cli setup download --route fast_local
+model-router setup download
+model-router setup download --route fast_local
 ```
 
 Run an approved Hugging Face download:
 
 ```bash
-python -m hermes.plugins.model_router.cli setup download \
+model-router setup download \
   --route balanced_local \
   --repo-id custom-org/custom-model \
   --execute
@@ -451,21 +456,21 @@ cd /path/to/hermes-router
 python3.11 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e ".[dev]"
-hermes-router decide --json "fix the repo and run tests"
+model-router decide --json "fix the repo and run tests"
 ```
 
 For a non-editable install from GitHub:
 
 ```bash
-python -m pip install "git+https://github.com/doncazper/hermes-router.git@v0.3.1"
-hermes-router decide "rewrite this text"
+python -m pip install "git+https://github.com/doncazper/hermes-router.git@v0.4.1"
+model-router decide "rewrite this text"
 ```
 
-The package exposes a console command, `hermes-router`, and the importable
-Python API:
+The package exposes console commands, `hermes-router` and `model-router`, plus
+the importable Python API:
 
 ```python
-from hermes.plugins.model_router import ModelRouter
+from model_router import ModelRouter
 
 router = ModelRouter.from_config()
 engine = router.route_fast(prompt)
@@ -474,6 +479,8 @@ engine = router.route_fast(prompt)
 The default catalog is included as package data, so `ModelRouter.from_config()`
 works after wheel installation without relying on the repository checkout. Pass
 an explicit config path when an embedding app needs its own engine catalog.
+
+See `examples/basic_custom_agent.py` for a minimal host-neutral integration.
 
 Hermes Router does not currently claim any host-app plugin manifest or automatic
 per-turn model switching contract. Embedding applications should use their own
@@ -504,6 +511,8 @@ uv run --python 3.11 --with ruff --with PyYAML python -m ruff check .
 ## Project Layout
 
 ```text
+model_router/
+  __init__.py          # Generic public import path
 hermes/plugins/model_router/
   availability.py     # Non-executing availability validation
   cli.py              # CLI entrypoint
@@ -521,19 +530,23 @@ configs/
 docs/
   adapter-contract.md
   model-router.md
+examples/
+  basic_custom_agent.py
 scripts/
   benchmark_route_fast.py
 tests/
 ```
 
-The `hermes/plugins` path is a legacy Python package namespace used by Hermes
-Router. It is not a host-application plugin registration point.
+The `model_router` package is the generic public import path. The
+`hermes/plugins` path is retained only as a backward-compatible legacy namespace.
+Neither path is a host-application plugin registration point.
 
 ## Documentation
 
 - [Model router details](docs/model-router.md)
 - [Production readiness](docs/production-readiness.md)
-- [Future adapter contract](docs/adapter-contract.md)
+- [Host adapter contract](docs/adapter-contract.md)
+- [Contributing](CONTRIBUTING.md)
 
 ## Roadmap
 

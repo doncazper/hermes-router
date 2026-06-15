@@ -78,8 +78,8 @@ class WizardSelections:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m hermes.plugins.model_router.cli",
-        description="Decide which Hermes engine category should handle a prompt.",
+        prog="model-router",
+        description="Decide which engine category should handle a prompt.",
     )
     configure_parser(parser)
     return parser
