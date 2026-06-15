@@ -8,7 +8,12 @@ from typing import Any
 
 import yaml
 
-from hermes.plugins.model_router.models import ModelEngine, RouterConfig, ScoringConfig
+from hermes.plugins.model_router.models import (
+    ModelEngine,
+    RouterConfig,
+    SafetyConfig,
+    ScoringConfig,
+)
 
 REQUIRED_ENGINE_CATEGORIES = (
     "intent_router",
@@ -121,12 +126,17 @@ def load_router_config(config_path: str | Path | None = None) -> RouterConfig:
         scoring = ScoringConfig.from_dict(data.get("scoring"))
     except ValueError as exc:
         raise RouterConfigError(f"model router scoring config invalid: {exc}") from exc
+    try:
+        safety = SafetyConfig.from_dict(data.get("safety"))
+    except ValueError as exc:
+        raise RouterConfigError(f"model router safety config invalid: {exc}") from exc
 
     return RouterConfig(
         engines=engines,
         routing_targets=routing_targets,
         source_path=source_path,
         scoring=scoring,
+        safety=safety,
     )
 
 

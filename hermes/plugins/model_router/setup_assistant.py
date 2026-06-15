@@ -18,6 +18,12 @@ from hermes.plugins.model_router.config import (
     default_config_source,
     default_config_text,
 )
+from hermes.plugins.model_router.model_advisor import (
+    HardwareProfile,
+    ModelAdvice,
+    detect_hardware_profile,
+    recommend_catalog_models,
+)
 
 DEFAULT_COMMANDS = (
     "claude",
@@ -201,9 +207,10 @@ class SetupRecommendation:
     engine_overrides: dict[str, dict[str, Any]]
     download_suggestions: tuple[DownloadSuggestion, ...]
     notes: tuple[str, ...] = field(default_factory=tuple)
+    hardware_profile: HardwareProfile | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "routing_targets": dict(sorted(self.routing_targets.items())),
             "engine_overrides": self.engine_overrides,
             "download_suggestions": [
@@ -211,6 +218,9 @@ class SetupRecommendation:
             ],
             "notes": list(self.notes),
         }
+        if self.hardware_profile is not None:
+            payload["hardware_profile"] = self.hardware_profile.to_dict()
+        return payload
 
 
 @dataclass(frozen=True)
@@ -268,10 +278,13 @@ def recommend_setup(
     discovery: SetupDiscovery,
     *,
     profile: str = "balanced",
+    hardware: HardwareProfile | None = None,
 ) -> SetupRecommendation:
     routing_targets = dict(DEFAULT_ROUTING_TARGETS)
     engine_overrides: dict[str, dict[str, Any]] = {}
     notes: list[str] = []
+    hardware = hardware or detect_hardware_profile()
+    notes.append(_hardware_note(hardware))
 
     if discovery.commands.get("claude"):
         routing_targets["coding"] = "claude_code"
@@ -310,7 +323,7 @@ def recommend_setup(
     matched_roles = _local_model_overrides(discovery.models, engine_overrides, notes)
     download_suggestions = tuple(
         suggestion
-        for suggestion in _default_download_suggestions(profile)
+        for suggestion in _default_download_suggestions(profile, hardware)
         if suggestion.route not in matched_roles
     )
     for suggestion in download_suggestions:
@@ -328,6 +341,7 @@ def recommend_setup(
         engine_overrides=engine_overrides,
         download_suggestions=download_suggestions,
         notes=tuple(notes),
+        hardware_profile=hardware,
     )
 
 
@@ -389,6 +403,21 @@ def write_config_from_recommendation(
         message=f"wrote recommended config: {output}",
         recommendation=recommendation,
     )
+
+
+def _hardware_note(hardware: HardwareProfile) -> str:
+    memory = (
+        f"{hardware.total_memory_gb:.0f} GB RAM"
+        if hardware.total_memory_gb is not None
+        else "unknown RAM"
+    )
+    disk = (
+        f"{hardware.disk_free_gb:.0f} GB free"
+        if hardware.disk_free_gb is not None
+        else "unknown disk"
+    )
+    chip = "Apple Silicon" if hardware.apple_silicon else hardware.machine or "unknown CPU"
+    return f"Hardware advisor: {chip}, {memory}, {disk}."
 
 
 def engine_override_for_local_model(
@@ -804,51 +833,34 @@ def _engine_override_for_suggestion(suggestion: DownloadSuggestion) -> dict[str,
     }
 
 
-def _default_download_suggestions(profile: str) -> tuple[DownloadSuggestion, ...]:
-    del profile
-    specs = (
-        (
-            "fast_local",
-            "Qwen/Qwen3-0.6B",
-            "Fast local intent/filler/rewrite model.",
-        ),
-        (
-            "balanced_local",
-            "Qwen/Qwen2.5-3B-Instruct",
-            "Balanced local summarization and ordinary chat model.",
-        ),
-        (
-            "reasoning_local",
-            "Qwen/Qwen3-8B",
-            "Larger local reasoning seed for planning-heavy work.",
-        ),
-        (
-            "multimodal_vision",
-            "Qwen/Qwen3-VL-8B-Instruct",
-            "Vision/OCR seed for screenshots, charts, and diagrams.",
-        ),
-        (
-            "image_generation",
-            "stabilityai/sdxl-turbo",
-            "Fast local diffusion seed for image-generation requests.",
-        ),
-    )
+def _default_download_suggestions(
+    profile: str,
+    hardware: HardwareProfile,
+) -> tuple[DownloadSuggestion, ...]:
     return tuple(
-        DownloadSuggestion(
-            route=route,
-            repo_id=repo_id,
-            provider="huggingface",
-            adapter=_adapter_for_route(route),
-            reason=reason,
-            command=(
-                "hf",
-                "download",
-                repo_id,
-                "--local-dir",
-                f"models/{route}/{_repo_slug(repo_id)}",
-            ),
-        )
-        for route, repo_id, reason in specs
+        _download_suggestion_for_advice(advice)
+        for advice in recommend_catalog_models(profile=profile, hardware=hardware)
+    )
+
+
+def _download_suggestion_for_advice(advice: ModelAdvice) -> DownloadSuggestion:
+    include_args: list[str] = []
+    for pattern in advice.include:
+        include_args.extend(("--include", pattern))
+    return DownloadSuggestion(
+        route=advice.route,
+        repo_id=advice.repo_id,
+        provider=advice.provider,
+        adapter=advice.adapter,
+        reason=advice.reason,
+        command=(
+            "hf",
+            "download",
+            advice.repo_id,
+            *include_args,
+            "--local-dir",
+            f"models/{advice.route}/{_repo_slug(advice.repo_id)}",
+        ),
     )
 
 
@@ -885,6 +897,9 @@ def _resolve_command_executable(command_name: str) -> str | None:
     if executable is not None:
         return executable
 
+    if os.environ.get("HERMES_ROUTER_COMMAND_DISCOVERY_PATH_ONLY"):
+        return None
+
     sibling = Path(sys.executable).with_name(command_name)
     if sibling.is_file() and os.access(sibling, os.X_OK):
         return str(sibling)
@@ -898,6 +913,10 @@ def _adapter_for_route(route: str) -> str:
         return "local_vision"
     if route == "reasoning_local":
         return "local_reasoning"
+    if route == "web_research":
+        return "web_research"
+    if route == "code_agent":
+        return "local_code"
     return "local_chat"
 
 

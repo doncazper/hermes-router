@@ -1,0 +1,154 @@
+version: 1
+models:
+  - route: fast_local
+    repo_id: lmstudio-community/Qwen3-0.6B-GGUF
+    provider: huggingface
+    adapter: local_chat
+    reason: Fast local rewrite/extraction model.
+    min_memory_gb: 4
+    recommended_memory_gb: 8
+    quality_score: 2
+    speed_score: 5
+    profiles: [lightweight, balanced, quality]
+    hardware: [cpu, apple_silicon]
+    include: ["*Q4_K_M.gguf"]
+  - route: fast_local
+    repo_id: lmstudio-community/Qwen3-4B-GGUF
+    provider: huggingface
+    adapter: local_chat
+    reason: Higher-quality fast-lane model for machines with more headroom.
+    min_memory_gb: 8
+    recommended_memory_gb: 16
+    quality_score: 4
+    speed_score: 3
+    profiles: [quality]
+    hardware: [cpu, apple_silicon]
+    include: ["*Q4_K_M.gguf"]
+  - route: balanced_local
+    repo_id: Qwen/Qwen2.5-3B-Instruct-GGUF
+    provider: huggingface
+    adapter: local_chat
+    reason: Solid general chat and summarization model with modest memory needs.
+    min_memory_gb: 8
+    recommended_memory_gb: 16
+    quality_score: 3
+    speed_score: 4
+    profiles: [lightweight, balanced]
+    hardware: [cpu, apple_silicon]
+    include: ["*Q4_K_M.gguf"]
+  - route: balanced_local
+    repo_id: lmstudio-community/Qwen3-8B-GGUF
+    provider: huggingface
+    adapter: local_chat
+    reason: Stronger general assistant model when RAM allows.
+    min_memory_gb: 16
+    recommended_memory_gb: 24
+    quality_score: 5
+    speed_score: 2
+    profiles: [quality]
+    hardware: [cpu, apple_silicon]
+    include: ["*Q4_K_M.gguf"]
+  - route: reasoning_local
+    repo_id: Qwen/Qwen3-8B-GGUF
+    provider: huggingface
+    adapter: local_reasoning
+    reason: Strong local reasoning model for planning-heavy prompts.
+    min_memory_gb: 16
+    recommended_memory_gb: 24
+    quality_score: 4
+    speed_score: 2
+    profiles: [lightweight, balanced]
+    hardware: [cpu, apple_silicon]
+    include: ["*Q4_K_M.gguf"]
+  - route: reasoning_local
+    repo_id: lmstudio-community/DeepSeek-R1-0528-Qwen3-8B-GGUF
+    provider: huggingface
+    adapter: local_reasoning
+    reason: Quality-focused reasoning candidate for deeper local planning.
+    min_memory_gb: 16
+    recommended_memory_gb: 24
+    quality_score: 5
+    speed_score: 2
+    profiles: [quality]
+    hardware: [cpu, apple_silicon]
+    include: ["*Q4_K_M.gguf"]
+  - route: code_agent
+    repo_id: Qwen/Qwen2.5-Coder-3B-Instruct-GGUF
+    provider: huggingface
+    adapter: local_code
+    reason: Compact coding model for repository help on smaller machines.
+    min_memory_gb: 8
+    recommended_memory_gb: 16
+    quality_score: 3
+    speed_score: 4
+    profiles: [lightweight]
+    hardware: [cpu, apple_silicon]
+    include: ["*Q4_K_M.gguf"]
+  - route: code_agent
+    repo_id: Qwen/Qwen2.5-Coder-7B-Instruct-GGUF
+    provider: huggingface
+    adapter: local_code
+    reason: Strong local coding model for code edits and repository work.
+    min_memory_gb: 16
+    recommended_memory_gb: 24
+    quality_score: 5
+    speed_score: 2
+    profiles: [balanced, quality]
+    hardware: [cpu, apple_silicon]
+    include: ["*Q4_K_M.gguf"]
+  - route: web_research
+    repo_id: BAAI/bge-small-en-v1.5
+    provider: huggingface
+    adapter: web_research
+    reason: Lightweight embedding model for retrieval-backed research.
+    min_memory_gb: 4
+    recommended_memory_gb: 8
+    quality_score: 3
+    speed_score: 5
+    profiles: [lightweight]
+    hardware: [cpu, apple_silicon]
+  - route: web_research
+    repo_id: BAAI/bge-m3
+    provider: huggingface
+    adapter: web_research
+    reason: Strong multilingual retrieval model for research/RAG.
+    min_memory_gb: 8
+    recommended_memory_gb: 16
+    quality_score: 5
+    speed_score: 3
+    profiles: [balanced, quality]
+    hardware: [cpu, apple_silicon]
+  - route: multimodal_vision
+    repo_id: lmstudio-community/Qwen3-VL-8B-Instruct-GGUF
+    provider: huggingface
+    adapter: local_vision
+    reason: Vision/OCR model for screenshots, charts, and diagrams.
+    min_memory_gb: 16
+    recommended_memory_gb: 24
+    quality_score: 4
+    speed_score: 2
+    profiles: [lightweight, balanced, quality]
+    hardware: [cpu, apple_silicon]
+    include: ["*Q4_K_M*.gguf", "*mmproj*.gguf"]
+  - route: image_generation
+    repo_id: stabilityai/sdxl-turbo
+    provider: huggingface
+    adapter: local_image_generation
+    reason: Fast local text-to-image seed model.
+    min_memory_gb: 8
+    recommended_memory_gb: 16
+    quality_score: 3
+    speed_score: 4
+    profiles: [lightweight, balanced]
+    hardware: [cpu, apple_silicon]
+  - route: image_generation
+    repo_id: black-forest-labs/FLUX.1-schnell
+    provider: huggingface
+    adapter: local_image_generation
+    reason: Higher-quality text-to-image model when hardware allows.
+    min_memory_gb: 16
+    recommended_memory_gb: 32
+    quality_score: 5
+    speed_score: 2
+    profiles: [quality]
+    hardware: [cpu, apple_silicon]

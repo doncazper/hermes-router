@@ -70,6 +70,18 @@ and emit only the fields they are allowed to retain, such as selected engine,
 route type, fallback status, caller-owned request id, and elapsed time. Do not
 log raw prompts unless a separate privacy review explicitly permits it.
 
+## Safety Configuration
+
+Human confirmation is default-on for destructive, sending/publishing,
+purchase/payment, high-impact external actions, and ambiguous sensitive-domain
+prompts. Production configs may opt into narrow escape hatches under
+`safety.confirmation_overrides`, but the router does not learn from approvals or
+relax rules implicitly.
+
+Keep escape hatches visible in versioned config and pair them with application
+tests. Invalid config, undefined routes, unavailable engines without compatible
+fallbacks, and fallback cycles still fail closed to `human_confirm`.
+
 ## Startup Checks
 
 Production processes should validate config during startup:
@@ -89,8 +101,8 @@ The default catalog ships as package data. Explicit `--config` paths and
 `ModelRouter.from_config(path)` still override it for local or application-
 specific catalogs.
 
-Hermes Router does not currently include a Desktop-specific manifest or adapter.
-Embeddings should use the stable Python API unless and until the target Desktop
+Hermes Router does not currently include any host-specific plugin manifest or
+adapter. Embeddings should use the stable Python API unless and until a target
 application's actual integration contract is implemented.
 
 ## Regression Coverage

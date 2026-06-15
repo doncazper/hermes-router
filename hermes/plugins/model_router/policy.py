@@ -21,6 +21,7 @@ from hermes.plugins.model_router.models import (
     RoutingDecision,
     RoutingHints,
     RoutingRequirements,
+    SafetyConfig,
 )
 from hermes.plugins.model_router.scorer import _merged_weights, score_prompt
 
@@ -74,6 +75,30 @@ _FAST_CONFIRMATION_PREFIXES = (
     "push",
 )
 _FAST_CONFIRMATION_WORDS = frozenset(_FAST_CONFIRMATION_PREFIXES)
+_FAST_DESTRUCTIVE_WORDS = frozenset(
+    {
+        "delete",
+        "remove",
+        "wipe",
+        "destroy",
+        "drop",
+        "erase",
+        "cancel",
+        "terminate",
+        "purge",
+        "truncate",
+        "shutdown",
+        "uninstall",
+        "revoke",
+    }
+)
+_FAST_SEND_WORDS = frozenset({"send", "post", "publish", "submit", "reply"})
+_FAST_PURCHASE_WORDS = frozenset(
+    {"buy", "purchase", "order", "pay", "transfer", "wire", "subscribe"}
+)
+_FAST_HIGH_IMPACT_WORDS = frozenset(
+    {"schedule", "reschedule", "invite", "deploy", "merge", "commit", "push"}
+)
 _FAST_CONFIRMATION_VERBS_WITH_OBJECT = frozenset({"email", "message"})
 _FAST_BENIGN_MESSAGE_OBJECTS = frozenset(
     {
@@ -256,6 +281,16 @@ _FAST_RESEARCH_INDEX = 4
 _FAST_VISION_INDEX = 5
 _FAST_IMAGE_GENERATION_INDEX = 6
 _FAST_CONFIRMATION_INDEX = 7
+_CONFIRM_DESTRUCTIVE = 1
+_CONFIRM_SEND = 2
+_CONFIRM_PURCHASE = 4
+_CONFIRM_HIGH_IMPACT = 8
+_CONFIRM_ALL = (
+    _CONFIRM_DESTRUCTIVE
+    | _CONFIRM_SEND
+    | _CONFIRM_PURCHASE
+    | _CONFIRM_HIGH_IMPACT
+)
 _FAST_TARGET_REQUIREMENTS = {
     "simple": RoutingRequirements(),
     "balanced": RoutingRequirements(),
@@ -282,6 +317,16 @@ class ModelRouter:
             availability_report.engines if availability_report is not None else None
         )
         self._scoring_weights = _merged_weights(config.scoring)
+        self._fast_confirmation_mask = _fast_confirmation_mask(config.safety)
+        self._fast_target_route = _fast_target_route_index
+        if self._fast_confirmation_mask != _CONFIRM_ALL:
+            confirmation_mask = self._fast_confirmation_mask
+            self._fast_target_route = (
+                lambda prompt: _fast_target_route_index_with_safety(
+                    prompt,
+                    confirmation_mask,
+                )
+            )
         self._fast_target_engines = self._compile_fast_target_engines()
         self._fast_engine_data = {
             name: (
@@ -344,11 +389,27 @@ class ModelRouter:
 
         required_modalities = _required_modalities(routing_hints)
 
+        requires_human_confirmation = _requires_human_confirmation(
+            analysis.features,
+            self.config.safety,
+        )
+        requires_confirmation_route = (
+            requires_human_confirmation
+            or _requires_ambiguous_high_impact_confirmation(
+                analysis.features,
+                self.config.safety,
+            )
+        )
+
         if routing_hints.force_engine and not (
-            analysis.features.requires_confirmation
+            requires_confirmation_route
             and routing_hints.force_engine != FAIL_CLOSED_ENGINE
         ):
-            classified_target, _ = _target_route(analysis, required_modalities)
+            classified_target, _ = _target_route(
+                analysis,
+                required_modalities,
+                self.config.safety,
+            )
             requirements = _derive_requirements(routing_hints, classified_target)
             return _route_forced_engine(
                 analysis,
@@ -367,7 +428,11 @@ class ModelRouter:
                 f"{routing_hints.force_engine}"
             )
         else:
-            target, target_reason = _target_route(analysis, required_modalities)
+            target, target_reason = _target_route(
+                analysis,
+                required_modalities,
+                self.config.safety,
+            )
 
         requirements = _derive_requirements(routing_hints, target)
 
@@ -401,9 +466,7 @@ class ModelRouter:
         if fallback_reason:
             reasons.append(fallback_reason)
 
-        requires_confirmation = (
-            analysis.features.requires_confirmation or selected == FAIL_CLOSED_ENGINE
-        )
+        requires_confirmation = requires_confirmation_route or selected == FAIL_CLOSED_ENGINE
         if requires_confirmation and selected == FAIL_CLOSED_ENGINE:
             alternatives = ()
         return RoutingDecision(
@@ -447,7 +510,7 @@ class ModelRouter:
         explicit action verb) or from an ambiguous sensitive-domain prompt. For
         safety-critical routing of such prompts, use ``route`` instead.
         """
-        target_index = _fast_target_route_index(prompt)
+        target_index = self._fast_target_route(prompt)
         if hints is None:
             return self._fast_target_engines[target_index]
 
@@ -642,11 +705,100 @@ def _fast_target_route_index(prompt: str) -> int:
     return _FAST_BALANCED_INDEX
 
 
+def _fast_target_route_index_with_safety(prompt: str, confirmation_mask: int) -> int:
+    raw_text = (prompt or "").lower()
+    prompt_length = len(prompt or "")
+
+    if confirmation_mask and (
+        _fast_confirmation_action_mask(raw_text) & confirmation_mask
+    ):
+        return _FAST_CONFIRMATION_INDEX
+
+    if raw_text.startswith(_FAST_SIMPLE_PREFIXES):
+        return _FAST_SIMPLE_INDEX
+    if (
+        "repo" in raw_text
+        or "run tests" in raw_text
+        or "pytest" in raw_text
+        or "ruff" in raw_text
+        or "fix the repo" in raw_text
+    ):
+        return _FAST_CODING_INDEX
+    if prompt_length >= 4000:
+        return _FAST_REASONING_INDEX
+
+    text = f" {raw_text} "
+    image_request = _fast_has_any(text, _FAST_IMAGE_NOUN_MARKERS)
+    if image_request and _fast_has_any(text, _FAST_IMAGE_VERB_MARKERS):
+        return _FAST_IMAGE_GENERATION_INDEX
+    if _fast_has_any(text, _FAST_VISION_MARKERS):
+        return _FAST_VISION_INDEX
+    if _fast_has_any(text, _FAST_CODING_MARKERS):
+        return _FAST_CODING_INDEX
+    if _fast_has_any(text, _FAST_RESEARCH_MARKERS) and (
+        _fast_has_any(text, _FAST_CURRENT_MARKERS) or _fast_has_recent_year(raw_text)
+    ):
+        return _FAST_RESEARCH_INDEX
+    if _fast_has_any(text, _FAST_REASONING_MARKERS):
+        return _FAST_REASONING_INDEX
+    if _fast_is_ambiguous(raw_text):
+        return _FAST_REASONING_INDEX
+    if _fast_has_any(text, _FAST_SIMPLE_MARKERS):
+        return _FAST_SIMPLE_INDEX
+    return _FAST_BALANCED_INDEX
+
+
 def _fast_has_any(text: str, markers: tuple[str, ...]) -> bool:
     for marker in markers:
         if marker in text:
             return True
     return False
+
+
+def _fast_confirmation_action_mask(text: str) -> int:
+    mask = 0
+    apply_pending = False
+    book_pending = False
+    message_pending = False
+    for raw_token in text.split():
+        token = raw_token.strip(_FAST_PUNCTUATION_STRIP)
+        if not token:
+            continue
+        if apply_pending:
+            if token == "for":
+                mask |= _CONFIRM_HIGH_IMPACT
+            apply_pending = False
+        if message_pending:
+            if not _fast_starts_with_benign(token):
+                mask |= _CONFIRM_SEND
+            message_pending = False
+        if book_pending:
+            if token in _FAST_ARTICLES:
+                continue
+            if token in _FAST_BOOK_ACTION_OBJECTS:
+                mask |= _CONFIRM_PURCHASE
+            book_pending = False
+        if token in _FAST_DESTRUCTIVE_WORDS:
+            mask |= _CONFIRM_DESTRUCTIVE
+            continue
+        if token in _FAST_SEND_WORDS:
+            mask |= _CONFIRM_SEND
+            continue
+        if token in _FAST_PURCHASE_WORDS:
+            mask |= _CONFIRM_PURCHASE
+            continue
+        if token in _FAST_HIGH_IMPACT_WORDS:
+            mask |= _CONFIRM_HIGH_IMPACT
+            continue
+        if token == "apply":
+            apply_pending = True
+            continue
+        if token in _FAST_CONFIRMATION_VERBS_WITH_OBJECT:
+            message_pending = True
+            continue
+        if token == "book":
+            book_pending = True
+    return mask
 
 
 def _fast_has_recent_year(raw_text: str) -> bool:
@@ -734,6 +886,62 @@ def _derive_requirements(
     )
 
 
+def _fast_confirmation_mask(safety: SafetyConfig) -> int:
+    if not safety.require_human_confirmation:
+        return 0
+    overrides = safety.confirmation_overrides
+    mask = _CONFIRM_ALL
+    if overrides.allow_destructive_actions:
+        mask &= ~_CONFIRM_DESTRUCTIVE
+    if overrides.allow_send_actions:
+        mask &= ~_CONFIRM_SEND
+    if overrides.allow_purchase_actions:
+        mask &= ~_CONFIRM_PURCHASE
+    if overrides.allow_high_impact_external_actions:
+        mask &= ~_CONFIRM_HIGH_IMPACT
+    return mask
+
+
+def _requires_human_confirmation(
+    features: PromptFeatures,
+    safety: SafetyConfig,
+) -> bool:
+    if not safety.require_human_confirmation:
+        return False
+    overrides = safety.confirmation_overrides
+    if features.destructive_action and not overrides.allow_destructive_actions:
+        return True
+    if features.send_action and not overrides.allow_send_actions:
+        return True
+    if features.purchase_action and not overrides.allow_purchase_actions:
+        return True
+    if (
+        features.high_impact_external_action
+        and not overrides.allow_high_impact_external_actions
+    ):
+        return True
+    if features.requires_confirmation and not (
+        features.destructive_action
+        or features.send_action
+        or features.purchase_action
+        or features.high_impact_external_action
+    ):
+        return True
+    return False
+
+
+def _requires_ambiguous_high_impact_confirmation(
+    features: PromptFeatures,
+    safety: SafetyConfig,
+) -> bool:
+    return (
+        safety.require_human_confirmation
+        and not safety.confirmation_overrides.allow_ambiguous_high_impact
+        and features.ambiguous
+        and features.sensitive_domain
+    )
+
+
 def _route_forced_engine(
     analysis: PromptAnalysis,
     router_config: RouterConfig,
@@ -775,6 +983,17 @@ def _route_forced_engine(
         reasons.append(f"unknown forced engine {force_engine}")
     if fallback_reason:
         reasons.append(fallback_reason)
+    requires_human_confirmation = _requires_human_confirmation(
+        analysis.features,
+        router_config.safety,
+    )
+    requires_confirmation_route = (
+        requires_human_confirmation
+        or _requires_ambiguous_high_impact_confirmation(
+            analysis.features,
+            router_config.safety,
+        )
+    )
     return RoutingDecision(
         selected_engine=selected,
         fallback_engine=fallback_engine,
@@ -782,7 +1001,7 @@ def _route_forced_engine(
         risk_score=analysis.risk_score.value,
         confidence_score=analysis.confidence_score,
         reasons=tuple(dict.fromkeys(reasons)),
-        requires_confirmation=analysis.features.requires_confirmation
+        requires_confirmation=requires_confirmation_route
         or selected == FAIL_CLOSED_ENGINE,
         requires_tools=requirements.needs_tools,
         requires_freshness=analysis.features.requires_freshness,
@@ -815,11 +1034,12 @@ def _requires_vision(
 def _target_route(
     analysis: PromptAnalysis,
     required_modalities: tuple[str, ...],
+    safety: SafetyConfig,
 ) -> tuple[str, str]:
     features = analysis.features
-    if features.requires_confirmation:
+    if _requires_human_confirmation(features, safety):
         return "confirmation", "high-risk action requires human confirmation"
-    if features.ambiguous and features.sensitive_domain:
+    if _requires_ambiguous_high_impact_confirmation(features, safety):
         return "confirmation", "ambiguous high-impact request"
     if features.requires_image_generation:
         return "image_generation", "image generation required"

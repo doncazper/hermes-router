@@ -450,6 +450,111 @@ SCORING_DIMENSIONS = ("complexity", "risk", "confidence")
 
 
 @dataclass(frozen=True)
+class ConfirmationOverrides:
+    allow_destructive_actions: bool = False
+    allow_send_actions: bool = False
+    allow_purchase_actions: bool = False
+    allow_high_impact_external_actions: bool = False
+    allow_ambiguous_high_impact: bool = False
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "ConfirmationOverrides":
+        if data is None:
+            return cls()
+        if not isinstance(data, dict):
+            raise ValueError("safety confirmation_overrides must be a mapping")
+        allowed = set(cls.__dataclass_fields__)
+        unknown = sorted(set(data) - allowed)
+        if unknown:
+            raise ValueError(
+                "safety confirmation_overrides unknown keys: " + ", ".join(unknown)
+            )
+        return cls(
+            allow_destructive_actions=_config_bool(
+                data,
+                "allow_destructive_actions",
+                False,
+                "safety confirmation_overrides",
+            ),
+            allow_send_actions=_config_bool(
+                data,
+                "allow_send_actions",
+                False,
+                "safety confirmation_overrides",
+            ),
+            allow_purchase_actions=_config_bool(
+                data,
+                "allow_purchase_actions",
+                False,
+                "safety confirmation_overrides",
+            ),
+            allow_high_impact_external_actions=_config_bool(
+                data,
+                "allow_high_impact_external_actions",
+                False,
+                "safety confirmation_overrides",
+            ),
+            allow_ambiguous_high_impact=_config_bool(
+                data,
+                "allow_ambiguous_high_impact",
+                False,
+                "safety confirmation_overrides",
+            ),
+        )
+
+    def to_dict(self) -> dict[str, bool]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class SafetyConfig:
+    require_human_confirmation: bool = True
+    confirmation_overrides: ConfirmationOverrides = field(
+        default_factory=ConfirmationOverrides
+    )
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "SafetyConfig":
+        if data is None:
+            return cls()
+        if not isinstance(data, dict):
+            raise ValueError("safety config must be a mapping")
+        allowed = {"require_human_confirmation", "confirmation_overrides"}
+        unknown = sorted(set(data) - allowed)
+        if unknown:
+            raise ValueError("safety config unknown keys: " + ", ".join(unknown))
+        return cls(
+            require_human_confirmation=_config_bool(
+                data,
+                "require_human_confirmation",
+                True,
+                "safety",
+            ),
+            confirmation_overrides=ConfirmationOverrides.from_dict(
+                data.get("confirmation_overrides")
+            ),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "require_human_confirmation": self.require_human_confirmation,
+            "confirmation_overrides": self.confirmation_overrides.to_dict(),
+        }
+
+
+def _config_bool(
+    data: dict[str, Any],
+    key: str,
+    default: bool,
+    context: str,
+) -> bool:
+    value = data.get(key, default)
+    if not isinstance(value, bool):
+        raise ValueError(f"{context} {key} must be a bool")
+    return value
+
+
+@dataclass(frozen=True)
 class ScoringConfig:
     weights: dict[str, dict[str, int]] = field(default_factory=dict)
     saturation_k: int = 50
@@ -663,6 +768,7 @@ class PromptFeatures:
     sensitive_domain: bool = False
     destructive_action: bool = False
     external_action: bool = False
+    high_impact_external_action: bool = False
     purchase_action: bool = False
     send_action: bool = False
     structured_output: bool = False
@@ -823,6 +929,7 @@ class RouterConfig:
     routing_targets: dict[str, str]
     source_path: str | None = None
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
+    safety: SafetyConfig = field(default_factory=SafetyConfig)
 
     def get_engine(self, name: str) -> ModelEngine | None:
         return self.engines.get(name)
@@ -838,4 +945,5 @@ class RouterConfig:
             "routing_targets": dict(sorted(self.routing_targets.items())),
             "source_path": self.source_path,
             "scoring": self.scoring.to_dict(),
+            "safety": self.safety.to_dict(),
         }

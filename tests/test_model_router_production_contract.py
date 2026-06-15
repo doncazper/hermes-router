@@ -111,7 +111,9 @@ def test_route_fast_source_has_no_hot_path_logging_or_scorer_call():
         policy.ModelRouter._resolve_target_fast,
         policy.ModelRouter._resolve_engine_fast,
         policy._fast_target_route_index,
+        policy._fast_target_route_index_with_safety,
         policy._fast_has_confirmation_word,
+        policy._fast_confirmation_action_mask,
     )
     source = "\n".join(inspect.getsource(obj) for obj in hot_path_objects)
 

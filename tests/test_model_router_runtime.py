@@ -30,7 +30,12 @@ def _engine(name: str, *, fallback: str | None = None) -> dict:
     }
 
 
-def _config_path(tmp_path: Path, *, scoring: dict | None = None) -> Path:
+def _config_path(
+    tmp_path: Path,
+    *,
+    scoring: dict | None = None,
+    safety: dict | None = None,
+) -> Path:
     fallbacks = {
         "intent_router": "fast_local",
         "fast_local": "balanced_local",
@@ -60,6 +65,8 @@ def _config_path(tmp_path: Path, *, scoring: dict | None = None) -> Path:
     }
     if scoring is not None:
         data["scoring"] = scoring
+    if safety is not None:
+        data["safety"] = safety
     path = tmp_path / "model_router.yaml"
     path.write_text(yaml.safe_dump(data), encoding="utf-8")
     return path
@@ -146,6 +153,32 @@ def test_route_fast_requires_confirmation_for_high_impact_external_actions(tmp_p
         decision = router.route(prompt)
         assert decision.selected_engine == "human_confirm"
         assert decision.requires_confirmation is True
+
+
+def test_route_fast_honors_scoped_confirmation_overrides(tmp_path):
+    router = ModelRouter.from_config(
+        _config_path(
+            tmp_path,
+            safety={
+                "require_human_confirmation": True,
+                "confirmation_overrides": {"allow_send_actions": True},
+            },
+        )
+    )
+
+    assert router.route_fast("send the project update") != "human_confirm"
+    assert router.route_fast("delete all my emails") == "human_confirm"
+
+
+def test_route_fast_honors_disabled_confirmation(tmp_path):
+    router = ModelRouter.from_config(
+        _config_path(
+            tmp_path,
+            safety={"require_human_confirmation": False},
+        )
+    )
+
+    assert router.route_fast("deploy to production") != "human_confirm"
 
 
 def test_route_fast_does_not_confirm_benign_prefix_words(tmp_path):

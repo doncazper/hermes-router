@@ -1,5 +1,7 @@
 from importlib import resources
 from pathlib import Path
+import configparser
+import io
 import shutil
 import subprocess
 import sys
@@ -13,7 +15,7 @@ from hermes.plugins.model_router.config import default_config_source, load_route
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_pyproject_declares_console_script_without_unverified_plugin_entry_point():
+def test_pyproject_declares_console_script_without_extra_entry_points():
     with open(ROOT / "pyproject.toml", "rb") as handle:
         pyproject = tomllib.load(handle)
 
@@ -45,6 +47,15 @@ def test_packaged_default_config_resource_exists():
     )
 
     assert config_resource.is_file()
+
+
+def test_packaged_model_catalog_resource_exists():
+    catalog_resource = resources.files("hermes.plugins.model_router").joinpath(
+        "data",
+        "model_catalog.yaml",
+    )
+
+    assert catalog_resource.is_file()
 
 
 def test_packaged_default_config_matches_repo_default_config():
@@ -91,6 +102,10 @@ def test_wheel_contains_console_script_and_packaged_config(tmp_path):
         )
         entry_points = wheel.read(entry_points_name).decode("utf-8")
 
+    parser = configparser.ConfigParser()
+    parser.read_file(io.StringIO(entry_points))
+
     assert "hermes/plugins/model_router/data/model_router.yaml" in names
+    assert "hermes/plugins/model_router/data/model_catalog.yaml" in names
     assert "hermes-router = hermes.plugins.model_router.cli:main" in entry_points
-    assert "hermes_agent.plugins" not in entry_points
+    assert set(parser.sections()) == {"console_scripts"}

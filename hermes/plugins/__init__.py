@@ -1,1 +1,1 @@
-"""Hermes Router package namespace; not Desktop plugin registration."""
+"""Legacy package namespace; not host-application plugin registration."""

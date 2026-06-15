@@ -254,6 +254,20 @@ routing_targets:
   confirmation: human_confirm
 ```
 
+Human confirmation is a default-on safety feature. Escape hatches are explicit,
+scoped config choices:
+
+```yaml
+safety:
+  require_human_confirmation: true
+  confirmation_overrides:
+    allow_destructive_actions: false
+    allow_send_actions: false
+    allow_purchase_actions: false
+    allow_high_impact_external_actions: false
+    allow_ambiguous_high_impact: false
+```
+
 Each target points at an engine entry:
 
 ```yaml
@@ -313,6 +327,12 @@ python -m hermes.plugins.model_router.cli setup recommend
 python -m hermes.plugins.model_router.cli setup recommend --json
 ```
 
+Recommendations are produced by a bundled, versioned model advisor catalog at
+`hermes/plugins/model_router/data/model_catalog.yaml`. The advisor detects basic
+local hardware signals such as RAM, CPU architecture, Apple Silicon, and free
+disk space, then ranks setup-time Hugging Face suggestions for each route. This
+does not run during `route_fast(...)`, `route(...)`, or ordinary `decide` calls.
+
 Run the wizard:
 
 ```bash
@@ -336,8 +356,8 @@ The wizard asks whether you want:
 - A mix of local models, hosted APIs, and agent tools.
 
 It then walks each main route and shows numbered local model choices plus
-recommended downloads when a local role is missing. Downloads are never run by
-ordinary routing commands. They require explicit confirmation.
+hardware-aware recommended downloads when a local role is missing. Downloads are
+never run by ordinary routing commands. They require explicit confirmation.
 
 The scanner includes current LM Studio model storage at
 `~/.lmstudio/models`, plus Ollama, Hugging Face cache, and common local model
@@ -387,7 +407,9 @@ For non-interactive scripts, add `--yes`.
 - The router never sends email, deletes files, buys anything, or runs shell
   commands.
 - High-risk destructive, sending, purchasing, payment, scheduling, publishing,
-  and external-action prompts require confirmation.
+  and external-action prompts require confirmation by default.
+- Confirmation escape hatches must be explicit in `safety.confirmation_overrides`;
+  the router does not learn approvals or silently relax safety rules.
 - `force_engine` cannot bypass human confirmation.
 - Missing or invalid config routes to `human_confirm`.
 - Unavailable or incompatible engines are skipped through configured fallbacks.
@@ -453,9 +475,10 @@ The default catalog is included as package data, so `ModelRouter.from_config()`
 works after wheel installation without relying on the repository checkout. Pass
 an explicit config path when an embedding app needs its own engine catalog.
 
-Hermes Router does not currently claim a Desktop plugin manifest or automatic
-per-turn model switching. Any Desktop integration should use that app's actual
-plugin/API contract and call the stable `route_fast(...)` production API.
+Hermes Router does not currently claim any host-app plugin manifest or automatic
+per-turn model switching contract. Embedding applications should use their own
+runtime integration boundary and call the stable `route_fast(...)` production
+API.
 
 ## Development
 
@@ -503,8 +526,8 @@ scripts/
 tests/
 ```
 
-The `hermes/plugins` path is a Python package namespace used by Hermes Router.
-It is not a Hermes Agent/Desktop plugin registration point.
+The `hermes/plugins` path is a legacy Python package namespace used by Hermes
+Router. It is not a host-application plugin registration point.
 
 ## Documentation
 

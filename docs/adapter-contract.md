@@ -1,4 +1,4 @@
-# Hermes Adapter Contract
+# Host Adapter Contract
 
 ## Purpose
 
@@ -40,8 +40,9 @@ callers need a full diagnostic receipt.
 - Keep at most one heavy local model active by default.
 - Allow a tiny fast local model to stay warm only when the user opts in.
 - Prefer hosted/API or agent adapters when local memory is constrained.
-- Always block `human_confirm` and high-risk decisions until explicit
-  confirmation exists outside the router.
+- Block `human_confirm` and high-risk decisions until explicit confirmation
+  exists outside the router, unless a versioned safety override deliberately
+  narrows that requirement.
 
 ## Adapter Shape
 

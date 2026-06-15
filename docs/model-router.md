@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The model router is a deterministic decision layer for Hermes prompts. It
+The model router is a deterministic decision layer for agent prompts. It
 scores an incoming prompt, selects an engine category, and emits a receipt that
 explains the decision.
 
@@ -13,7 +13,8 @@ to an agent. It only decides.
 ## Architecture
 
 The router is implemented under `hermes/plugins/model_router/`. This is a
-Python package namespace, not Hermes Agent/Desktop plugin registration.
+legacy Python package namespace, not a host-application plugin registration
+point.
 
 - `models.py` defines JSON-safe dataclass models for engines, prompt features,
   scoring config, alternatives, decisions, receipts, and config.
@@ -51,7 +52,7 @@ High-risk external actions raise risk even when the prompt is short.
 
 Scoring uses deterministic weighted signals. Public scores stay on a 0-100
 scale. The optional top-level `scoring:` YAML section can override feature
-weights and `saturation_k`; missing values use Hermes defaults. Invalid scoring
+weights and `saturation_k`; missing values use router defaults. Invalid scoring
 config is treated as invalid config, so compatibility routing fails closed to
 `human_confirm`.
 
@@ -95,6 +96,25 @@ include forced engine preference, attachment modalities, maximum cost tier,
 maximum latency tier, and latency sensitivity. High-risk actions still route to
 confirmation even if a weaker engine is forced.
 
+Human confirmation is configured separately from scoring. It defaults on:
+
+```yaml
+safety:
+  require_human_confirmation: true
+  confirmation_overrides:
+    allow_destructive_actions: false
+    allow_send_actions: false
+    allow_purchase_actions: false
+    allow_high_impact_external_actions: false
+    allow_ambiguous_high_impact: false
+```
+
+Set only the narrow override needed for the embedding application. Disabling
+`require_human_confirmation` removes action-based confirmation routing for valid
+configs, but fail-closed routing still uses `human_confirm` for invalid config,
+undefined routes, unavailable engines without compatible fallbacks, and fallback
+cycles.
+
 For embedded use, initialize the router once and reuse it:
 
 ```python
@@ -123,8 +143,8 @@ should measure and emit metrics around router calls at the service boundary so
 See `docs/production-readiness.md` for SLOs and benchmark guardrails.
 
 The installed package exposes the `hermes-router` console command for
-diagnostics and scripts. Desktop or host-app integrations should call the
-Python API directly or implement the host application's actual plugin contract.
+diagnostics and scripts. Host-app integrations should call the Python API
+directly or implement the host application's actual plugin contract.
 
 ## Dry-Run Dispatch Plans
 
@@ -154,7 +174,7 @@ For machine-specific setup, use one of these paths:
 
 1. Copy and edit `configs/model_router.local.example.yaml`.
 2. Run `setup scan` and `setup recommend` to inspect local models and commands.
-3. Run `setup wizard` if you want Hermes to ask before writing a config.
+3. Run `setup wizard` if you want an interactive review before writing a config.
 4. Run `setup write` to generate a local YAML file from those recommendations.
 
 The generated local config can be passed explicitly:
@@ -205,6 +225,13 @@ python -m hermes.plugins.model_router.cli setup recommend
 python -m hermes.plugins.model_router.cli setup recommend --json
 ```
 
+Recommendations come from the packaged setup-time model advisor catalog at
+`hermes/plugins/model_router/data/model_catalog.yaml`. The advisor uses local
+hardware signals such as RAM, CPU architecture, Apple Silicon, and free disk
+space to rank Hugging Face candidates for each route. This catalog is not loaded
+by `ModelRouter`, and hardware detection never runs inside `route_fast(...)` or
+`route(...)`.
+
 Interactive wizard:
 
 ```bash
@@ -216,8 +243,8 @@ The wizard is a guided configurator. It asks whether you want local LLMs,
 API-backed engines, or a mixed setup, then walks each main routing category:
 simple, balanced, reasoning, coding, research, vision, and image generation.
 For each route, it shows numbered local models discovered on your machine and
-numbered recommended downloads for missing local roles. You can type a number,
-accept the default engine, or type another known engine name such as
+numbered hardware-aware recommended downloads for missing local roles. You can
+type a number, accept the default engine, or type another known engine name such as
 `claude_code`, `codex`, `openai_api`, `anthropic_api`, `balanced_local`, or
 `reasoning_local`. It still asks for final confirmation before writing the local
 YAML file. If you selected recommended downloads, it then asks whether to run
@@ -404,6 +431,18 @@ scoring:
     confidence:
       ambiguous: 25
 ```
+
+Example safety override:
+
+```yaml
+safety:
+  require_human_confirmation: true
+  confirmation_overrides:
+    allow_send_actions: true
+```
+
+The router does not learn from prior confirmations at runtime. Any relaxation is
+visible in YAML and should be paired with tests for the embedding application.
 
 The required categories are:
 

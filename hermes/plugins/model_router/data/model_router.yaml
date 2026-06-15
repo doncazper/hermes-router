@@ -7,6 +7,14 @@ routing_targets:
   vision: multimodal_vision
   image_generation: image_generation
   confirmation: human_confirm
+safety:
+  require_human_confirmation: true
+  confirmation_overrides:
+    allow_destructive_actions: false
+    allow_send_actions: false
+    allow_purchase_actions: false
+    allow_high_impact_external_actions: false
+    allow_ambiguous_high_impact: false
 engines:
   intent_router:
     provider: local

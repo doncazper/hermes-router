@@ -703,6 +703,13 @@ def _ask_route_targets(
         print("  0. " + _keep_engine_label(default, current_config))
         for index, choice in enumerate(choices, start=1):
             print(f"  {index}. {choice.label}")
+        note = _wizard_recommendation_note(
+            route=route,
+            discovery=discovery,
+            recommendation=recommendation,
+        )
+        if note:
+            print(f"  {note}")
         answer = input(f"Select model/engine for {route} [0]: ").strip()
         selected = default
         choice = _resolve_wizard_choice(answer, choices, known_engines)
@@ -722,6 +729,30 @@ def _ask_route_targets(
         routing_targets=targets,
         engine_overrides=engine_overrides,
         download_suggestions=tuple(download_suggestions),
+    )
+
+
+def _wizard_recommendation_note(
+    *,
+    route: str,
+    discovery,
+    recommendation: SetupRecommendation,
+) -> str:
+    local_engine = ROUTE_LOCAL_ENGINES[route]
+    has_exact_local_match = any(local_engine in model.roles for model in discovery.models)
+    has_download = (
+        _download_suggestion_for_route(
+            local_engine,
+            recommendation.download_suggestions,
+        )
+        is not None
+    )
+    has_api_or_agent_choice = bool(_api_and_agent_choices(route, discovery))
+    if has_exact_local_match or has_download or has_api_or_agent_choice:
+        return ""
+    return (
+        "No exact recommendation for this route; keep the default or choose a "
+        "known compatible engine."
     )
 
 

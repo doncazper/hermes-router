@@ -371,6 +371,7 @@ def score_prompt(
         sensitive_domain=sensitive_domain,
         destructive_action=destructive_action,
         external_action=external_action,
+        high_impact_external_action=high_impact_external_action,
         purchase_action=purchase_action,
         send_action=send_action,
         structured_output=structured_output,

@@ -8,6 +8,11 @@ from pathlib import Path
 import yaml
 
 from hermes.plugins.model_router import setup_assistant as setup_assistant_module
+from hermes.plugins.model_router.model_advisor import (
+    HardwareProfile,
+    load_model_catalog,
+    recommend_catalog_models,
+)
 from hermes.plugins.model_router.setup_assistant import (
     DownloadPlan,
     DownloadSuggestion,
@@ -39,7 +44,11 @@ def _run_cli_with_input(
     user_input: str,
     extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    env = {**os.environ, **(extra_env or {})}
+    env = {
+        **os.environ,
+        "HERMES_ROUTER_COMMAND_DISCOVERY_PATH_ONLY": "1",
+        **(extra_env or {}),
+    }
     return subprocess.run(
         [sys.executable, "-m", "hermes.plugins.model_router.cli", *args],
         cwd=ROOT,
@@ -203,12 +212,78 @@ def test_recommend_setup_prefers_available_claude_code(tmp_path, monkeypatch):
 def test_recommend_setup_includes_download_plan_for_missing_roles():
     discovery = scan_local_environment(model_dirs=[], command_names=[])
 
-    recommendation = recommend_setup(discovery)
+    recommendation = recommend_setup(
+        discovery,
+        hardware=HardwareProfile(
+            system="Darwin",
+            machine="arm64",
+            total_memory_gb=24,
+            disk_free_gb=100,
+            apple_silicon=True,
+        ),
+    )
     payload = recommendation.to_dict()
     routes = {item["route"] for item in payload["download_suggestions"]}
 
-    assert {"fast_local", "balanced_local", "multimodal_vision", "image_generation"} <= routes
-    assert all(item["command"][0:2] == ["hf", "download"] for item in payload["download_suggestions"])
+    assert {
+        "fast_local",
+        "balanced_local",
+        "reasoning_local",
+        "code_agent",
+        "web_research",
+        "multimodal_vision",
+        "image_generation",
+    } == routes
+    assert all(
+        item["command"][0:2] == ["hf", "download"]
+        for item in payload["download_suggestions"]
+    )
+    assert "hardware_profile" in payload
+
+
+def test_model_advisor_uses_hardware_profile_for_catalog_choices():
+    lightweight = recommend_catalog_models(
+        profile="lightweight",
+        hardware=HardwareProfile(
+            system="Darwin",
+            machine="arm64",
+            total_memory_gb=8,
+            disk_free_gb=80,
+            apple_silicon=True,
+        ),
+    )
+    quality = recommend_catalog_models(
+        profile="quality",
+        hardware=HardwareProfile(
+            system="Darwin",
+            machine="arm64",
+            total_memory_gb=32,
+            disk_free_gb=200,
+            apple_silicon=True,
+        ),
+    )
+
+    lightweight_by_route = {advice.route: advice.repo_id for advice in lightweight}
+    quality_by_route = {advice.route: advice.repo_id for advice in quality}
+
+    assert lightweight_by_route["code_agent"] == "Qwen/Qwen2.5-Coder-3B-Instruct-GGUF"
+    assert quality_by_route["code_agent"] == "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF"
+    assert quality_by_route["image_generation"] == "black-forest-labs/FLUX.1-schnell"
+
+
+def test_packaged_model_catalog_covers_router_routes():
+    catalog = load_model_catalog()
+    routes = {model.route for model in catalog.models}
+
+    assert {
+        "fast_local",
+        "balanced_local",
+        "reasoning_local",
+        "code_agent",
+        "web_research",
+        "multimodal_vision",
+        "image_generation",
+    } <= routes
 
 
 def test_recommend_setup_enables_api_engines_when_keys_are_present(monkeypatch):
@@ -235,7 +310,12 @@ def test_plan_model_downloads_filters_routes_and_rewrites_local_root(tmp_path):
     assert len(plan.suggestions) == 1
     suggestion = plan.suggestions[0]
     assert suggestion.route == "fast_local"
-    assert suggestion.command[-1] == str(tmp_path / "models" / "fast_local" / "Qwen--Qwen3-0.6B")
+    assert suggestion.command[-1] == str(
+        tmp_path
+        / "models"
+        / "fast_local"
+        / "lmstudio-community--Qwen3-0.6B-GGUF"
+    )
 
 
 def test_plan_model_downloads_supports_custom_repo_id(tmp_path):
@@ -397,7 +477,9 @@ def test_write_recommended_config_writes_valid_config_when_forced(tmp_path):
 
     assert result.written is True
     assert data["routing_targets"]["coding"] == "code_agent"
-    assert data["engines"]["fast_local"]["model"] == "Qwen/Qwen3-0.6B"
+    assert data["engines"]["fast_local"]["model"] == (
+        "lmstudio-community/Qwen3-0.6B-GGUF"
+    )
     assert data["engines"]["fast_local"]["availability"]["required_paths"]
     assert "engines" in data
     assert "download_suggestions" not in data
@@ -627,13 +709,18 @@ def test_setup_wizard_can_select_numbered_recommended_download(tmp_path):
     data = yaml.safe_load(output.read_text(encoding="utf-8"))
 
     assert result.returncode == 0
-    assert "1. Recommended download Qwen/Qwen3-0.6B" in result.stdout
+    assert (
+        "1. Recommended download lmstudio-community/Qwen3-0.6B-GGUF"
+        in result.stdout
+    )
     assert data["routing_targets"]["simple"] == "fast_local"
-    assert data["engines"]["fast_local"]["model"] == "Qwen/Qwen3-0.6B"
+    assert data["engines"]["fast_local"]["model"] == (
+        "lmstudio-community/Qwen3-0.6B-GGUF"
+    )
     assert data["engines"]["fast_local"]["availability"]["required_paths"] == [
-        "models/fast_local/Qwen--Qwen3-0.6B"
+        "models/fast_local/lmstudio-community--Qwen3-0.6B-GGUF"
     ]
-    assert "- fast_local: Qwen/Qwen3-0.6B" in result.stdout
+    assert "- fast_local: lmstudio-community/Qwen3-0.6B-GGUF" in result.stdout
     assert "Download selected recommended models now" in result.stdout
 
 
@@ -657,6 +744,25 @@ def test_setup_wizard_prompts_for_missing_hf_cli_before_choices(tmp_path):
         result.stdout.index("Model source mode")
     )
     assert "Downloads skipped." in result.stdout
+
+
+def test_setup_wizard_recommends_catalog_models_for_coding_and_research(tmp_path):
+    output = tmp_path / "model_router.local.yaml"
+
+    result = _run_cli_with_input(
+        "setup",
+        "wizard",
+        "--no-default-dirs",
+        "--output",
+        str(output),
+        user_input="n\n1\n" + "\n" * 7 + "y\n",
+        extra_env={"ANTHROPIC_API_KEY": "", "OPENAI_API_KEY": "", "PATH": ""},
+    )
+
+    assert result.returncode == 0
+    assert "Recommended download Qwen/Qwen2.5-Coder-7B-Instruct-GGUF" in result.stdout
+    assert "Recommended download BAAI/bge-m3" in result.stdout
+    assert "No exact recommendation for this route" not in result.stdout
 
 
 def test_setup_wizard_accepts_zero_as_keep_default(tmp_path):
@@ -780,7 +886,10 @@ def test_setup_wizard_can_download_selected_recommendations(tmp_path):
     assert result.returncode == 0
     assert "Download selected recommended models now" in result.stdout
     assert "fast_local: completed" in result.stdout
-    assert "Qwen/Qwen3-0.6B" in marker.read_text(encoding="utf-8")
+    marker_text = marker.read_text(encoding="utf-8")
+    assert "lmstudio-community/Qwen3-0.6B-GGUF" in marker_text
+    assert "--include" in marker_text
+    assert "*Q4_K_M.gguf" in marker_text
 
 
 def test_setup_wizard_api_mode_can_use_api_key_routes(tmp_path):

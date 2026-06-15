@@ -54,7 +54,12 @@ def _engine(
     return data
 
 
-def _config_path(tmp_path: Path, overrides: dict[str, dict] | None = None) -> Path:
+def _config_path(
+    tmp_path: Path,
+    overrides: dict[str, dict] | None = None,
+    *,
+    safety: dict | None = None,
+) -> Path:
     fallbacks = {
         "intent_router": "fast_local",
         "fast_local": "balanced_local",
@@ -76,24 +81,22 @@ def _config_path(tmp_path: Path, overrides: dict[str, dict] | None = None) -> Pa
         else:
             engines[name] = _engine(name, fallback="code_agent") | patch
     path = tmp_path / "model_router.yaml"
-    path.write_text(
-        yaml.safe_dump(
-            {
-                "routing_targets": {
-                    "simple": "fast_local",
-                    "balanced": "balanced_local",
-                    "reasoning": "reasoning_local",
-                    "coding": "code_agent",
-                    "research": "web_research",
-                    "vision": "multimodal_vision",
-                    "image_generation": "image_generation",
-                    "confirmation": "human_confirm",
-                },
-                "engines": engines,
-            }
-        ),
-        encoding="utf-8",
-    )
+    data = {
+        "routing_targets": {
+            "simple": "fast_local",
+            "balanced": "balanced_local",
+            "reasoning": "reasoning_local",
+            "coding": "code_agent",
+            "research": "web_research",
+            "vision": "multimodal_vision",
+            "image_generation": "image_generation",
+            "confirmation": "human_confirm",
+        },
+        "engines": engines,
+    }
+    if safety is not None:
+        data["safety"] = safety
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
     return path
 
 
@@ -216,6 +219,65 @@ def test_high_impact_external_actions_require_confirmation(tmp_path):
         assert decision.selected_engine == "human_confirm"
         assert decision.requires_confirmation is True
         assert decision.risk_score >= 70
+
+
+def test_confirmation_overrides_can_allow_send_actions(tmp_path):
+    path = _config_path(
+        tmp_path,
+        safety={
+            "require_human_confirmation": True,
+            "confirmation_overrides": {"allow_send_actions": True},
+        },
+    )
+
+    decision = route_prompt("send the project update", config_path=path)
+
+    assert decision.selected_engine != "human_confirm"
+    assert decision.requires_confirmation is False
+    assert decision.features.send_action is True
+
+
+def test_confirmation_overrides_stay_scoped(tmp_path):
+    path = _config_path(
+        tmp_path,
+        safety={
+            "require_human_confirmation": True,
+            "confirmation_overrides": {"allow_send_actions": True},
+        },
+    )
+
+    decision = route_prompt("delete all my emails", config_path=path)
+
+    assert decision.selected_engine == "human_confirm"
+    assert decision.requires_confirmation is True
+
+
+def test_confirmation_can_be_disabled_explicitly(tmp_path):
+    decision = route_prompt(
+        "deploy to production",
+        config_path=_config_path(
+            tmp_path,
+            safety={"require_human_confirmation": False},
+        ),
+    )
+
+    assert decision.selected_engine != "human_confirm"
+    assert decision.requires_confirmation is False
+    assert decision.features.high_impact_external_action is True
+
+
+def test_invalid_safety_config_fails_closed(tmp_path):
+    decision = route_prompt(
+        "rewrite this text",
+        config_path=_config_path(
+            tmp_path,
+            safety={"confirmation_overrides": {"allow_send_actions": "yes"}},
+        ),
+    )
+
+    assert decision.selected_engine == "human_confirm"
+    assert decision.requires_confirmation is True
+    assert decision.config_valid is False
 
 
 def test_missing_config_fails_closed_to_human_confirm(tmp_path):
