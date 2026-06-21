@@ -14,7 +14,41 @@ and a config at:
 
 ## macOS launchd
 
-Create `~/Library/LaunchAgents/com.hermes-router.proxy.plist`:
+Resolve the installed proxy command and write a user LaunchAgent:
+
+```bash
+PROXY_BIN="$(command -v model-router-proxy)"
+test -n "$PROXY_BIN"
+mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.model-router/logs"
+cat > "$HOME/Library/LaunchAgents/com.hermes-router.proxy.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.hermes-router.proxy</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${PROXY_BIN}</string>
+    <string>--config</string>
+    <string>${HOME}/.model-router/routing_proxy.yaml</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>${HOME}/.model-router/logs/proxy.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>${HOME}/.model-router/logs/proxy.err.log</string>
+</dict>
+</plist>
+EOF
+```
+
+The generated plist should look like this, with your absolute
+`model-router-proxy` path in the first `ProgramArguments` entry:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -26,18 +60,18 @@ Create `~/Library/LaunchAgents/com.hermes-router.proxy.plist`:
   <string>com.hermes-router.proxy</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/bin/zsh</string>
-    <string>-lc</string>
-    <string>model-router-proxy --config ~/.model-router/routing_proxy.yaml</string>
+    <string>/opt/homebrew/bin/model-router-proxy</string>
+    <string>--config</string>
+    <string>/Users/you/.model-router/routing_proxy.yaml</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/tmp/hermes-router-proxy.out.log</string>
+  <string>/Users/you/.model-router/logs/proxy.out.log</string>
   <key>StandardErrorPath</key>
-  <string>/tmp/hermes-router-proxy.err.log</string>
+  <string>/Users/you/.model-router/logs/proxy.err.log</string>
 </dict>
 </plist>
 ```
@@ -45,14 +79,38 @@ Create `~/Library/LaunchAgents/com.hermes-router.proxy.plist`:
 Commands:
 
 ```bash
-launchctl load ~/Library/LaunchAgents/com.hermes-router.proxy.plist
-launchctl unload ~/Library/LaunchAgents/com.hermes-router.proxy.plist
-launchctl list | grep hermes-router
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.hermes-router.proxy.plist"
+launchctl kickstart -k "gui/$(id -u)/com.hermes-router.proxy"
+launchctl print "gui/$(id -u)/com.hermes-router.proxy"
+launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.hermes-router.proxy.plist"
+tail -f "$HOME/.model-router/logs/proxy.err.log"
 ```
 
 ## Linux systemd
 
-Create `~/.config/systemd/user/hermes-router-proxy.service`:
+Resolve the installed proxy command and write a user service:
+
+```bash
+PROXY_BIN="$(command -v model-router-proxy)"
+test -n "$PROXY_BIN"
+mkdir -p "$HOME/.config/systemd/user" "$HOME/.model-router/logs"
+cat > "$HOME/.config/systemd/user/hermes-router-proxy.service" <<EOF
+[Unit]
+Description=Hermes Router OpenAI-compatible proxy
+After=network-online.target
+
+[Service]
+ExecStart=${PROXY_BIN} --config %h/.model-router/routing_proxy.yaml
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+EOF
+```
+
+The generated unit should look like this, with your absolute
+`model-router-proxy` path in `ExecStart`:
 
 ```ini
 [Unit]
@@ -60,7 +118,7 @@ Description=Hermes Router OpenAI-compatible proxy
 After=network-online.target
 
 [Service]
-ExecStart=model-router-proxy --config %h/.model-router/routing_proxy.yaml
+ExecStart=/home/you/.local/bin/model-router-proxy --config %h/.model-router/routing_proxy.yaml
 Restart=on-failure
 RestartSec=2
 
@@ -75,4 +133,10 @@ systemctl --user daemon-reload
 systemctl --user enable --now hermes-router-proxy
 systemctl --user status hermes-router-proxy
 journalctl --user -u hermes-router-proxy -f
+```
+
+If the service should keep running after logout, enable lingering once:
+
+```bash
+loginctl enable-linger "$USER"
 ```

@@ -353,13 +353,24 @@ def create_app(config: RoutingProxyConfig):
 
     @app.get("/health")
     async def health():
-        backend_health = {
-            name: await _check_backend_health(
-                client,
-                expected_model=config.backends[name].model,
-                timeout_seconds=config.health.backend_timeout_seconds,
+        backend_items = sorted(clients.items())
+        backend_results = await asyncio.gather(
+            *(
+                _check_backend_health(
+                    client,
+                    expected_model=config.backends[name].model,
+                    timeout_seconds=config.health.backend_timeout_seconds,
+                )
+                for name, client in backend_items
             )
-            for name, client in sorted(clients.items())
+        )
+        backend_health = {
+            name: result
+            for (name, _client), result in zip(
+                backend_items,
+                backend_results,
+                strict=True,
+            )
         }
         all_ok = all(result["ok"] for result in backend_health.values())
         return {
@@ -421,12 +432,15 @@ async def _check_backend_health(
             "reachable": False,
             "ok": False,
             "status_code": None,
-            "detail": str(exc),
+            "detail": f"request failed: {exc.__class__.__name__}",
         }
     status_code = int(response.status_code)
     model_ok, model_detail = _backend_model_detail(expected_model, response.content)
-    ok = 200 <= status_code < 500 and model_ok
+    status_ok = 200 <= status_code < 300
+    ok = status_ok and model_ok
     detail = f"HTTP {status_code}"
+    if not status_ok:
+        detail += "; backend status is not successful"
     if model_detail:
         detail += f"; {model_detail}"
     return {
@@ -561,17 +575,35 @@ async def _stream_response_bytes(
     config: RoutingProxyConfig,
     decision: Any,
 ):
+    status = "forwarded"
+    exc_info: tuple[type[BaseException] | None, BaseException | None, Any] = (
+        None,
+        None,
+        None,
+    )
     try:
         async for chunk in response.aiter_bytes():
             yield chunk
+    except Exception as exc:
+        status = "stream_interrupted"
+        exc_info = (type(exc), exc, exc.__traceback__)
+        raise
     finally:
         elapsed_ms = (time.perf_counter() - started) * 1000
+        try:
+            await stream_context.__aexit__(*exc_info)
+        except Exception as exc:
+            LOG.warning(
+                "request=%s stream cleanup failed error=%s",
+                request_id,
+                exc.__class__.__name__,
+            )
         _write_proxy_event(
             event_writer,
             request_id=request_id,
             prompt=prompt,
             selected_engine=engine,
-            status="forwarded",
+            status=status,
             route_latency_ms=route_latency_ms,
             diagnostic_latency_ms=diagnostic_latency_ms,
             upstream_latency_ms=max(0.0, elapsed_ms - route_latency_ms),
@@ -583,13 +615,13 @@ async def _stream_response_bytes(
             fallback_used=fallback_used,
             status_code=response.status_code,
         )
-        await stream_context.__aexit__(None, None, None)
         LOG.info(
-            "request=%s engine=%s backend=%s status=%s fallback=%s latency_ms=%.2f",
+            "request=%s engine=%s backend=%s status=%s stream_status=%s fallback=%s latency_ms=%.2f",
             request_id,
             engine,
             backend.name,
             response.status_code,
+            status,
             fallback_used,
             (time.perf_counter() - started) * 1000,
         )

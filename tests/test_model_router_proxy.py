@@ -1,3 +1,4 @@
+import asyncio
 import json
 import subprocess
 import sys
@@ -5,9 +6,10 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
-from hermes.plugins.model_router.proxy import create_app
+from hermes.plugins.model_router.proxy import create_app, _stream_response_bytes
 from hermes.plugins.model_router.proxy_config import (
     ProxyBackendConfig,
     ProxyObservabilityConfig,
@@ -20,19 +22,25 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class _FakeStream:
+    exits = 0
+
     def __init__(self, response: httpx.Response) -> None:
         self.response = response
         self.status_code = response.status_code
         self.headers = response.headers
+        self.raise_after = response.extensions.get("raise_after")
 
     async def __aenter__(self) -> "_FakeStream":
         return self
 
     async def __aexit__(self, *_args: object) -> None:
+        type(self).exits += 1
         return None
 
     async def aiter_bytes(self):
         yield self.response.content
+        if self.raise_after is not None:
+            raise self.raise_after
 
 
 class _FakeAsyncClient:
@@ -119,8 +127,17 @@ def _response(status_code: int, payload: dict | None = None) -> httpx.Response:
     )
 
 
-def _stream_response(content: bytes = b"data: hello\n\n") -> httpx.Response:
-    return httpx.Response(200, content=content, headers={"content-type": "text/event-stream"})
+def _stream_response(
+    content: bytes = b"data: hello\n\n",
+    *,
+    raise_after: Exception | None = None,
+) -> httpx.Response:
+    return httpx.Response(
+        200,
+        content=content,
+        headers={"content-type": "text/event-stream"},
+        extensions={"raise_after": raise_after} if raise_after else {},
+    )
 
 
 def _config(
@@ -168,6 +185,7 @@ def _config(
 def _client(monkeypatch, config: RoutingProxyConfig) -> TestClient:
     _FakeAsyncClient.responses = {}
     _FakeAsyncClient.requests = []
+    _FakeStream.exits = 0
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
     return TestClient(create_app(config))
 
@@ -272,6 +290,22 @@ def test_proxy_does_not_fallback_when_chain_absent(monkeypatch):
     assert [request["backend"] for request in _FakeAsyncClient.requests] == ["fast"]
 
 
+def test_proxy_timeout_returns_502_when_fallback_unavailable(monkeypatch):
+    with _client(monkeypatch, _config(fallback=False)) as client:
+        _FakeAsyncClient.responses = {"fast": [httpx.TimeoutException("slow")]}
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "model-router",
+                "messages": [{"role": "user", "content": "rewrite this text"}],
+            },
+        )
+
+    assert response.status_code == 502
+    assert response.json()["error"]["type"] == "upstream_request_failed"
+    assert [request["backend"] for request in _FakeAsyncClient.requests] == ["fast"]
+
+
 def test_proxy_auth_accepts_valid_token_and_rejects_missing_or_wrong_token(monkeypatch):
     with _client(monkeypatch, _config(api_key="proxy-secret")) as client:
         missing = client.get("/v1/models")
@@ -324,6 +358,106 @@ def test_proxy_streaming_preserves_final_upstream_status(monkeypatch):
     assert response.headers["x-routed-backend"] == "fast"
 
 
+def test_proxy_streaming_uses_explicit_fallback_on_upstream_5xx(monkeypatch):
+    with _client(monkeypatch, _config()) as client:
+        _FakeAsyncClient.responses = {
+            "fast": [httpx.Response(503, content=b"busy")],
+            "deep": [_stream_response(b"data: fallback\n\n")],
+        }
+        with client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={
+                "model": "model-router",
+                "stream": True,
+                "messages": [{"role": "user", "content": "rewrite this text"}],
+            },
+        ) as response:
+            body = response.read()
+
+    assert response.status_code == 200
+    assert body == b"data: fallback\n\n"
+    assert response.headers["x-routed-backend"] == "deep"
+    assert [request["backend"] for request in _FakeAsyncClient.requests] == [
+        "fast",
+        "deep",
+    ]
+    assert _FakeStream.exits == 2
+
+
+def test_proxy_streaming_open_timeout_returns_502_without_fallback(monkeypatch):
+    with _client(monkeypatch, _config(fallback=False)) as client:
+        _FakeAsyncClient.responses = {"fast": [httpx.TimeoutException("slow")]}
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "model-router",
+                "stream": True,
+                "messages": [{"role": "user", "content": "rewrite this text"}],
+            },
+        )
+
+    assert response.status_code == 502
+    assert response.json()["error"]["type"] == "upstream_request_failed"
+    assert [request["backend"] for request in _FakeAsyncClient.requests] == ["fast"]
+
+
+def test_proxy_streaming_body_disconnect_logs_interruption(
+    monkeypatch,
+    tmp_path,
+):
+    log_path = tmp_path / "routing-events.jsonl"
+    with _client(monkeypatch, _config(log_path=log_path)) as client:
+        _FakeAsyncClient.responses = {
+            "fast": [_stream_response(b"data: first\n\n", raise_after=RuntimeError("lost"))]
+        }
+        with pytest.raises(RuntimeError, match="lost"):
+            with client.stream(
+                "POST",
+                "/v1/chat/completions",
+                json={
+                    "model": "model-router",
+                    "stream": True,
+                    "messages": [{"role": "user", "content": "rewrite this text"}],
+                },
+            ) as response:
+                response.read()
+
+    row = json.loads(log_path.read_text(encoding="utf-8").strip())
+    assert row["status"] == "stream_interrupted"
+    assert row["status_code"] == 200
+    assert _FakeStream.exits == 1
+
+
+def test_stream_generator_closes_context_when_client_disconnects():
+    async def run() -> None:
+        config = _config()
+        stream_context = _FakeStream(_stream_response(b"data: first\n\n"))
+        response = await stream_context.__aenter__()
+        generator = _stream_response_bytes(
+            stream_context,
+            response,
+            "req-1",
+            "fast_local",
+            config.backends["fast"],
+            False,
+            0.0,
+            None,
+            "rewrite this text",
+            0.01,
+            None,
+            config,
+            None,
+        )
+
+        assert await anext(generator) == b"data: first\n\n"
+        await generator.aclose()
+
+    _FakeStream.exits = 0
+    asyncio.run(run())
+    assert _FakeStream.exits == 1
+
+
 def test_proxy_models_and_health_do_not_expose_secrets(monkeypatch):
     with _client(monkeypatch, _config(api_key="proxy-secret")) as client:
         headers = {"Authorization": "Bearer proxy-secret"}
@@ -370,6 +504,20 @@ def test_proxy_health_reports_missing_configured_model(monkeypatch):
     assert "configured model 'fast-model' not listed" in payload["backend_health"][
         "fast"
     ]["detail"]
+
+
+def test_proxy_health_treats_backend_4xx_as_degraded(monkeypatch):
+    with _client(monkeypatch, _config()) as client:
+        _FakeAsyncClient.responses = {
+            "fast": [httpx.Response(401, json={"error": "nope"})]
+        }
+        health = client.get("/health")
+
+    payload = health.json()
+    assert payload["status"] == "degraded"
+    assert payload["backend_health"]["fast"]["reachable"] is True
+    assert payload["backend_health"]["fast"]["ok"] is False
+    assert "HTTP 401" in payload["backend_health"]["fast"]["detail"]
 
 
 def test_proxy_writes_privacy_safe_routing_event(monkeypatch, tmp_path):
