@@ -680,9 +680,34 @@ Neither path is a host-application plugin registration point.
 
 ## Roadmap
 
-- Keep the router small, deterministic, and fast.
-- Add opt-in provider health checks that do not execute user tasks.
-- Add gateway dispatch only behind explicit adapter contracts and confirmation
-  gates.
-- Consider optional second-pass classification for uncertain prompts without
-  slowing down the normal path.
+### v0.5: Usable Local Proxy Beta
+
+- Keep the proxy-first install path polished: `pip install "hermes-router[proxy]"`.
+- Keep `model-router init`, `validate-proxy-config`, `doctor`, `/health`, log
+  rotation, and provider presets reliable.
+- Publish releases with a changelog, GitHub release notes, and benchmark output.
+
+### v0.6: Gateway Rename And Passthrough
+
+- Rename the product toward a broader OpenAI-compatible local gateway identity.
+- Add router mode and passthrough mode.
+- Keep legacy command/import aliases for one release.
+- Add backend request overrides for temperature, context, max tokens, and common
+  generation controls.
+- Add first-class llama.cpp and MLX gateway templates.
+
+### v0.6.5: Managed Local Runtime Beta
+
+- Add explicit process configuration for llama.cpp and MLX backends.
+- Add start, stop, restart, status, and logs commands for configured runtimes.
+- Detect port conflicts and capture per-backend process logs.
+- Keep process management opt-in and transparent; never auto-start arbitrary
+  commands without user configuration.
+
+### v1.0: Finished Local AI Gateway
+
+- Version the public config schema and provide migrations.
+- Use labeled real-world routing logs as release-blocking regression checks.
+- Document security/privacy expectations for logs, proxy auth, process commands,
+  and local network exposure.
+- Decide whether to ship a web UI or keep the product CLI/proxy-first.
