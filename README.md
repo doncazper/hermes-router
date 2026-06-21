@@ -102,7 +102,7 @@ cd hermes-router
 python -m pip install -e ".[dev]"
 ```
 
-For normal use from PyPI after v0.5 is published:
+For normal use from PyPI:
 
 ```bash
 pip install "hermes-router[proxy]"
@@ -592,7 +592,7 @@ model-router decide --json "fix the repo and run tests"
 For a non-editable install from GitHub:
 
 ```bash
-python -m pip install "git+https://github.com/doncazper/hermes-router.git@v0.4.1"
+python -m pip install "git+https://github.com/doncazper/hermes-router.git@v0.5.0"
 model-router decide "rewrite this text"
 ```
 
@@ -676,6 +676,7 @@ Neither path is a host-application plugin registration point.
 - [Model router details](docs/model-router.md)
 - [Production readiness](docs/production-readiness.md)
 - [Host adapter contract](docs/adapter-contract.md)
+- [Roadmap](docs/roadmap.md)
 - [Contributing](CONTRIBUTING.md)
 
 ## Roadmap

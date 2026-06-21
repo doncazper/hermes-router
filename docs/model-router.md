@@ -571,9 +571,17 @@ Example receipt:
 - The CLI exits successfully when it emits a fail-closed receipt; the decision
   itself carries `config_valid: false`.
 
-## Future Gateway Mode
+## Optional Proxy And Future Adapters
 
-Future milestones can add a gateway that dispatches decisions to actual
-engines. That work should remain behind explicit confirmation gates for risky
-actions, preserve receipt emission, and keep the decision logic testable without
+The optional `model-router-proxy` command is the supported runtime boundary for
+OpenAI-compatible chat clients. It exposes a local `/v1/chat/completions`
+endpoint, routes each request through initialized `route_fast(...)`, maps the
+selected engine to a configured upstream backend, and forwards the request to
+that OpenAI-compatible server. It remains outside the router hot path and is
+installed only with the `proxy` extra.
+
+Future adapter work should stay separate from scoring policy. If a later
+runtime adapter executes non-chat actions or talks to host-specific APIs, it
+should remain behind explicit adapter contracts and confirmation gates for risky
+actions, preserve receipt emission, and keep decision logic testable without
 provider calls.
