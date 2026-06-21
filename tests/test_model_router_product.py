@@ -127,3 +127,58 @@ def test_doctor_reports_backend_health(tmp_path, monkeypatch):
     assert report.ok is False
     assert any(not backend.reachable for backend in report.backends)
     assert json.dumps(report.to_dict())
+
+
+def test_check_backend_health_reports_listed_model(monkeypatch):
+    backend = product.ProxyBackendConfig(
+        name="fast",
+        base_url="http://backend.test/v1",
+        model="fast-model",
+    )
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self):
+            return b'{"data":[{"id":"fast-model"}]}'
+
+    monkeypatch.setattr(product, "urlopen", lambda *_args, **_kwargs: Response())
+
+    health = product.check_backend_health(backend, timeout_seconds=1.0)
+
+    assert health.ok is True
+    assert "configured model 'fast-model' listed" in health.detail
+
+
+def test_check_backend_health_reports_missing_model(monkeypatch):
+    backend = product.ProxyBackendConfig(
+        name="fast",
+        base_url="http://backend.test/v1",
+        model="missing-model",
+    )
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self):
+            return b'{"data":[{"id":"other-model"}]}'
+
+    monkeypatch.setattr(product, "urlopen", lambda *_args, **_kwargs: Response())
+
+    health = product.check_backend_health(backend, timeout_seconds=1.0)
+
+    assert health.reachable is True
+    assert health.ok is False
+    assert "configured model 'missing-model' not listed" in health.detail

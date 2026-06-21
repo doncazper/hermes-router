@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from importlib import resources
+import json
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -212,7 +213,7 @@ def doctor_proxy_config(
         for backend in config.backends.values()
     )
     ok = proxy_config_valid and router_config_valid and all(
-        backend.reachable for backend in backends
+        backend.ok for backend in backends
     )
     return DoctorReport(
         ok=ok,
@@ -239,12 +240,18 @@ def check_backend_health(
     try:
         with urlopen(request, timeout=timeout_seconds) as response:
             status_code = int(response.status)
+            body = response.read()
+        model_ok, model_detail = _backend_model_detail(backend, body)
+        ok = 200 <= status_code < 500 and model_ok
+        detail = f"reachable: HTTP {status_code}"
+        if model_detail:
+            detail += f"; {model_detail}"
         return BackendHealth(
             backend=backend.name,
             reachable=True,
-            ok=200 <= status_code < 500,
+            ok=ok,
             status_code=status_code,
-            detail=f"reachable: HTTP {status_code}",
+            detail=detail,
         )
     except HTTPError as exc:
         return BackendHealth(
@@ -262,6 +269,29 @@ def check_backend_health(
             status_code=None,
             detail=str(exc),
         )
+
+
+def _backend_model_detail(
+    backend: ProxyBackendConfig,
+    body: bytes,
+) -> tuple[bool, str | None]:
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return True, "model list unavailable"
+    if not isinstance(payload, dict):
+        return True, "model list unavailable"
+    data = payload.get("data")
+    if not isinstance(data, list):
+        return True, "model list unavailable"
+    model_ids = {
+        item.get("id")
+        for item in data
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    }
+    if backend.model in model_ids:
+        return True, f"configured model {backend.model!r} listed"
+    return False, f"configured model {backend.model!r} not listed"
 
 
 def preset_template_names() -> tuple[str, ...]:

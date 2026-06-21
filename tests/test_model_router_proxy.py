@@ -351,6 +351,27 @@ def test_proxy_health_reports_unreachable_backend(monkeypatch):
     assert payload["backend_health"]["fast"]["reachable"] is False
 
 
+def test_proxy_health_reports_missing_configured_model(monkeypatch):
+    with _client(monkeypatch, _config()) as client:
+        _FakeAsyncClient.responses = {
+            "fast": [
+                httpx.Response(
+                    200,
+                    json={"data": [{"id": "other-model", "object": "model"}]},
+                )
+            ]
+        }
+        health = client.get("/health")
+
+    payload = health.json()
+    assert payload["status"] == "degraded"
+    assert payload["backend_health"]["fast"]["reachable"] is True
+    assert payload["backend_health"]["fast"]["ok"] is False
+    assert "configured model 'fast-model' not listed" in payload["backend_health"][
+        "fast"
+    ]["detail"]
+
+
 def test_proxy_writes_privacy_safe_routing_event(monkeypatch, tmp_path):
     log_path = tmp_path / "routing-events.jsonl"
     with _client(monkeypatch, _config(log_path=log_path)) as client:

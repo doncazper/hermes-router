@@ -22,7 +22,7 @@ def test_pyproject_declares_generic_package_metadata():
         pyproject = tomllib.load(handle)
 
     project = pyproject["project"]
-    assert project["version"] == "0.5.0"
+    assert project["version"] == "0.5.1"
     assert project["license"] == "MIT"
     assert project["license-files"] == ["LICENSE"]
     assert (

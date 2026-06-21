@@ -356,13 +356,14 @@ def create_app(config: RoutingProxyConfig):
         backend_health = {
             name: await _check_backend_health(
                 client,
+                expected_model=config.backends[name].model,
                 timeout_seconds=config.health.backend_timeout_seconds,
             )
             for name, client in sorted(clients.items())
         }
-        all_reachable = all(result["reachable"] for result in backend_health.values())
+        all_ok = all(result["ok"] for result in backend_health.values())
         return {
-            "status": "ok" if all_reachable else "degraded",
+            "status": "ok" if all_ok else "degraded",
             "backends": sorted(config.backends),
             "backend_health": backend_health,
             "engine_backends": dict(sorted(config.engine_backends.items())),
@@ -407,7 +408,12 @@ def _backend_headers(backend: ProxyBackendConfig) -> dict[str, str]:
     return headers
 
 
-async def _check_backend_health(client: Any, *, timeout_seconds: float) -> dict[str, Any]:
+async def _check_backend_health(
+    client: Any,
+    *,
+    expected_model: str,
+    timeout_seconds: float,
+) -> dict[str, Any]:
     try:
         response = await client.get("/models", timeout=timeout_seconds)
     except Exception as exc:
@@ -418,12 +424,37 @@ async def _check_backend_health(client: Any, *, timeout_seconds: float) -> dict[
             "detail": str(exc),
         }
     status_code = int(response.status_code)
+    model_ok, model_detail = _backend_model_detail(expected_model, response.content)
+    ok = 200 <= status_code < 500 and model_ok
+    detail = f"HTTP {status_code}"
+    if model_detail:
+        detail += f"; {model_detail}"
     return {
         "reachable": True,
-        "ok": 200 <= status_code < 500,
+        "ok": ok,
         "status_code": status_code,
-        "detail": f"HTTP {status_code}",
+        "detail": detail,
     }
+
+
+def _backend_model_detail(model: str, body: bytes) -> tuple[bool, str | None]:
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return True, "model list unavailable"
+    if not isinstance(payload, dict):
+        return True, "model list unavailable"
+    data = payload.get("data")
+    if not isinstance(data, list):
+        return True, "model list unavailable"
+    model_ids = {
+        item.get("id")
+        for item in data
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    }
+    if model in model_ids:
+        return True, f"configured model {model!r} listed"
+    return False, f"configured model {model!r} not listed"
 
 
 def _extract_recent_user_text(messages: Any, *, lookback: int = 3) -> str:

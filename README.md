@@ -308,8 +308,10 @@ latency, score, fallback, and route distribution analysis.
 
 - Wrong route: enable observability, label the request with
   `model-router feedback`, and replay logs before changing scoring.
-- Backend unavailable: run `model-router doctor --config
-  ~/.model-router/routing_proxy.yaml` and check `/health`.
+- Backend unavailable or wrong model: run `model-router doctor --config
+  ~/.model-router/routing_proxy.yaml` and check `/health`. Both diagnostics
+  verify backend reachability and, when `/v1/models` returns a model list, that
+  each configured backend model is advertised by the upstream server.
 - `human_confirm`: the prompt matched a destructive, sending, purchase/payment,
   deployment, or other high-impact action. Use explicit safety overrides only
   in versioned configs.
