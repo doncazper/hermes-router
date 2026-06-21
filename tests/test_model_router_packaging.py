@@ -36,6 +36,15 @@ def test_pyproject_declares_generic_package_metadata():
         project["scripts"]["model-router"]
         == "hermes.plugins.model_router.cli:main"
     )
+    assert (
+        project["scripts"]["model-router-proxy"]
+        == "hermes.plugins.model_router.proxy:main"
+    )
+    assert project["optional-dependencies"]["proxy"] == [
+        "fastapi>=0.115,<1",
+        "httpx>=0.27,<1",
+        "uvicorn>=0.30,<1",
+    ]
     assert "entry-points" not in project
     assert "model_router*" in pyproject["tool"]["setuptools"]["packages"]["find"][
         "include"
@@ -78,6 +87,15 @@ def test_packaged_model_catalog_resource_exists():
     )
 
     assert catalog_resource.is_file()
+
+
+def test_packaged_proxy_example_resource_exists():
+    proxy_resource = resources.files("hermes.plugins.model_router").joinpath(
+        "data",
+        "routing_proxy.example.yaml",
+    )
+
+    assert proxy_resource.is_file()
 
 
 def test_packaged_default_config_matches_repo_default_config():
@@ -129,8 +147,10 @@ def test_wheel_contains_console_scripts_generic_package_and_packaged_config(tmp_
 
     assert "hermes-router = hermes.plugins.model_router.cli:main" in entry_points
     assert "model-router = hermes.plugins.model_router.cli:main" in entry_points
+    assert "model-router-proxy = hermes.plugins.model_router.proxy:main" in entry_points
     assert "model_router/__init__.py" in names
     assert any(name.endswith(".dist-info/licenses/LICENSE") for name in names)
     assert "hermes/plugins/model_router/data/model_router.yaml" in names
     assert "hermes/plugins/model_router/data/model_catalog.yaml" in names
+    assert "hermes/plugins/model_router/data/routing_proxy.example.yaml" in names
     assert set(parser.sections()) == {"console_scripts"}

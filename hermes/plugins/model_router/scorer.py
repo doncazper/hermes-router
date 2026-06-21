@@ -67,16 +67,23 @@ _RE_SIMPLE_TRANSFORM = re.compile(
 )
 _RE_CODING_INTENT = re.compile(
     r"\b(code|coding|repo|repository|implement|implementation|pytest|ruff|"
-    r"unit test|tests?|debug|bug|fix the repo|edit .*file|pull request|pr)\b",
+    r"unit test|tests?|debug|bug|fix the repo|edit .*file|pull request|pr|"
+    r"refactor|lint|build|compile|traceback|stack trace|exception|codebase)\b",
     re.IGNORECASE,
 )
 _RE_RESEARCH_INTENT = re.compile(
-    r"\b(research|look up|search|browse|cite|citation|sources?|trend|trends)\b",
+    r"\b(research|look up|search|browse|cite|citation|sources?|trend|trends|"
+    r"find online|internet|web)\b",
     re.IGNORECASE,
 )
 _RE_CURRENT_INFO_INTENT = re.compile(
     r"\b(current|latest|recent|today|yesterday|now|news|202[0-9]|"
     r"up-to-date|fresh)\b",
+    re.IGNORECASE,
+)
+_RE_FRESHNESS_OBJECT = re.compile(
+    r"\b(releases?|versions?|changelog|pricing|prices?|weather|stock|stocks?|"
+    r"model releases?|model versions?|benchmark|benchmarks?)\b",
     re.IGNORECASE,
 )
 _RE_MULTI_STEP_REASONING = re.compile(
@@ -254,7 +261,10 @@ def score_prompt(
         and _RE_AMBIGUOUS.search(normalized)
     )
     long_context = estimated_tokens >= 1000 or prompt_length >= 4000
-    requires_freshness = bool(research_intent and current_info_intent)
+    freshness_object = bool(_RE_FRESHNESS_OBJECT.search(normalized))
+    requires_freshness = bool(
+        current_info_intent and (research_intent or freshness_object)
+    )
     requires_code_execution = bool(coding_intent and (shell_intent or file_intent))
     requires_vision = bool(vision_intent and not image_generation_intent)
     requires_image_generation = bool(image_generation_intent)

@@ -1,0 +1,59 @@
+proxy:
+  host: 127.0.0.1
+  port: 8082
+  model_ids:
+    - model-router
+  # Optional local proxy auth. Leave unset for localhost-only development.
+  # api_key_env: MODEL_ROUTER_PROXY_API_KEY
+
+# Optional path to a model_router.yaml catalog. Omit to use the packaged default.
+# router_config: configs/model_router.local.yaml
+
+observability:
+  enabled: true
+  log_path: ~/.model-router/routing-events.jsonl
+  # off, redacted_preview, or full. Full prompt capture can also be enabled
+  # with MODEL_ROUTER_LOG_PROMPTS=1.
+  prompt_capture: redacted_preview
+
+backends:
+  fast:
+    base_url: http://127.0.0.1:8080/v1
+    model: local-fast-model
+    timeout_seconds: 300
+    strip_tools: true
+  balanced:
+    base_url: http://127.0.0.1:8081/v1
+    model: local-balanced-model
+    timeout_seconds: 300
+  reasoning:
+    base_url: http://127.0.0.1:8084/v1
+    model: local-reasoning-model
+    timeout_seconds: 300
+  code:
+    base_url: http://127.0.0.1:8083/v1
+    model: local-code-model
+    timeout_seconds: 300
+  # Frontier or hosted OpenAI-compatible gateway example:
+  # frontier:
+  #   base_url: https://api.openai.com/v1
+  #   api_key_env: OPENAI_API_KEY
+  #   model: gpt-5.1
+  #   timeout_seconds: 300
+
+engine_backends:
+  fast_local: fast
+  balanced_local: balanced
+  reasoning_local: reasoning
+  code_agent: code
+  web_research: reasoning
+  multimodal_vision: reasoning
+  image_generation: reasoning
+
+fallback_backends:
+  fast:
+    - balanced
+  balanced:
+    - reasoning
+  code:
+    - reasoning

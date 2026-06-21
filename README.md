@@ -189,6 +189,65 @@ models, tools, shell commands, provider calls, or external actions. They skip
 ranked alternatives by default for speed; pass `--include-alternatives` when a
 full receipt is useful.
 
+## Local Routing Proxy
+
+Most agents can talk to an OpenAI-compatible local endpoint. Install the optional
+proxy extra to expose one local endpoint that routes each chat request to the
+configured upstream model server:
+
+```bash
+python -m pip install -e ".[proxy]"
+model-router-proxy --config configs/routing_proxy.example.yaml
+```
+
+Then point the agent at:
+
+```text
+http://127.0.0.1:8082/v1
+```
+
+The proxy supports `/v1/chat/completions`, `/v1/models`, and `/health`. It
+calls initialized `route_fast(...)` once per chat request, maps the selected
+engine to a configured backend, overrides the outgoing backend model, and
+forwards to an OpenAI-compatible upstream such as LM Studio, llama.cpp server,
+LocalAI, or a frontier gateway. `human_confirm` returns HTTP `409` and is never
+forwarded. Tools are preserved by default and can be stripped per backend for
+small local models.
+
+## Hindsight Routing Logs
+
+The proxy can write privacy-safe JSONL events for calibration and replay:
+
+```yaml
+observability:
+  enabled: true
+  log_path: ~/.model-router/routing-events.jsonl
+  prompt_capture: redacted_preview
+```
+
+By default events keep a prompt hash, length, estimated tokens, selected engine,
+scores, feature flags, backend, fallback status, and latencies. Raw prompts are
+not stored unless `prompt_capture: full` or `MODEL_ROUTER_LOG_PROMPTS=1` is set.
+Use full capture only during deliberate calibration runs.
+
+When a route is wrong, label it:
+
+```bash
+model-router feedback req-123 code_agent --notes "repo prompt routed too small"
+```
+
+Replay captured traffic against the current router:
+
+```bash
+python scripts/replay_routing_log.py \
+  --events ~/.model-router/routing-events.jsonl \
+  --feedback ~/.model-router/routing-feedback.jsonl \
+  --json
+```
+
+Rows without full prompts are skipped for replay but still useful for aggregate
+latency, score, fallback, and route distribution analysis.
+
 ## Example Receipt
 
 ```json

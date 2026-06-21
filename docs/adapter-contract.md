@@ -32,6 +32,11 @@ weights, runs a shell command, sends a message, or performs an external action.
 It skips ranked alternatives by default for speed; request them explicitly when
 callers need a full diagnostic receipt.
 
+The optional `model-router-proxy` runtime adapter is the first supported
+execution boundary. It exposes one local OpenAI-compatible endpoint and forwards
+chat completions to configured OpenAI-compatible upstreams. It remains outside
+the router hot path and is installed only with the `proxy` extra.
+
 ## Runtime Principles
 
 - Load the YAML catalog once through `ModelRouter`.

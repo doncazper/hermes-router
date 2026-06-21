@@ -151,6 +151,14 @@ _FAST_CODING_MARKERS = (
     " implementation ",
     " pytest ",
     " ruff ",
+    " lint ",
+    " build ",
+    " compile ",
+    " refactor",
+    " traceback",
+    " stack trace",
+    " exception",
+    " codebase",
     " unit test",
     " test ",
     " tests",
@@ -171,6 +179,8 @@ _FAST_RESEARCH_MARKERS = (
     " source",
     " trend",
     " web ",
+    " internet ",
+    " find online ",
 )
 _FAST_CURRENT_MARKERS = (
     " current ",
@@ -182,6 +192,17 @@ _FAST_CURRENT_MARKERS = (
     " news ",
     " up-to-date ",
     " fresh ",
+)
+_FAST_FRESHNESS_OBJECT_MARKERS = (
+    " release",
+    " version",
+    " changelog",
+    " pricing ",
+    " price ",
+    " weather ",
+    " stock ",
+    " benchmark",
+    " model ",
 )
 _FAST_REASONING_MARKERS = (
     " architecture",
@@ -692,8 +713,12 @@ def _fast_target_route_index(prompt: str) -> int:
         return _FAST_VISION_INDEX
     if _fast_has_any(text, _FAST_CODING_MARKERS):
         return _FAST_CODING_INDEX
-    if _fast_has_any(text, _FAST_RESEARCH_MARKERS) and (
+    has_current_marker = (
         _fast_has_any(text, _FAST_CURRENT_MARKERS) or _fast_has_recent_year(raw_text)
+    )
+    if has_current_marker and (
+        _fast_has_any(text, _FAST_RESEARCH_MARKERS)
+        or _fast_has_any(text, _FAST_FRESHNESS_OBJECT_MARKERS)
     ):
         return _FAST_RESEARCH_INDEX
     if _fast_has_any(text, _FAST_REASONING_MARKERS):
@@ -735,8 +760,12 @@ def _fast_target_route_index_with_safety(prompt: str, confirmation_mask: int) ->
         return _FAST_VISION_INDEX
     if _fast_has_any(text, _FAST_CODING_MARKERS):
         return _FAST_CODING_INDEX
-    if _fast_has_any(text, _FAST_RESEARCH_MARKERS) and (
+    has_current_marker = (
         _fast_has_any(text, _FAST_CURRENT_MARKERS) or _fast_has_recent_year(raw_text)
+    )
+    if has_current_marker and (
+        _fast_has_any(text, _FAST_RESEARCH_MARKERS)
+        or _fast_has_any(text, _FAST_FRESHNESS_OBJECT_MARKERS)
     ):
         return _FAST_RESEARCH_INDEX
     if _fast_has_any(text, _FAST_REASONING_MARKERS):

@@ -117,3 +117,23 @@ def test_console_script_emits_parseable_receipt_when_installed():
     assert result.returncode == 0
     payload = json.loads(result.stdout)
     assert payload["selected_engine"] == "code_agent"
+
+
+def test_feedback_cli_appends_jsonl_label(tmp_path):
+    output = tmp_path / "feedback.jsonl"
+    result = _run_cli(
+        "feedback",
+        "--output",
+        str(output),
+        "--notes",
+        "should have used code",
+        "req-123",
+        "code_agent",
+    )
+
+    assert result.returncode == 0
+    row = json.loads(output.read_text(encoding="utf-8").strip())
+    assert row["event_type"] == "routing_feedback"
+    assert row["request_id"] == "req-123"
+    assert row["expected_engine"] == "code_agent"
+    assert row["notes"] == "should have used code"

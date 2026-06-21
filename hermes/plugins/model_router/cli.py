@@ -16,6 +16,11 @@ from hermes.plugins.model_router.dispatch import build_dispatch_plan, dispatch_p
 from hermes.plugins.model_router.models import ModelEngine, RouterConfig
 from hermes.plugins.model_router.policy import ModelRouter, route_prompt
 from hermes.plugins.model_router.receipts import decision_to_receipt, receipt_to_json
+from hermes.plugins.model_router.routing_log import (
+    DEFAULT_FEEDBACK_PATH,
+    RoutingLogWriter,
+    build_feedback,
+)
 from hermes.plugins.model_router.setup_assistant import (
     DiscoveredModel,
     DownloadPlan,
@@ -164,6 +169,25 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
         help="Path to a model_router.yaml catalog",
     )
     validate.set_defaults(func=_cmd_validate_config)
+
+    feedback = subparsers.add_parser(
+        "feedback",
+        help="Append a hindsight label for a logged routing event",
+    )
+    feedback.add_argument(
+        "--output",
+        type=Path,
+        default=Path(DEFAULT_FEEDBACK_PATH),
+        help="Path to routing-feedback JSONL output",
+    )
+    feedback.add_argument(
+        "--notes",
+        default=None,
+        help="Optional short note explaining the correction",
+    )
+    feedback.add_argument("request_id", help="Request id from routing-events JSONL")
+    feedback.add_argument("expected_engine", help="Correct engine for this event")
+    feedback.set_defaults(func=_cmd_feedback)
 
     setup = subparsers.add_parser(
         "setup",
@@ -398,6 +422,20 @@ def _cmd_validate_config(args: argparse.Namespace) -> int:
             for reason in result.reasons:
                 print(f"  - {reason}")
     return 0 if report.all_available else 1
+
+
+def _cmd_feedback(args: argparse.Namespace) -> int:
+    writer = RoutingLogWriter(args.output)
+    payload = build_feedback(
+        request_id=args.request_id,
+        expected_engine=args.expected_engine,
+        notes=args.notes,
+    )
+    if not writer.write(payload):
+        print(f"Failed to write feedback to {args.output}", file=sys.stderr)
+        return 1
+    print(f"Feedback written to {args.output}")
+    return 0
 
 
 def _cmd_setup_scan(args: argparse.Namespace) -> int:

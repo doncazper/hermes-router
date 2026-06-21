@@ -1,0 +1,149 @@
+from pathlib import Path
+
+import pytest
+import yaml
+
+from hermes.plugins.model_router.proxy_config import (
+    ProxyConfigError,
+    default_proxy_config_source,
+    load_proxy_config,
+)
+
+
+def _write_config(tmp_path: Path, data: dict) -> Path:
+    path = tmp_path / "routing_proxy.yaml"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    return path
+
+
+def _valid_config() -> dict:
+    return {
+        "proxy": {
+            "host": "127.0.0.1",
+            "port": 8082,
+            "api_key_env": "MODEL_ROUTER_PROXY_API_KEY",
+            "model_ids": ["model-router"],
+        },
+        "router_config": "configs/model_router.yaml",
+        "backends": {
+            "fast": {
+                "base_url": "http://fast.test/v1",
+                "model": "fast-model",
+                "strip_tools": True,
+            },
+            "deep": {
+                "base_url": "http://deep.test/v1",
+                "model": "deep-model",
+                "api_key_env": "DEEP_API_KEY",
+                "timeout_seconds": 20,
+            },
+        },
+        "engine_backends": {
+            "fast_local": "fast",
+            "balanced_local": "fast",
+            "reasoning_local": "deep",
+            "code_agent": "deep",
+        },
+        "fallback_backends": {
+            "fast": ["deep"],
+        },
+    }
+
+
+def test_load_proxy_config_accepts_valid_yaml(tmp_path, monkeypatch):
+    monkeypatch.setenv("MODEL_ROUTER_PROXY_API_KEY", "proxy-secret")
+    monkeypatch.setenv("DEEP_API_KEY", "deep-secret")
+    config = load_proxy_config(_write_config(tmp_path, _valid_config()))
+
+    assert config.proxy.host == "127.0.0.1"
+    assert config.proxy.port == 8082
+    assert config.proxy.resolved_api_key == "proxy-secret"
+    assert config.backends["fast"].strip_tools is True
+    assert config.backends["deep"].resolved_api_key == "deep-secret"
+    assert config.observability.enabled is False
+    assert config.backend_for_engine("fast_local") == config.backends["fast"]
+    assert config.fallback_chain_for_backend("fast") == (config.backends["deep"],)
+
+
+def test_load_proxy_config_uses_packaged_example_outside_repo_cwd(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+
+    config = load_proxy_config()
+
+    assert config.source_path == default_proxy_config_source()
+    assert config.proxy.host == "127.0.0.1"
+    assert config.proxy.port == 8082
+    assert config.backend_for_engine("fast_local") == config.backends["fast"]
+
+
+def test_load_proxy_config_rejects_undefined_engine_backend(tmp_path, monkeypatch):
+    monkeypatch.setenv("MODEL_ROUTER_PROXY_API_KEY", "proxy-secret")
+    monkeypatch.setenv("DEEP_API_KEY", "deep-secret")
+    data = _valid_config()
+    data["engine_backends"]["fast_local"] = "missing"
+
+    with pytest.raises(ProxyConfigError, match="undefined backend"):
+        load_proxy_config(_write_config(tmp_path, data))
+
+
+def test_load_proxy_config_rejects_fallback_cycles(tmp_path, monkeypatch):
+    monkeypatch.setenv("MODEL_ROUTER_PROXY_API_KEY", "proxy-secret")
+    monkeypatch.setenv("DEEP_API_KEY", "deep-secret")
+    data = _valid_config()
+    data["fallback_backends"] = {"fast": ["deep"], "deep": ["fast"]}
+
+    with pytest.raises(ProxyConfigError, match="cycle"):
+        load_proxy_config(_write_config(tmp_path, data))
+
+
+def test_load_proxy_config_rejects_ambiguous_auth_settings(tmp_path):
+    data = _valid_config()
+    data["proxy"]["api_key"] = "literal"
+
+    with pytest.raises(ProxyConfigError, match="api_key or api_key_env"):
+        load_proxy_config(_write_config(tmp_path, data))
+
+
+def test_load_proxy_config_rejects_missing_proxy_api_key_env(tmp_path):
+    data = _valid_config()
+
+    with pytest.raises(ProxyConfigError, match="MODEL_ROUTER_PROXY_API_KEY"):
+        load_proxy_config(_write_config(tmp_path, data))
+
+
+def test_load_proxy_config_rejects_missing_backend_api_key_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("MODEL_ROUTER_PROXY_API_KEY", "proxy-secret")
+    data = _valid_config()
+
+    with pytest.raises(ProxyConfigError, match="DEEP_API_KEY"):
+        load_proxy_config(_write_config(tmp_path, data))
+
+
+def test_load_proxy_config_accepts_observability_block(tmp_path, monkeypatch):
+    monkeypatch.setenv("MODEL_ROUTER_PROXY_API_KEY", "proxy-secret")
+    monkeypatch.setenv("DEEP_API_KEY", "deep-secret")
+    data = _valid_config()
+    data["observability"] = {
+        "enabled": True,
+        "log_path": "~/.model-router/test.jsonl",
+        "prompt_capture": "redacted_preview",
+    }
+
+    config = load_proxy_config(_write_config(tmp_path, data))
+
+    assert config.observability.enabled is True
+    assert config.observability.log_path == "~/.model-router/test.jsonl"
+    assert config.observability.prompt_capture == "redacted_preview"
+
+
+def test_load_proxy_config_rejects_invalid_prompt_capture(tmp_path, monkeypatch):
+    monkeypatch.setenv("MODEL_ROUTER_PROXY_API_KEY", "proxy-secret")
+    monkeypatch.setenv("DEEP_API_KEY", "deep-secret")
+    data = _valid_config()
+    data["observability"] = {"prompt_capture": "rawish"}
+
+    with pytest.raises(ProxyConfigError, match="prompt_capture"):
+        load_proxy_config(_write_config(tmp_path, data))

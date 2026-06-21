@@ -35,10 +35,15 @@ PARITY_CORPUS = (
     ("write a test for this function", "code_agent"),
     ("fix this", "reasoning_local"),
     ("search for 2024 tax brackets", "web_research"),
+    ("latest Qwen model releases", "web_research"),
+    ("what is the current LM Studio version", "web_research"),
+    ("recent llama.cpp benchmark results", "web_research"),
     ("email formatting tips", "balanced_local"),
     ("summarize my inbox", "balanced_local"),
     ("check my calendar for next week", "balanced_local"),
     ("plan the rollout and update the config files", "reasoning_local"),
+    ("refactor this codebase and fix the failing build", "code_agent"),
+    ("analyze this stack trace and explain the exception", "code_agent"),
 )
 
 

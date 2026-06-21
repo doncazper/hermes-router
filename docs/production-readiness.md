@@ -65,10 +65,17 @@ The router does not perform built-in hot-path logging. This avoids adding
 per-request formatting, allocation, IO, or lock contention to
 `route_fast(...)`.
 
-Production services that need metrics should wrap calls at the service boundary
-and emit only the fields they are allowed to retain, such as selected engine,
-route type, fallback status, caller-owned request id, and elapsed time. Do not
-log raw prompts unless a separate privacy review explicitly permits it.
+Production services that need metrics should wrap calls at the service boundary.
+The optional proxy does this through an `observability` config block that writes
+JSONL events with selected engine, route scores, feature flags, backend, fallback
+status, caller-owned request id, and latency. Default prompt retention is a hash
+plus a redacted preview. Full prompt capture requires `prompt_capture: full` or
+`MODEL_ROUTER_LOG_PROMPTS=1` and should be used only for deliberate calibration
+runs.
+
+Use `model-router feedback` to label bad routes and
+`scripts/replay_routing_log.py` to replay labeled traffic against a new router
+implementation before changing routing thresholds.
 
 ## Safety Configuration
 

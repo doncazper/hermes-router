@@ -140,7 +140,9 @@ serialization. For a lighter diagnostic decision, pass
 The hot path does not perform built-in logging. Services that need telemetry
 should measure and emit metrics around router calls at the service boundary so
 `route_fast(...)` stays allocation-light and privacy policy remains explicit.
-See `docs/production-readiness.md` for SLOs and benchmark guardrails.
+The optional proxy can write privacy-safe JSONL routing events for hindsight
+testing; raw prompts are opt-in. See `docs/production-readiness.md` for SLOs,
+benchmark guardrails, and replay workflow.
 
 The installed package exposes `model-router` as the generic console command and
 `hermes-router` as a backward-compatible alias for diagnostics and scripts.
