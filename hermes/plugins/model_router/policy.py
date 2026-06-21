@@ -159,6 +159,27 @@ _FAST_CODING_MARKERS = (
     " stack trace",
     " exception",
     " codebase",
+    " python ",
+    " javascript ",
+    " typescript ",
+    " write a function ",
+    " write function ",
+    " create a function ",
+    " implement a function ",
+    " debug function ",
+    " refactor function ",
+    " write a class ",
+    " create a class ",
+    " implement a class ",
+    " write a module ",
+    " create a module ",
+    " implement a module ",
+    " write a script ",
+    " create a script ",
+    " implement a script ",
+    " api endpoint",
+    " dependency ",
+    " import ",
     " unit test",
     " test ",
     " tests",
@@ -168,6 +189,11 @@ _FAST_CODING_MARKERS = (
     " edit ",
     " pull request",
     " pr ",
+)
+_FAST_BALANCED_PREFIXES = (
+    "summarize",
+    "summarise",
+    "explain",
 )
 _FAST_RESEARCH_MARKERS = (
     " research ",
@@ -234,6 +260,10 @@ _FAST_SIMPLE_MARKERS = (
     " clean up ",
     " copyedit ",
     " proofread ",
+    " make this clearer ",
+    " make it clearer ",
+    " fix typo ",
+    " fix typos ",
 )
 _FAST_SIMPLE_PREFIXES = (
     "rewrite",
@@ -242,6 +272,10 @@ _FAST_SIMPLE_PREFIXES = (
     "clean up",
     "copyedit",
     "proofread",
+    "make this clearer",
+    "make it clearer",
+    "fix typo",
+    "fix typos",
 )
 _FAST_VISION_MARKERS = (
     " image ",
@@ -711,8 +745,6 @@ def _fast_target_route_index(prompt: str) -> int:
         return _FAST_IMAGE_GENERATION_INDEX
     if _fast_has_any(text, _FAST_VISION_MARKERS):
         return _FAST_VISION_INDEX
-    if _fast_has_any(text, _FAST_CODING_MARKERS):
-        return _FAST_CODING_INDEX
     has_current_marker = (
         _fast_has_any(text, _FAST_CURRENT_MARKERS) or _fast_has_recent_year(raw_text)
     )
@@ -721,8 +753,12 @@ def _fast_target_route_index(prompt: str) -> int:
         or _fast_has_any(text, _FAST_FRESHNESS_OBJECT_MARKERS)
     ):
         return _FAST_RESEARCH_INDEX
+    if _fast_has_any(text, _FAST_CODING_MARKERS):
+        return _FAST_CODING_INDEX
     if _fast_has_any(text, _FAST_REASONING_MARKERS):
         return _FAST_REASONING_INDEX
+    if raw_text.startswith(_FAST_BALANCED_PREFIXES):
+        return _FAST_BALANCED_INDEX
     if _fast_is_ambiguous(raw_text):
         return _FAST_REASONING_INDEX
     if _fast_has_any(text, _FAST_SIMPLE_MARKERS):
@@ -758,8 +794,6 @@ def _fast_target_route_index_with_safety(prompt: str, confirmation_mask: int) ->
         return _FAST_IMAGE_GENERATION_INDEX
     if _fast_has_any(text, _FAST_VISION_MARKERS):
         return _FAST_VISION_INDEX
-    if _fast_has_any(text, _FAST_CODING_MARKERS):
-        return _FAST_CODING_INDEX
     has_current_marker = (
         _fast_has_any(text, _FAST_CURRENT_MARKERS) or _fast_has_recent_year(raw_text)
     )
@@ -768,8 +802,12 @@ def _fast_target_route_index_with_safety(prompt: str, confirmation_mask: int) ->
         or _fast_has_any(text, _FAST_FRESHNESS_OBJECT_MARKERS)
     ):
         return _FAST_RESEARCH_INDEX
+    if _fast_has_any(text, _FAST_CODING_MARKERS):
+        return _FAST_CODING_INDEX
     if _fast_has_any(text, _FAST_REASONING_MARKERS):
         return _FAST_REASONING_INDEX
+    if raw_text.startswith(_FAST_BALANCED_PREFIXES):
+        return _FAST_BALANCED_INDEX
     if _fast_is_ambiguous(raw_text):
         return _FAST_REASONING_INDEX
     if _fast_has_any(text, _FAST_SIMPLE_MARKERS):
@@ -1076,10 +1114,10 @@ def _target_route(
         return "vision", "attachment modality requires vision or extraction"
     if features.requires_vision and not features.requires_code_execution:
         return "vision", "multimodal vision or OCR required"
-    if features.requires_code_execution or features.coding_intent:
-        return "coding", "coding or repository work"
     if features.requires_freshness:
         return "research", "fresh research or current information required"
+    if features.requires_code_execution or features.coding_intent:
+        return "coding", "coding or repository work"
     if (
         analysis.complexity_score.value >= 60
         or features.multi_step_reasoning

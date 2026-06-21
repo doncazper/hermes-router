@@ -68,11 +68,21 @@ def test_replay_routing_log_reports_changes_and_feedback_mismatches(tmp_path):
 def test_replay_fixture_corpus_has_no_expected_mismatches():
     fixture_dir = ROOT / "tests" / "fixtures" / "routing_corpus"
 
-    summary = replay_events(
-        events_path=fixture_dir / "v0_5_proxy_events.jsonl",
-        feedback_path=fixture_dir / "v0_5_feedback.jsonl",
-        config_path=None,
+    fixture_pairs = (
+        ("v0_5_proxy_events.jsonl", "v0_5_feedback.jsonl", 4),
+        (
+            "short_prompt_calibration_events.jsonl",
+            "short_prompt_calibration_feedback.jsonl",
+            7,
+        ),
     )
 
-    assert summary["replayed"] == 4
-    assert summary["expected_mismatch_count"] == 0
+    for events_name, feedback_name, expected_count in fixture_pairs:
+        summary = replay_events(
+            events_path=fixture_dir / events_name,
+            feedback_path=fixture_dir / feedback_name,
+            config_path=None,
+        )
+
+        assert summary["replayed"] == expected_count
+        assert summary["expected_mismatch_count"] == 0

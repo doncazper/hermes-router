@@ -1,0 +1,7 @@
+{"event_type":"routing_event","request_id":"short-summarize-this","prompt":"summarize this","selected_engine":"balanced_local","route_latency_ms":0.002}
+{"event_type":"routing_event","request_id":"short-explain-this","prompt":"explain this","selected_engine":"balanced_local","route_latency_ms":0.002}
+{"event_type":"routing_event","request_id":"short-make-clearer","prompt":"make this clearer","selected_engine":"fast_local","route_latency_ms":0.002}
+{"event_type":"routing_event","request_id":"short-fix-typo","prompt":"fix typo","selected_engine":"fast_local","route_latency_ms":0.002}
+{"event_type":"routing_event","request_id":"short-write-python-function","prompt":"write a python function to parse json","selected_engine":"code_agent","route_latency_ms":0.002}
+{"event_type":"routing_event","request_id":"short-write-function","prompt":"write a function to parse json","selected_engine":"code_agent","route_latency_ms":0.002}
+{"event_type":"routing_event","request_id":"short-function-of","prompt":"what is the function of mitochondria","selected_engine":"balanced_local","route_latency_ms":0.002}

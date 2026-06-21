@@ -62,13 +62,19 @@ DEFAULT_SCORING_WEIGHTS: dict[str, dict[str, int]] = {
 # lowercased but IGNORECASE is kept so behavior is identical.
 #
 _RE_SIMPLE_TRANSFORM = re.compile(
-    r"\b(rewrite|rephrase|format|extract|clean up|copyedit|proofread)\b",
+    r"\b(rewrite|rephrase|format|extract|clean up|copyedit|proofread)\b"
+    r"|\bmake\s+(?:this|it)\s+clearer\b"
+    r"|\bfix\s+(?:a\s+|the\s+)?typos?\b",
     re.IGNORECASE,
 )
 _RE_CODING_INTENT = re.compile(
     r"\b(code|coding|repo|repository|implement|implementation|pytest|ruff|"
     r"unit test|tests?|debug|bug|fix the repo|edit .*file|pull request|pr|"
-    r"refactor|lint|build|compile|traceback|stack trace|exception|codebase)\b",
+    r"refactor|lint|build|compile|traceback|stack trace|exception|codebase|"
+    r"python|javascript|typescript|api endpoint|"
+    r"dependency|import)\b"
+    r"|(?:write|create|implement|debug|refactor|fix)\s+"
+    r"(?:a\s+|an\s+|the\s+)?(?:function|class|module|script)\b",
     re.IGNORECASE,
 )
 _RE_RESEARCH_INTENT = re.compile(
@@ -192,6 +198,10 @@ _RE_AMBIGUOUS = re.compile(
     r"\b(handle|help|fix|manage|do|deal with|this|that|it)\b",
     re.IGNORECASE,
 )
+_RE_CLEAR_GENERAL_INTENT = re.compile(
+    r"\b(summarize|summarise|explain)\b",
+    re.IGNORECASE,
+)
 _RE_WORD = re.compile(r"\b\w+\b")
 _RE_ORDER_WORD = re.compile(r"\border\b")
 
@@ -257,6 +267,7 @@ def score_prompt(
     word_count = len(_RE_WORD.findall(normalized))
     ambiguous = bool(
         not simple_transform
+        and not _RE_CLEAR_GENERAL_INTENT.search(normalized)
         and word_count <= 4
         and _RE_AMBIGUOUS.search(normalized)
     )

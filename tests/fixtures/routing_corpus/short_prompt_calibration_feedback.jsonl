@@ -1,0 +1,7 @@
+{"event_type":"routing_feedback","request_id":"short-summarize-this","expected_engine":"balanced_local"}
+{"event_type":"routing_feedback","request_id":"short-explain-this","expected_engine":"balanced_local"}
+{"event_type":"routing_feedback","request_id":"short-make-clearer","expected_engine":"fast_local"}
+{"event_type":"routing_feedback","request_id":"short-fix-typo","expected_engine":"fast_local"}
+{"event_type":"routing_feedback","request_id":"short-write-python-function","expected_engine":"code_agent"}
+{"event_type":"routing_feedback","request_id":"short-write-function","expected_engine":"code_agent"}
+{"event_type":"routing_feedback","request_id":"short-function-of","expected_engine":"balanced_local"}

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.2 - Routing Accuracy Calibration
+
+- Calibrated short prompt routing so clear summary/explanation requests like
+  `summarize this` and `explain this` route to `balanced_local` instead of
+  being over-escalated as ambiguous reasoning work.
+- Calibrated simple edit prompts like `make this clearer` and `fix typo` to
+  route to `fast_local`.
+- Improved coding intent detection for prompts that ask to write code objects,
+  such as functions, classes, modules, or scripts, while avoiding false
+  positives like `what is the function of mitochondria`.
+- Added replay fixtures and parity coverage for the calibrated prompt set.
+
 ## 0.5.1 - Dogfood Stability Fixes
 
 - Improved `model-router doctor` and proxy `/health` diagnostics so a backend

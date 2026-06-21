@@ -44,6 +44,16 @@ PARITY_CORPUS = (
     ("plan the rollout and update the config files", "reasoning_local"),
     ("refactor this codebase and fix the failing build", "code_agent"),
     ("analyze this stack trace and explain the exception", "code_agent"),
+    # short-prompt calibration cases from real proxy usage patterns
+    ("summarize this", "balanced_local"),
+    ("explain this", "balanced_local"),
+    ("make this clearer", "fast_local"),
+    ("fix typo", "fast_local"),
+    ("write a python function to parse json", "code_agent"),
+    ("write a function to parse json", "code_agent"),
+    ("what is the function of mitochondria", "balanced_local"),
+    ("summarize this screenshot", "multimodal_vision"),
+    ("explain this stack trace", "code_agent"),
 )
 
 
