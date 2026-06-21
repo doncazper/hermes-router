@@ -67,7 +67,9 @@ _RE_SIMPLE_TRANSFORM = re.compile(
 )
 _RE_CODING_INTENT = re.compile(
     r"\b(code|coding|repo|repository|implement|implementation|pytest|ruff|"
-    r"unit test|tests?|debug|bug|fix the repo|edit .*file|pull request|pr)\b",
+    r"unit test|tests?|debug|bug|fix the repo|edit .*file|pull request|pr|"
+    r"refactor|function|class|module|script|build|compile|deploy|lint|"
+    r"error|exception|stack trace|import|dependency|api endpoint|schema)\b",
     re.IGNORECASE,
 )
 _RE_RESEARCH_INTENT = re.compile(

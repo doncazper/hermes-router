@@ -1,0 +1,70 @@
+proxy:
+  host: 127.0.0.1
+  port: 8082
+
+backends:
+  fast:
+    url: http://127.0.0.1:8081/v1
+    api_key: uaa-llama-backend-dev
+  deep:
+    url: http://127.0.0.1:8080/v1
+    api_key: uaa-llama-backend-dev
+
+routing:
+  # Engines from hermes-router that always go to the deep backend.
+  deep_engines:
+    - code_agent
+    - reasoning_local
+
+  # Single words in the user prompt that force deep routing even when
+  # hermes-router picks a simple/balanced engine (e.g. "rewrite the endpoint").
+  coding_override_tokens:
+    - api
+    - endpoint
+    - function
+    - class
+    - module
+    - script
+    - method
+    - variable
+    - interface
+    - schema
+    - migration
+    - query
+    - route
+    - middleware
+    - handler
+    - service
+    - controller
+    - component
+    - hook
+    - async
+    - await
+    - import
+    - export
+    - dependency
+    - package
+    - build
+    - compile
+    - deploy
+    - lint
+    - exception
+    - traceback
+    - stacktrace
+    - dockerfile
+    - yaml
+    - json
+    - sql
+    - bash
+    - shell
+
+  # How many chars of the user message to scan for override tokens.
+  # Avoids splitting huge pasted files on every request.
+  override_scan_chars: 300
+
+  # Look back this many user turns (not just the last one) when checking
+  # coding context — catches "fix the bug" after code was pasted earlier.
+  context_lookback_turns: 3
+
+  # Fall back to deep backend if fast backend returns an error.
+  fallback_to_deep: true
