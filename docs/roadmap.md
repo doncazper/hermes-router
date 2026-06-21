@@ -131,6 +131,11 @@ At the end, tell me whether we should ship these calibration fixes as an increme
 
 Goal: make the proxy robust enough for daily background use.
 
+Status: shipped as the v0.5.3 proxy hardening release. The deferred
+socket-level disconnect risk is covered by a live uvicorn/raw-socket streaming
+test that disconnects before the full response is consumed and verifies upstream
+stream cleanup plus privacy-safe logging. Move next to Milestone 5.
+
 Tasks:
 
 - Improve graceful shutdown and resource cleanup tests.

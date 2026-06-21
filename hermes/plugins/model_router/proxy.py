@@ -584,6 +584,10 @@ async def _stream_response_bytes(
     try:
         async for chunk in response.aiter_bytes():
             yield chunk
+    except asyncio.CancelledError as exc:
+        status = "stream_interrupted"
+        exc_info = (type(exc), exc, exc.__traceback__)
+        raise
     except Exception as exc:
         status = "stream_interrupted"
         exc_info = (type(exc), exc, exc.__traceback__)

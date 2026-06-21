@@ -1,9 +1,15 @@
 import asyncio
+from contextlib import contextmanager
 import json
+import logging
+import socket
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 import pytest
@@ -116,6 +122,15 @@ class _FakeAsyncClient:
         )
 
 
+class _LiveStreamState:
+    def __init__(self) -> None:
+        self.request_seen = threading.Event()
+        self.first_chunk_sent = threading.Event()
+        self.stream_closed = threading.Event()
+        self.headers: dict[str, str] = {}
+        self.body: dict[str, Any] = {}
+
+
 def _response(status_code: int, payload: dict | None = None) -> httpx.Response:
     return httpx.Response(
         status_code,
@@ -188,6 +203,155 @@ def _client(monkeypatch, config: RoutingProxyConfig) -> TestClient:
     _FakeStream.exits = 0
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
     return TestClient(create_app(config))
+
+
+def _unused_tcp_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+@contextmanager
+def _uvicorn_server(app):
+    import uvicorn
+
+    port = _unused_tcp_port()
+    config = uvicorn.Config(
+        app,
+        host="127.0.0.1",
+        port=port,
+        log_level="warning",
+        access_log=False,
+        lifespan="on",
+    )
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 5
+        while not server.started and thread.is_alive():
+            if time.monotonic() > deadline:
+                raise RuntimeError("timed out waiting for test ASGI server")
+            time.sleep(0.01)
+        if not server.started:
+            raise RuntimeError("test ASGI server exited before startup")
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+        if thread.is_alive():
+            raise RuntimeError("test ASGI server did not stop")
+
+
+def _live_streaming_upstream(state: _LiveStreamState):
+    from fastapi import FastAPI, Request
+    from fastapi.responses import StreamingResponse
+
+    app = FastAPI(docs_url=None, redoc_url=None)
+
+    @app.post("/v1/chat/completions")
+    async def chat_completions(request: Request):
+        state.headers = dict(request.headers)
+        body = await request.json()
+        state.body = body if isinstance(body, dict) else {}
+        state.request_seen.set()
+
+        async def stream_body():
+            try:
+                yield b"data: first\n\n"
+                state.first_chunk_sent.set()
+                while True:
+                    await asyncio.sleep(0.05)
+                    yield b"data: still-open\n\n"
+            finally:
+                state.stream_closed.set()
+
+        return StreamingResponse(stream_body(), media_type="text/event-stream")
+
+    return app
+
+
+def _live_proxy_config(
+    *,
+    upstream_base_url: str,
+    log_path: Path,
+) -> RoutingProxyConfig:
+    engine_backends = {
+        engine: "fast"
+        for engine in (
+            "fast_local",
+            "balanced_local",
+            "reasoning_local",
+            "code_agent",
+            "web_research",
+            "multimodal_vision",
+            "image_generation",
+        )
+    }
+    return RoutingProxyConfig(
+        proxy=ProxyServerConfig(api_key="client-secret"),
+        router_config=None,
+        source_path="live-disconnect-test.yaml",
+        backends={
+            "fast": ProxyBackendConfig(
+                name="fast",
+                base_url=f"{upstream_base_url}/v1",
+                model="fast-live-model",
+                api_key="backend-secret",
+                timeout_seconds=5.0,
+            )
+        },
+        engine_backends=engine_backends,
+        fallback_backends={},
+        observability=ProxyObservabilityConfig(
+            enabled=True,
+            log_path=str(log_path),
+            prompt_capture="off",
+        ),
+    )
+
+
+def _stream_and_disconnect(proxy_base_url: str, payload: dict[str, Any]) -> bytes:
+    parsed = urlparse(proxy_base_url)
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    request = (
+        "POST /v1/chat/completions HTTP/1.1\r\n"
+        f"Host: {parsed.hostname}:{parsed.port}\r\n"
+        "Authorization: Bearer client-secret\r\n"
+        "Content-Type: application/json\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    ).encode("ascii") + body
+
+    data = b""
+    with socket.create_connection((parsed.hostname, parsed.port), timeout=5) as sock:
+        sock.settimeout(5)
+        sock.sendall(request)
+        deadline = time.monotonic() + 5
+        while b"data: first" not in data:
+            if time.monotonic() > deadline:
+                raise AssertionError(f"stream did not produce first chunk: {data!r}")
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+    return data
+
+
+def _wait_for_log_row(path: Path) -> dict[str, Any]:
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if path.exists():
+            lines = [
+                line
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            if lines:
+                return json.loads(lines[-1])
+        time.sleep(0.02)
+    raise AssertionError(f"routing log row was not written to {path}")
 
 
 def test_proxy_routes_to_backend_and_overrides_model(monkeypatch):
@@ -456,6 +620,59 @@ def test_stream_generator_closes_context_when_client_disconnects():
     _FakeStream.exits = 0
     asyncio.run(run())
     assert _FakeStream.exits == 1
+
+
+def test_live_proxy_socket_disconnect_closes_upstream_and_keeps_logs_safe(
+    tmp_path,
+    caplog,
+):
+    caplog.set_level(logging.INFO, logger="model-router-proxy")
+    state = _LiveStreamState()
+    log_path = tmp_path / "routing-events.jsonl"
+    prompt = "rewrite this text with raw_prompt_secret api_key=body-secret"
+    payload = {
+        "model": "model-router",
+        "stream": True,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+
+    with _uvicorn_server(_live_streaming_upstream(state)) as upstream_url:
+        proxy_config = _live_proxy_config(
+            upstream_base_url=upstream_url,
+            log_path=log_path,
+        )
+        with _uvicorn_server(create_app(proxy_config)) as proxy_url:
+            response_bytes = _stream_and_disconnect(proxy_url, payload)
+
+            assert b"HTTP/1.1 200 OK" in response_bytes
+            assert b"data: first" in response_bytes
+            assert state.request_seen.wait(1)
+            assert state.first_chunk_sent.wait(1)
+            assert state.stream_closed.wait(5)
+
+            row = _wait_for_log_row(log_path)
+
+    assert state.headers["authorization"] == "Bearer backend-secret"
+    assert state.body["model"] == "fast-live-model"
+    assert row["status"] == "stream_interrupted"
+    assert row["backend"] == "fast"
+    assert row["backend_model"] == "fast-live-model"
+    assert row["status_code"] == 200
+    assert "prompt" not in row
+    assert "prompt_preview" not in row
+
+    serialized_log = json.dumps(row)
+    captured_logs = caplog.text
+    for sensitive_value in (
+        prompt,
+        "raw_prompt_secret",
+        "api_key=body-secret",
+        "client-secret",
+        "backend-secret",
+        "messages",
+    ):
+        assert sensitive_value not in serialized_log
+        assert sensitive_value not in captured_logs
 
 
 def test_proxy_models_and_health_do_not_expose_secrets(monkeypatch):

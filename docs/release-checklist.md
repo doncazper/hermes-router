@@ -19,8 +19,8 @@ notes.
 ## Tag And Release
 
 ```bash
-git tag v0.5.0
-git push origin v0.5.0
+git tag v0.5.3
+git push origin v0.5.3
 ```
 
 Create a GitHub release for the tag. The publish workflow uses PyPI trusted
@@ -29,12 +29,12 @@ publishing and runs when the GitHub release is published.
 ## Release Notes Template
 
 ```markdown
-## ModelRouter v0.5.0
+## ModelRouter v0.5.3
 
 ### Highlights
-- Usable local OpenAI-compatible routing proxy beta.
-- First-run `model-router init`.
-- Provider presets and proxy health diagnostics.
+- Proxy hardening release for streaming disconnect cleanup.
+- Live ASGI/raw-socket disconnect coverage for client-aborted streams.
+- Metadata-only disconnect logging verification.
 
 ### Verification
 - Ruff: passed

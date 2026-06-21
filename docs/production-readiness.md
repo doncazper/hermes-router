@@ -122,3 +122,7 @@ Production readiness is guarded by:
   and `route` as the diagnostic/audit API.
 - Adversarial and fuzz tests for deterministic behavior and fail-closed handling
   of destructive, sending, purchasing, deployment, and other external actions.
+- Proxy streaming tests that cover mocked upstream interruption, generator
+  cleanup on close, and a live uvicorn/raw-socket client disconnect against a
+  controlled ASGI upstream. The live disconnect test verifies upstream stream
+  finalization and metadata-only logging with prompt capture disabled.

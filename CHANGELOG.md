@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.3 - Proxy Hardening Release
+
+- Added a live uvicorn/raw-socket streaming disconnect test that runs the real
+  proxy against a controlled ASGI upstream, disconnects before the stream
+  completes, and verifies upstream stream cleanup.
+- Classified ASGI client cancellation during streaming as `stream_interrupted`
+  while still re-raising cancellation and closing the upstream stream context.
+- Verified the disconnect path can write metadata-only routing events without
+  logging raw prompts, request bodies, proxy API keys, or upstream secrets.
+
 ## 0.5.2 - Routing Accuracy Calibration
 
 - Calibrated short prompt routing so clear summary/explanation requests like
