@@ -171,6 +171,12 @@ At the end, tell me whether we should ship these hardening fixes as an increment
 
 Goal: make the project instantly understandable.
 
+Status: completed in the post-v0.5.3 docs pass. The README and supporting docs
+now keep the proxy path first, include LM Studio and Ollama setup examples,
+show sample `init`, `doctor`, proxy startup, and generic agent configuration
+transcripts, document the wrong-route to feedback/replay/regression-test loop,
+and clarify that `hermes/plugins/...` is only a legacy Python namespace.
+
 Tasks:
 
 - Keep README proxy-first.

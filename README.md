@@ -275,6 +275,85 @@ model-router init --preset localai --yes
 model-router init --preset hosted-openai-compatible --yes
 ```
 
+### Known-Good Local Setups
+
+LM Studio:
+
+1. In LM Studio, download the chat models you want for fast, balanced,
+   reasoning, and coding work.
+2. Start the LM Studio local server with an OpenAI-compatible endpoint on
+   `http://127.0.0.1:1234/v1`.
+3. Generate the preset:
+
+```bash
+model-router init --preset lmstudio --yes
+```
+
+4. Open `~/.model-router/routing_proxy.yaml` and replace
+   `lmstudio-fast-model`, `lmstudio-balanced-model`,
+   `lmstudio-reasoning-model`, and `lmstudio-code-model` with the exact model
+   ids LM Studio lists.
+
+Ollama:
+
+```bash
+ollama pull qwen3:0.6b
+ollama pull qwen3:4b
+ollama pull qwen3:14b
+ollama pull qwen2.5-coder:7b
+model-router init --preset ollama --yes
+```
+
+The Ollama preset targets `http://127.0.0.1:11434/v1` and uses those model ids
+by default. If you choose different local models, edit the `model:` values in
+`~/.model-router/routing_proxy.yaml`.
+
+### First-Run Transcript
+
+```text
+$ model-router init --preset lmstudio --yes
+Created config directory: /Users/you/.model-router
+Created log directory: /Users/you/.model-router/logs
+Configuration ready.
+Run: model-router-proxy --config /Users/you/.model-router/routing_proxy.yaml
+Agent endpoint: http://127.0.0.1:8082/v1
+Written:
+- /Users/you/.model-router/model_router.yaml
+- /Users/you/.model-router/routing_proxy.yaml
+```
+
+If the upstream server is not running yet, `doctor` should fail usefully:
+
+```text
+$ model-router doctor --config ~/.model-router/routing_proxy.yaml
+Proxy config valid: true
+Router config valid: true
+Overall ok: false
+Backends:
+- fast: unreachable (<urlopen error [Errno 61] Connection refused>)
+- balanced: unreachable (<urlopen error [Errno 61] Connection refused>)
+- reasoning: unreachable (<urlopen error [Errno 61] Connection refused>)
+- code: unreachable (<urlopen error [Errno 61] Connection refused>)
+```
+
+Once LM Studio, Ollama, or another OpenAI-compatible upstream is running, start
+the proxy:
+
+```text
+$ model-router-proxy --config ~/.model-router/routing_proxy.yaml --log-level info
+INFO routing proxy ready host=127.0.0.1 port=8082 backends=balanced,code,fast,reasoning
+INFO:     Uvicorn running on http://127.0.0.1:8082 (Press CTRL+C to quit)
+```
+
+Generic agent/client configuration:
+
+```text
+Base URL: http://127.0.0.1:8082/v1
+Model: model-router
+API key: leave blank unless you set proxy.api_key or proxy.api_key_env
+Chat endpoint: /v1/chat/completions
+```
+
 Use `model-router doctor --config ~/.model-router/routing_proxy.yaml` when a
 backend is unavailable or a model name/endpoint is wrong.
 
@@ -285,7 +364,7 @@ The proxy can write privacy-safe JSONL events for calibration and replay:
 ```yaml
 observability:
   enabled: true
-  log_path: ~/.model-router/routing-events.jsonl
+  log_path: ~/.model-router/logs/routing-events.jsonl
   prompt_capture: redacted_preview
 ```
 
@@ -304,13 +383,41 @@ Replay captured traffic against the current router:
 
 ```bash
 python scripts/replay_routing_log.py \
-  --events ~/.model-router/routing-events.jsonl \
+  --events ~/.model-router/logs/routing-events.jsonl \
   --feedback ~/.model-router/routing-feedback.jsonl \
   --json
 ```
 
 Rows without full prompts are skipped for replay but still useful for aggregate
 latency, score, fallback, and route distribution analysis.
+
+### Wrong Route To Regression Test
+
+1. Turn on observability during a calibration run. Use `prompt_capture: full`
+   only when you are deliberately collecting replay fixtures.
+2. Send the prompt through the proxy and copy the `request_id` from the JSONL
+   event in `~/.model-router/logs/routing-events.jsonl`.
+3. Label the intended engine:
+
+```bash
+model-router feedback req-123 balanced_local \
+  --notes "short summary prompt should not escalate to reasoning"
+```
+
+4. Replay before changing router rules:
+
+```bash
+python scripts/replay_routing_log.py \
+  --events ~/.model-router/logs/routing-events.jsonl \
+  --feedback ~/.model-router/routing-feedback.jsonl \
+  --json
+```
+
+5. Add the prompt to a small fixture or parametrized test, update deterministic
+   scoring/routing rules, rerun replay, and keep the new test with the fix.
+
+This loop is the preferred way to turn a real wrong route into a durable
+regression case without adding LLM classification or slowing `route_fast(...)`.
 
 ## Troubleshooting
 
@@ -602,7 +709,7 @@ model-router decide --json "fix the repo and run tests"
 For a non-editable install from GitHub:
 
 ```bash
-python -m pip install "git+https://github.com/doncazper/model-router.git@v0.5.0"
+python -m pip install "git+https://github.com/doncazper/model-router.git@v0.5.3"
 model-router decide "rewrite this text"
 ```
 
@@ -679,8 +786,10 @@ tests/
 ```
 
 The `model_router` package is the generic public import path. The
-`hermes/plugins` path is retained only as a backward-compatible legacy namespace.
-Neither path is a host-application plugin registration point.
+`hermes/plugins` path is retained only as a backward-compatible legacy Python
+namespace from the original Hermes Router package. Neither path is a
+host-application plugin manifest, host plugin registry, or automatic
+integration point.
 
 ## Documentation
 

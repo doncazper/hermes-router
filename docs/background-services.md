@@ -12,6 +12,32 @@ and a config at:
 ~/.model-router/routing_proxy.yaml
 ```
 
+Before installing a background service, start the upstream server and check the
+config:
+
+```bash
+model-router doctor --config ~/.model-router/routing_proxy.yaml
+```
+
+For LM Studio, start the local server on `http://127.0.0.1:1234/v1` and edit
+the generated backend model ids to match LM Studio. For Ollama, use:
+
+```bash
+ollama pull qwen3:0.6b
+ollama pull qwen3:4b
+ollama pull qwen3:14b
+ollama pull qwen2.5-coder:7b
+model-router init --preset ollama --yes
+```
+
+Point the agent at:
+
+```text
+Base URL: http://127.0.0.1:8082/v1
+Model: model-router
+API key: leave blank unless proxy auth is configured
+```
+
 ## macOS launchd
 
 Resolve the installed proxy command and write a user LaunchAgent:

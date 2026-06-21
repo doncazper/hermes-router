@@ -112,6 +112,30 @@ ModelRouter does not currently include any host-specific plugin manifest or
 adapter. Embeddings should use the stable Python API unless and until a target
 application's actual integration contract is implemented.
 
+## Proxy Operations
+
+For local agents, the production-like smoke path is:
+
+```bash
+model-router init --preset lmstudio --yes
+model-router doctor --config ~/.model-router/routing_proxy.yaml
+model-router-proxy --config ~/.model-router/routing_proxy.yaml --log-level info
+```
+
+Use the matching OpenAI-compatible agent settings:
+
+```text
+Base URL: http://127.0.0.1:8082/v1
+Model: model-router
+API key: leave blank unless proxy.api_key or proxy.api_key_env is configured
+```
+
+`doctor` should be part of background-service setup. It verifies proxy YAML,
+router YAML, backend reachability, and advertised backend model ids when the
+upstream exposes `/v1/models`. It should fail clearly when LM Studio, Ollama,
+or another local upstream is not running, instead of leaving the agent to debug
+a generic connection error.
+
 ## Regression Coverage
 
 Production readiness is guarded by:

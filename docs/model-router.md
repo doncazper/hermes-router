@@ -13,8 +13,9 @@ to an agent. It only decides.
 ## Architecture
 
 The router is implemented under `hermes/plugins/model_router/`. This is a
-legacy Python package namespace, not a host-application plugin registration
-point.
+legacy Python package namespace from the original Hermes Router package, not a
+host-application plugin registration point, host manifest, or automatic runtime
+integration.
 
 - `models.py` defines JSON-safe dataclass models for engines, prompt features,
   scoring config, alternatives, decisions, receipts, and config.
@@ -580,8 +581,70 @@ selected engine to a configured upstream backend, and forwards the request to
 that OpenAI-compatible server. It remains outside the router hot path and is
 installed only with the `proxy` extra.
 
+For LM Studio:
+
+```bash
+model-router init --preset lmstudio --yes
+model-router-proxy --config ~/.model-router/routing_proxy.yaml
+```
+
+Start the LM Studio local server on `http://127.0.0.1:1234/v1`, then edit the
+generated backend `model:` values to match the exact model ids LM Studio
+advertises.
+
+For Ollama:
+
+```bash
+ollama pull qwen3:0.6b
+ollama pull qwen3:4b
+ollama pull qwen3:14b
+ollama pull qwen2.5-coder:7b
+model-router init --preset ollama --yes
+model-router-proxy --config ~/.model-router/routing_proxy.yaml
+```
+
+The Ollama preset targets `http://127.0.0.1:11434/v1`; change generated
+`model:` values if you prefer different local models.
+
+Use these values in an OpenAI-compatible agent or SDK:
+
+```text
+Base URL: http://127.0.0.1:8082/v1
+Model: model-router
+API key: leave blank unless proxy auth is configured
+```
+
 Future adapter work should stay separate from scoring policy. If a later
 runtime adapter executes non-chat actions or talks to host-specific APIs, it
 should remain behind explicit adapter contracts and confirmation gates for risky
 actions, preserve receipt emission, and keep decision logic testable without
 provider calls.
+
+## Feedback To Regression Workflow
+
+When a real request routes to the wrong engine, prefer this path:
+
+1. Enable proxy observability for the calibration run.
+2. If replay is needed, temporarily set `prompt_capture: full`; otherwise keep
+   the default redacted preview.
+3. Label the wrong route:
+
+```bash
+model-router feedback req-123 balanced_local \
+  --notes "summary prompt escalated to reasoning"
+```
+
+4. Replay labeled events before changing scoring:
+
+```bash
+python scripts/replay_routing_log.py \
+  --events ~/.model-router/logs/routing-events.jsonl \
+  --feedback ~/.model-router/routing-feedback.jsonl \
+  --json
+```
+
+5. Add the prompt to a fixture or parametrized test, update deterministic rules,
+   rerun replay, and keep the test with the fix.
+
+This keeps the route-quality loop deterministic and auditable while preserving
+the `route_fast(...)` performance contract.

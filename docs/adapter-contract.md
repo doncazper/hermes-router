@@ -37,6 +37,12 @@ execution boundary. It exposes one local OpenAI-compatible endpoint and forwards
 chat completions to configured OpenAI-compatible upstreams. It remains outside
 the router hot path and is installed only with the `proxy` extra.
 
+The `hermes/plugins/model_router` package path is legacy Python packaging
+history, not a host-app adapter contract. New integrations should import
+`model_router`, call `ModelRouter.route_fast(...)` or `route(...)`, or use the
+OpenAI-compatible proxy endpoint. Host-specific plugin manifests should live in
+the embedding application, not in this legacy namespace.
+
 ## Runtime Principles
 
 - Load the YAML catalog once through `ModelRouter`.
