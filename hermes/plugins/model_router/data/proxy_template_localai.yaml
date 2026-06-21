@@ -1,0 +1,53 @@
+proxy:
+  host: 127.0.0.1
+  port: 8082
+  model_ids:
+    - model-router
+
+router_config: ~/.model-router/model_router.yaml
+
+observability:
+  enabled: true
+  log_path: ~/.model-router/logs/routing-events.jsonl
+  prompt_capture: redacted_preview
+  max_bytes: 10485760
+  backups: 5
+
+health:
+  backend_timeout_seconds: 1.0
+
+backends:
+  fast:
+    base_url: http://127.0.0.1:8080/v1
+    model: localai-fast-model
+    timeout_seconds: 300
+    strip_tools: true
+  balanced:
+    base_url: http://127.0.0.1:8080/v1
+    model: localai-balanced-model
+    timeout_seconds: 300
+  reasoning:
+    base_url: http://127.0.0.1:8080/v1
+    model: localai-reasoning-model
+    timeout_seconds: 300
+  code:
+    base_url: http://127.0.0.1:8080/v1
+    model: localai-code-model
+    timeout_seconds: 300
+
+engine_backends:
+  fast_local: fast
+  balanced_local: balanced
+  reasoning_local: reasoning
+  code_agent: code
+  web_research: reasoning
+  multimodal_vision: reasoning
+  image_generation: reasoning
+
+fallback_backends:
+  fast:
+    - balanced
+  balanced:
+    - reasoning
+  code:
+    - reasoning

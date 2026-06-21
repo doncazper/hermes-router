@@ -2,12 +2,45 @@
 
 Deterministic, fast, safety-first model routing for custom AI agents.
 
-Hermes Router is a small Python decision layer that scores an incoming prompt,
-selects the configured engine that should handle it, and emits a JSON-safe
-receipt explaining why. It is built for people making their own agents: simple
-work can go to fast local models, complex work to stronger reasoning models,
-fresh research to research tools, repo work to code agents, and risky actions to
-human confirmation.
+Hermes Router gives agents one local OpenAI-compatible endpoint that routes each
+chat request to the right configured model server. Simple work can go to fast
+local models, complex work to stronger reasoning models, fresh research to
+research tools, repo work to code models, and risky actions to human
+confirmation.
+
+## Use With Your Agent In 3 Minutes
+
+Install the proxy extra:
+
+```bash
+pip install "hermes-router[proxy]"
+```
+
+Create first-run configs:
+
+```bash
+model-router init --preset lmstudio --yes
+```
+
+Start the local routing proxy:
+
+```bash
+model-router-proxy --config ~/.model-router/routing_proxy.yaml
+```
+
+Point any OpenAI-compatible agent/client at:
+
+```text
+http://127.0.0.1:8082/v1
+```
+
+Useful follow-ups:
+
+```bash
+model-router validate-proxy-config --config ~/.model-router/routing_proxy.yaml
+model-router doctor --config ~/.model-router/routing_proxy.yaml
+curl http://127.0.0.1:8082/health
+```
 
 This project is intentionally a decision router only. It does not execute
 prompts, call model providers, load local model weights, browse the web, run
@@ -33,6 +66,9 @@ shell commands, send messages, delete files, or purchase anything.
   engines, alternatives, requirements, and safety flags.
 - YAML-driven engine catalog; model names are not hardcoded throughout the
   router.
+- OpenAI-compatible proxy for agents that only know how to call a local AI
+  endpoint.
+- First-run `model-router init` for local proxy configs.
 - User-configurable routing targets for local models, hosted APIs, web/RAG
   tools, vision, image generation, or custom adapters.
 - Fail-closed safety: missing/invalid config and high-risk actions route to
@@ -52,8 +88,9 @@ the initialized Python API. The stable surface today is:
 - Safe dry-run dispatch plans.
 - Local setup wizard and recommendations.
 
-Gateway execution is intentionally not implemented. Future dispatch should stay
-behind explicit adapter boundaries and confirmation gates.
+The local proxy is the main product path for agents. Direct dispatch beyond
+OpenAI-compatible chat forwarding remains intentionally behind explicit adapter
+boundaries and confirmation gates.
 
 ## Install
 
@@ -63,6 +100,12 @@ Requires Python 3.11 or newer.
 git clone https://github.com/doncazper/hermes-router.git
 cd hermes-router
 python -m pip install -e ".[dev]"
+```
+
+For normal use from PyPI after v0.5 is published:
+
+```bash
+pip install "hermes-router[proxy]"
 ```
 
 If your shell does not provide `python`, use `python3`. If your system Python is
@@ -196,8 +239,8 @@ proxy extra to expose one local endpoint that routes each chat request to the
 configured upstream model server:
 
 ```bash
-python -m pip install -e ".[proxy]"
-model-router-proxy --config configs/routing_proxy.example.yaml
+model-router init --preset lmstudio --yes
+model-router-proxy --config ~/.model-router/routing_proxy.yaml
 ```
 
 Then point the agent at:
@@ -213,6 +256,19 @@ forwards to an OpenAI-compatible upstream such as LM Studio, llama.cpp server,
 LocalAI, or a frontier gateway. `human_confirm` returns HTTP `409` and is never
 forwarded. Tools are preserved by default and can be stripped per backend for
 small local models.
+
+Packaged presets:
+
+```bash
+model-router init --preset lmstudio --yes
+model-router init --preset ollama --yes
+model-router init --preset llamacpp --yes
+model-router init --preset localai --yes
+model-router init --preset hosted-openai-compatible --yes
+```
+
+Use `model-router doctor --config ~/.model-router/routing_proxy.yaml` when a
+backend is unavailable or a model name/endpoint is wrong.
 
 ## Hindsight Routing Logs
 
@@ -247,6 +303,21 @@ python scripts/replay_routing_log.py \
 
 Rows without full prompts are skipped for replay but still useful for aggregate
 latency, score, fallback, and route distribution analysis.
+
+## Troubleshooting
+
+- Wrong route: enable observability, label the request with
+  `model-router feedback`, and replay logs before changing scoring.
+- Backend unavailable: run `model-router doctor --config
+  ~/.model-router/routing_proxy.yaml` and check `/health`.
+- `human_confirm`: the prompt matched a destructive, sending, purchase/payment,
+  deployment, or other high-impact action. Use explicit safety overrides only
+  in versioned configs.
+- Proxy auth: if `proxy.api_key` or `proxy.api_key_env` is configured, clients
+  must send `Authorization: Bearer <token>`.
+- Logs/replay: default logs do not include raw prompts. Use
+  `prompt_capture: full` or `MODEL_ROUTER_LOG_PROMPTS=1` only during deliberate
+  calibration runs.
 
 ## Example Receipt
 

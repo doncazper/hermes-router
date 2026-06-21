@@ -57,7 +57,11 @@ def create_app(config: RoutingProxyConfig):
         validate_availability=False,
     )
     event_writer = (
-        RoutingLogWriter(config.observability.log_path)
+        RoutingLogWriter(
+            config.observability.log_path,
+            max_bytes=config.observability.max_bytes,
+            backups=config.observability.backups,
+        )
         if config.observability.enabled
         else None
     )
@@ -349,9 +353,25 @@ def create_app(config: RoutingProxyConfig):
 
     @app.get("/health")
     async def health():
+        backend_health = {
+            name: await _check_backend_health(
+                client,
+                timeout_seconds=config.health.backend_timeout_seconds,
+            )
+            for name, client in sorted(clients.items())
+        }
+        all_reachable = all(result["reachable"] for result in backend_health.values())
         return {
-            "status": "ok",
+            "status": "ok" if all_reachable else "degraded",
             "backends": sorted(config.backends),
+            "backend_health": backend_health,
+            "engine_backends": dict(sorted(config.engine_backends.items())),
+            "observability": {
+                "enabled": config.observability.enabled,
+                "prompt_capture": config.observability.prompt_capture,
+                "max_bytes": config.observability.max_bytes,
+                "backups": config.observability.backups,
+            },
             "router_config": config.router_config or "default",
             "proxy_config": config.source_path,
         }
@@ -385,6 +405,25 @@ def _backend_headers(backend: ProxyBackendConfig) -> dict[str, str]:
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     return headers
+
+
+async def _check_backend_health(client: Any, *, timeout_seconds: float) -> dict[str, Any]:
+    try:
+        response = await client.get("/models", timeout=timeout_seconds)
+    except Exception as exc:
+        return {
+            "reachable": False,
+            "ok": False,
+            "status_code": None,
+            "detail": str(exc),
+        }
+    status_code = int(response.status_code)
+    return {
+        "reachable": True,
+        "ok": 200 <= status_code < 500,
+        "status_code": status_code,
+        "detail": f"HTTP {status_code}",
+    }
 
 
 def _extract_recent_user_text(messages: Any, *, lookback: int = 3) -> str:

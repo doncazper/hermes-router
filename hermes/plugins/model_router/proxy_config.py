@@ -66,6 +66,13 @@ class ProxyObservabilityConfig:
     enabled: bool = False
     log_path: str = DEFAULT_LOG_PATH
     prompt_capture: str = PROMPT_CAPTURE_REDACTED
+    max_bytes: int = 10_485_760
+    backups: int = 5
+
+
+@dataclass(frozen=True)
+class ProxyHealthConfig:
+    backend_timeout_seconds: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -79,6 +86,7 @@ class RoutingProxyConfig:
     observability: ProxyObservabilityConfig = field(
         default_factory=ProxyObservabilityConfig
     )
+    health: ProxyHealthConfig = field(default_factory=ProxyHealthConfig)
 
     def backend_for_engine(self, engine: str) -> ProxyBackendConfig | None:
         backend_name = self.engine_backends.get(engine)
@@ -130,6 +138,7 @@ def load_proxy_config(config_path: str | Path | None = None) -> RoutingProxyConf
 
     proxy = _load_proxy_server(data.get("proxy"))
     observability = _load_observability(data.get("observability"))
+    health = _load_health(data.get("health"))
     router_config = _optional_string(data, "router_config")
     backends = _load_backends(data.get("backends"))
     _validate_resolved_env_secrets(proxy, backends)
@@ -145,6 +154,7 @@ def load_proxy_config(config_path: str | Path | None = None) -> RoutingProxyConf
         fallback_backends=fallback_backends,
         source_path=source_path,
         observability=observability,
+        health=health,
     )
 
 
@@ -217,6 +227,22 @@ def _load_observability(data: Any) -> ProxyObservabilityConfig:
         enabled=_bool(data, "enabled", default=False),
         log_path=_string(data, "log_path", default=DEFAULT_LOG_PATH),
         prompt_capture=prompt_capture,
+        max_bytes=_non_negative_int(data, "max_bytes", default=10_485_760),
+        backups=_non_negative_int(data, "backups", default=5),
+    )
+
+
+def _load_health(data: Any) -> ProxyHealthConfig:
+    if data is None:
+        return ProxyHealthConfig()
+    if not isinstance(data, dict):
+        raise ProxyConfigError("health must be a mapping")
+    return ProxyHealthConfig(
+        backend_timeout_seconds=_positive_float(
+            data,
+            "backend_timeout_seconds",
+            default=1.0,
+        )
     )
 
 
@@ -318,6 +344,13 @@ def _positive_int(data: dict[str, Any], key: str, default: int) -> int:
     value = data.get(key, default)
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ProxyConfigError(f"{key} must be a positive integer")
+    return value
+
+
+def _non_negative_int(data: dict[str, Any], key: str, default: int) -> int:
+    value = data.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ProxyConfigError(f"{key} must be a non-negative integer")
     return value
 
 

@@ -62,6 +62,21 @@ class _FakeAsyncClient:
             raise response
         return response
 
+    async def get(self, path: str, *, timeout: float):
+        self.requests.append(
+            {
+                "backend": self.backend_name,
+                "path": path,
+                "headers": self.headers,
+                "timeout": timeout,
+                "method": "GET",
+            }
+        )
+        response = self._next_response()
+        if isinstance(response, Exception):
+            raise response
+        return response
+
     def stream(self, method: str, path: str, *, content: bytes):
         assert method == "POST"
         self.requests.append(
@@ -319,7 +334,21 @@ def test_proxy_models_and_health_do_not_expose_secrets(monkeypatch):
     serialized_health = json.dumps(health.json())
     assert "proxy-secret" not in serialized_health
     assert "deep-secret" not in serialized_health
-    assert health.json()["backends"] == ["deep", "fast"]
+    payload = health.json()
+    assert payload["backends"] == ["deep", "fast"]
+    assert payload["status"] == "ok"
+    assert payload["backend_health"]["deep"]["reachable"] is True
+    assert payload["observability"]["enabled"] is False
+
+
+def test_proxy_health_reports_unreachable_backend(monkeypatch):
+    with _client(monkeypatch, _config()) as client:
+        _FakeAsyncClient.responses = {"fast": [RuntimeError("offline")]}
+        health = client.get("/health")
+
+    payload = health.json()
+    assert payload["status"] == "degraded"
+    assert payload["backend_health"]["fast"]["reachable"] is False
 
 
 def test_proxy_writes_privacy_safe_routing_event(monkeypatch, tmp_path):

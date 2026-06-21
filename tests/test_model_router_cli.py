@@ -137,3 +137,77 @@ def test_feedback_cli_appends_jsonl_label(tmp_path):
     assert row["request_id"] == "req-123"
     assert row["expected_engine"] == "code_agent"
     assert row["notes"] == "should have used code"
+
+
+def test_init_cli_writes_configs(tmp_path):
+    result = _run_cli(
+        "init",
+        "--preset",
+        "lmstudio",
+        "--yes",
+        "--config-dir",
+        str(tmp_path),
+        "--proxy-port",
+        "9090",
+        "--json",
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert (tmp_path / "model_router.yaml").is_file()
+    assert (tmp_path / "routing_proxy.yaml").is_file()
+    assert payload["preset"] == "lmstudio"
+
+
+def test_validate_proxy_config_cli(tmp_path):
+    init = _run_cli(
+        "init",
+        "--preset",
+        "lmstudio",
+        "--yes",
+        "--config-dir",
+        str(tmp_path),
+        "--json",
+    )
+    assert init.returncode == 0
+
+    result = _run_cli(
+        "validate-proxy-config",
+        "--config",
+        str(tmp_path / "routing_proxy.yaml"),
+        "--json",
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["config_valid"] is True
+    assert "fast" in payload["backends"]
+
+
+def test_doctor_cli_emits_json_report_for_unreachable_backends(tmp_path):
+    init = _run_cli(
+        "init",
+        "--preset",
+        "lmstudio",
+        "--yes",
+        "--config-dir",
+        str(tmp_path),
+        "--json",
+    )
+    assert init.returncode == 0
+
+    result = _run_cli(
+        "doctor",
+        "--config",
+        str(tmp_path / "routing_proxy.yaml"),
+        "--timeout",
+        "0.01",
+        "--json",
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["proxy_config_valid"] is True
+    assert payload["router_config_valid"] is True
+    assert payload["backends"]

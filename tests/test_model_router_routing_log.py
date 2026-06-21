@@ -55,6 +55,18 @@ def test_routing_log_writer_is_best_effort(tmp_path):
     assert writer.write({"event_type": "routing_event"}) is False
 
 
+def test_routing_log_writer_rotates_when_size_limit_is_exceeded(tmp_path):
+    path = tmp_path / "events.jsonl"
+    path.write_text("x" * 20, encoding="utf-8")
+    writer = RoutingLogWriter(path, max_bytes=10, backups=2)
+
+    assert writer.write({"event_type": "routing_event", "request_id": "new"})
+
+    assert path.exists()
+    assert (tmp_path / "events.jsonl.1").exists()
+    assert "request_id" in path.read_text(encoding="utf-8")
+
+
 def test_routing_event_schema_is_json_safe(tmp_path):
     router = ModelRouter.from_config(validate_availability=False)
     decision = router.route("fix the repo and run tests", include_alternatives=False)

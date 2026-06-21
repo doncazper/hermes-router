@@ -37,3 +37,14 @@ jobs:
           --repeat 3
           --max-best-us 25
           --max-mean-us 50
+
+      - name: Build distribution
+        run: |
+          python -m pip install ".[release]"
+          python -m build
+
+      - name: Upload distribution artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-router-dist
+          path: dist/*

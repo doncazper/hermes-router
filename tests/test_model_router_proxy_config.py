@@ -130,13 +130,19 @@ def test_load_proxy_config_accepts_observability_block(tmp_path, monkeypatch):
         "enabled": True,
         "log_path": "~/.model-router/test.jsonl",
         "prompt_capture": "redacted_preview",
+        "max_bytes": 1024,
+        "backups": 2,
     }
+    data["health"] = {"backend_timeout_seconds": 2.5}
 
     config = load_proxy_config(_write_config(tmp_path, data))
 
     assert config.observability.enabled is True
     assert config.observability.log_path == "~/.model-router/test.jsonl"
     assert config.observability.prompt_capture == "redacted_preview"
+    assert config.observability.max_bytes == 1024
+    assert config.observability.backups == 2
+    assert config.health.backend_timeout_seconds == 2.5
 
 
 def test_load_proxy_config_rejects_invalid_prompt_capture(tmp_path, monkeypatch):
@@ -146,4 +152,17 @@ def test_load_proxy_config_rejects_invalid_prompt_capture(tmp_path, monkeypatch)
     data["observability"] = {"prompt_capture": "rawish"}
 
     with pytest.raises(ProxyConfigError, match="prompt_capture"):
+        load_proxy_config(_write_config(tmp_path, data))
+
+
+def test_load_proxy_config_rejects_invalid_observability_rotation(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("MODEL_ROUTER_PROXY_API_KEY", "proxy-secret")
+    monkeypatch.setenv("DEEP_API_KEY", "deep-secret")
+    data = _valid_config()
+    data["observability"] = {"max_bytes": -1}
+
+    with pytest.raises(ProxyConfigError, match="max_bytes"):
         load_proxy_config(_write_config(tmp_path, data))

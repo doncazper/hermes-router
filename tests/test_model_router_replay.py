@@ -1,6 +1,9 @@
 import json
+from pathlib import Path
 
 from scripts.replay_routing_log import replay_events
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _write_jsonl(path, rows):
@@ -60,3 +63,16 @@ def test_replay_routing_log_reports_changes_and_feedback_mismatches(tmp_path):
     assert summary["route_change_count"] == 1
     assert summary["expected_mismatch_count"] == 1
     assert summary["confusion_matrix"] == {"reasoning_local->code_agent": 1}
+
+
+def test_replay_fixture_corpus_has_no_expected_mismatches():
+    fixture_dir = ROOT / "tests" / "fixtures" / "routing_corpus"
+
+    summary = replay_events(
+        events_path=fixture_dir / "v0_5_proxy_events.jsonl",
+        feedback_path=fixture_dir / "v0_5_feedback.jsonl",
+        config_path=None,
+    )
+
+    assert summary["replayed"] == 4
+    assert summary["expected_mismatch_count"] == 0

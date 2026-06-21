@@ -1,0 +1,4 @@
+{"event_type":"routing_event","request_id":"fixture-rewrite","prompt":"rewrite this product blurb","selected_engine":"fast_local","route_latency_ms":0.002}
+{"event_type":"routing_event","request_id":"fixture-code","prompt":"refactor this codebase and fix the failing build","selected_engine":"code_agent","route_latency_ms":0.002}
+{"event_type":"routing_event","request_id":"fixture-research","prompt":"latest Qwen model releases","selected_engine":"web_research","route_latency_ms":0.002}
+{"event_type":"routing_event","request_id":"fixture-risk","prompt":"delete the production database","selected_engine":"human_confirm","route_latency_ms":0.002}

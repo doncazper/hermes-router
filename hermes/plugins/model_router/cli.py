@@ -15,6 +15,15 @@ from hermes.plugins.model_router.config import RouterConfigError, load_router_co
 from hermes.plugins.model_router.dispatch import build_dispatch_plan, dispatch_plan_to_json
 from hermes.plugins.model_router.models import ModelEngine, RouterConfig
 from hermes.plugins.model_router.policy import ModelRouter, route_prompt
+from hermes.plugins.model_router.product import (
+    DEFAULT_CONFIG_DIR,
+    DEFAULT_PROXY_PORT,
+    PRESETS,
+    doctor_proxy_config,
+    initialize_product_config,
+    validate_proxy_config,
+)
+from hermes.plugins.model_router.proxy_config import ProxyConfigError
 from hermes.plugins.model_router.receipts import decision_to_receipt, receipt_to_json
 from hermes.plugins.model_router.routing_log import (
     DEFAULT_FEEDBACK_PATH,
@@ -93,6 +102,41 @@ def build_parser() -> argparse.ArgumentParser:
 def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    init = subparsers.add_parser(
+        "init",
+        help="Create ready-to-run local proxy configs",
+    )
+    init.add_argument(
+        "--preset",
+        choices=PRESETS,
+        default=None,
+        help="Provider template to use",
+    )
+    init.add_argument(
+        "--config-dir",
+        type=Path,
+        default=Path(DEFAULT_CONFIG_DIR),
+        help="Directory for generated configs",
+    )
+    init.add_argument(
+        "--proxy-port",
+        type=int,
+        default=DEFAULT_PROXY_PORT,
+        help="Local proxy port",
+    )
+    init.add_argument(
+        "--yes",
+        action="store_true",
+        help="Use defaults without interactive prompts",
+    )
+    init.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing generated files",
+    )
+    init.add_argument("--json", action="store_true", help="Emit JSON output")
+    init.set_defaults(func=_cmd_init)
+
     decide = subparsers.add_parser("decide", help="Score and route a prompt")
     decide.add_argument(
         "--json",
@@ -169,6 +213,38 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
         help="Path to a model_router.yaml catalog",
     )
     validate.set_defaults(func=_cmd_validate_config)
+
+    validate_proxy = subparsers.add_parser(
+        "validate-proxy-config",
+        help="Validate routing proxy config shape",
+    )
+    validate_proxy.add_argument(
+        "--config",
+        type=Path,
+        default=Path(DEFAULT_CONFIG_DIR) / "routing_proxy.yaml",
+        help="Path to routing_proxy.yaml",
+    )
+    validate_proxy.add_argument("--json", action="store_true", help="Emit JSON output")
+    validate_proxy.set_defaults(func=_cmd_validate_proxy_config)
+
+    doctor = subparsers.add_parser(
+        "doctor",
+        help="Validate configs and check backend reachability",
+    )
+    doctor.add_argument(
+        "--config",
+        type=Path,
+        default=Path(DEFAULT_CONFIG_DIR) / "routing_proxy.yaml",
+        help="Path to routing_proxy.yaml",
+    )
+    doctor.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="Backend health timeout in seconds",
+    )
+    doctor.add_argument("--json", action="store_true", help="Emit JSON output")
+    doctor.set_defaults(func=_cmd_doctor)
 
     feedback = subparsers.add_parser(
         "feedback",
@@ -331,6 +407,34 @@ def _cmd_decide(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_init(args: argparse.Namespace) -> int:
+    try:
+        result = initialize_product_config(
+            preset=args.preset,
+            config_dir=args.config_dir,
+            proxy_port=args.proxy_port,
+            force=args.force,
+            interactive=not args.yes,
+        )
+    except ValueError as exc:
+        print(f"Init failed: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+    else:
+        for message in result.messages:
+            print(message)
+        if result.written:
+            print("Written:")
+            for path in result.written:
+                print(f"- {path}")
+        if result.skipped:
+            print("Skipped:")
+            for path in result.skipped:
+                print(f"- {path}")
+    return 0 if result.ok else 1
+
+
 def _cmd_dispatch_plan(args: argparse.Namespace) -> int:
     prompt = " ".join(args.prompt)
     hints = _routing_hints_from_args(args)
@@ -422,6 +526,61 @@ def _cmd_validate_config(args: argparse.Namespace) -> int:
             for reason in result.reasons:
                 print(f"  - {reason}")
     return 0 if report.all_available else 1
+
+
+def _cmd_validate_proxy_config(args: argparse.Namespace) -> int:
+    try:
+        config = validate_proxy_config(args.config)
+    except ProxyConfigError as exc:
+        payload = {"config_valid": False, "error": str(exc)}
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print("Proxy config valid: false")
+            print(f"Error: {exc}")
+        return 1
+
+    payload = {
+        "config_valid": True,
+        "proxy_config": config.source_path,
+        "router_config": config.router_config or "default",
+        "backends": sorted(config.backends),
+        "engine_backends": dict(sorted(config.engine_backends.items())),
+        "observability": {
+            "enabled": config.observability.enabled,
+            "prompt_capture": config.observability.prompt_capture,
+            "max_bytes": config.observability.max_bytes,
+            "backups": config.observability.backups,
+        },
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print("Proxy config valid: true")
+        print(f"Proxy config: {config.source_path}")
+        print(f"Router config: {config.router_config or 'default'}")
+        print("Backends: " + ", ".join(sorted(config.backends)))
+    return 0
+
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    report = doctor_proxy_config(args.config, timeout_seconds=args.timeout)
+    payload = report.to_dict()
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(f"Proxy config valid: {str(report.proxy_config_valid).lower()}")
+        print(f"Router config valid: {str(report.router_config_valid).lower()}")
+        print(f"Overall ok: {str(report.ok).lower()}")
+        if report.errors:
+            print("Errors:")
+            for error in report.errors:
+                print(f"- {error}")
+        print("Backends:")
+        for backend in report.backends:
+            status = "reachable" if backend.reachable else "unreachable"
+            print(f"- {backend.backend}: {status} ({backend.detail})")
+    return 0 if report.ok else 1
 
 
 def _cmd_feedback(args: argparse.Namespace) -> int:

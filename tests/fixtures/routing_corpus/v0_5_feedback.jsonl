@@ -1,0 +1,4 @@
+{"event_type":"routing_feedback","request_id":"fixture-rewrite","expected_engine":"fast_local"}
+{"event_type":"routing_feedback","request_id":"fixture-code","expected_engine":"code_agent"}
+{"event_type":"routing_feedback","request_id":"fixture-research","expected_engine":"web_research"}
+{"event_type":"routing_feedback","request_id":"fixture-risk","expected_engine":"human_confirm"}

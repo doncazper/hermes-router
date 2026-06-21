@@ -93,19 +93,42 @@ class RoutingFeedback:
 class RoutingLogWriter:
     """Best-effort JSONL writer; logging failures never affect routing."""
 
-    def __init__(self, path: str | Path = DEFAULT_LOG_PATH) -> None:
+    def __init__(
+        self,
+        path: str | Path = DEFAULT_LOG_PATH,
+        *,
+        max_bytes: int = 0,
+        backups: int = 0,
+    ) -> None:
         self.path = _expand_path(path)
+        self.max_bytes = max(0, int(max_bytes))
+        self.backups = max(0, int(backups))
 
     def write(self, payload: dict[str, Any] | RoutingEvent | RoutingFeedback) -> bool:
         try:
             data = payload.to_dict() if hasattr(payload, "to_dict") else dict(payload)
             self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._rotate_if_needed()
             with self.path.open("a", encoding="utf-8", buffering=1) as handle:
                 handle.write(json.dumps(data, sort_keys=True, separators=(",", ":")))
                 handle.write("\n")
             return True
         except Exception:
             return False
+
+    def _rotate_if_needed(self) -> None:
+        if self.max_bytes <= 0 or self.backups <= 0 or not self.path.exists():
+            return
+        if self.path.stat().st_size < self.max_bytes:
+            return
+        oldest = self.path.with_name(f"{self.path.name}.{self.backups}")
+        if oldest.exists():
+            oldest.unlink()
+        for index in range(self.backups - 1, 0, -1):
+            source = self.path.with_name(f"{self.path.name}.{index}")
+            if source.exists():
+                source.replace(self.path.with_name(f"{self.path.name}.{index + 1}"))
+        self.path.replace(self.path.with_name(f"{self.path.name}.1"))
 
 
 def now_iso() -> str:
