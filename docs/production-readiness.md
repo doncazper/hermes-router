@@ -1,6 +1,6 @@
 # Production Readiness
 
-Hermes Router's production surface is intentionally small: initialize
+ModelRouter's production surface is intentionally small: initialize
 `ModelRouter` once, keep it in memory, and call `route_fast(prompt)` for live
 traffic.
 
@@ -108,7 +108,7 @@ The default catalog ships as package data. Explicit `--config` paths and
 `ModelRouter.from_config(path)` still override it for local or application-
 specific catalogs.
 
-Hermes Router does not currently include any host-specific plugin manifest or
+ModelRouter does not currently include any host-specific plugin manifest or
 adapter. Embeddings should use the stable Python API unless and until a target
 application's actual integration contract is implemented.
 

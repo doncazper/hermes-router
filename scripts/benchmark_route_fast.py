@@ -39,7 +39,7 @@ def _positive_int(value: str) -> int:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Benchmark Hermes ModelRouter.route_fast().",
+        description="Benchmark ModelRouter.route_fast().",
     )
     parser.add_argument(
         "--config",
@@ -130,7 +130,7 @@ def main() -> int:
     if args.json:
         print(json.dumps(metrics, indent=2, sort_keys=True))
     else:
-        print("Hermes route_fast benchmark")
+        print("ModelRouter route_fast benchmark")
         print(f"Iterations: {metrics['iterations']}")
         print(f"Repeats: {metrics['repeat']}")
         print(f"Prompts: {metrics['prompts']}")

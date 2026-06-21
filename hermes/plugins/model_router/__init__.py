@@ -1,4 +1,4 @@
-"""Backward-compatible package path for Hermes Router.
+"""Backward-compatible package path for ModelRouter.
 
 New custom-agent integrations should prefer ``import model_router``.
 """

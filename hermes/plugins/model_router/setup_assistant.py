@@ -1,4 +1,4 @@
-"""Setup helpers for configuring Hermes model-router engines."""
+"""Setup helpers for configuring ModelRouter engines."""
 
 from __future__ import annotations
 

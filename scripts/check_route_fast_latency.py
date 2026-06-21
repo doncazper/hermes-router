@@ -155,7 +155,7 @@ def main() -> int:
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
-        print("Hermes route_fast latency check")
+        print("ModelRouter route_fast latency check")
         print(f"Best: {best_us:.4f} us/route (budget {args.max_best_us:.4f})")
         print(f"Mean: {mean_us:.4f} us/route (budget {args.max_mean_us:.4f})")
         if failures:

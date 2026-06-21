@@ -1,4 +1,4 @@
-"""Command line interface for Hermes model-router decisions."""
+"""Command line interface for ModelRouter decisions."""
 
 from __future__ import annotations
 
@@ -667,7 +667,7 @@ def _cmd_setup_wizard(args: argparse.Namespace) -> int:
     output = Path(args.output).expanduser()
     output_exists = output.exists()
     current_config = _load_wizard_config(output)
-    print("Hermes model-router setup wizard")
+    print("ModelRouter setup wizard")
     print("")
     discovery, recommendation = _maybe_install_hf_cli_for_wizard(
         discovery=discovery,

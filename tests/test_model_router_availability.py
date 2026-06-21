@@ -76,7 +76,7 @@ def test_missing_required_command_marks_engine_unavailable(tmp_path):
                 "claude_code",
                 fallback="code_agent",
                 availability={
-                    "required_commands": ["definitely-not-a-real-hermes-command"],
+                    "required_commands": ["definitely-not-a-real-modelrouter-command"],
                 },
             )
         },

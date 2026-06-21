@@ -20,14 +20,14 @@ Resolve the installed proxy command and write a user LaunchAgent:
 PROXY_BIN="$(command -v model-router-proxy)"
 test -n "$PROXY_BIN"
 mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.model-router/logs"
-cat > "$HOME/Library/LaunchAgents/com.hermes-router.proxy.plist" <<EOF
+cat > "$HOME/Library/LaunchAgents/com.modelrouter.proxy.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.hermes-router.proxy</string>
+  <string>com.modelrouter.proxy</string>
   <key>ProgramArguments</key>
   <array>
     <string>${PROXY_BIN}</string>
@@ -57,7 +57,7 @@ The generated plist should look like this, with your absolute
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.hermes-router.proxy</string>
+  <string>com.modelrouter.proxy</string>
   <key>ProgramArguments</key>
   <array>
     <string>/opt/homebrew/bin/model-router-proxy</string>
@@ -79,10 +79,10 @@ The generated plist should look like this, with your absolute
 Commands:
 
 ```bash
-launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.hermes-router.proxy.plist"
-launchctl kickstart -k "gui/$(id -u)/com.hermes-router.proxy"
-launchctl print "gui/$(id -u)/com.hermes-router.proxy"
-launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.hermes-router.proxy.plist"
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.modelrouter.proxy.plist"
+launchctl kickstart -k "gui/$(id -u)/com.modelrouter.proxy"
+launchctl print "gui/$(id -u)/com.modelrouter.proxy"
+launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.modelrouter.proxy.plist"
 tail -f "$HOME/.model-router/logs/proxy.err.log"
 ```
 
@@ -94,9 +94,9 @@ Resolve the installed proxy command and write a user service:
 PROXY_BIN="$(command -v model-router-proxy)"
 test -n "$PROXY_BIN"
 mkdir -p "$HOME/.config/systemd/user" "$HOME/.model-router/logs"
-cat > "$HOME/.config/systemd/user/hermes-router-proxy.service" <<EOF
+cat > "$HOME/.config/systemd/user/model-router-proxy.service" <<EOF
 [Unit]
-Description=Hermes Router OpenAI-compatible proxy
+Description=ModelRouter OpenAI-compatible proxy
 After=network-online.target
 
 [Service]
@@ -114,7 +114,7 @@ The generated unit should look like this, with your absolute
 
 ```ini
 [Unit]
-Description=Hermes Router OpenAI-compatible proxy
+Description=ModelRouter OpenAI-compatible proxy
 After=network-online.target
 
 [Service]
@@ -130,9 +130,9 @@ Commands:
 
 ```bash
 systemctl --user daemon-reload
-systemctl --user enable --now hermes-router-proxy
-systemctl --user status hermes-router-proxy
-journalctl --user -u hermes-router-proxy -f
+systemctl --user enable --now model-router-proxy
+systemctl --user status model-router-proxy
+journalctl --user -u model-router-proxy -f
 ```
 
 If the service should keep running after logout, enable lingering once:

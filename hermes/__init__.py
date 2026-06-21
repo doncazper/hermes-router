@@ -1,1 +1,1 @@
-"""Hermes Router package namespace."""
+"""ModelRouter package namespace."""

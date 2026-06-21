@@ -118,7 +118,7 @@ def test_normal_summarization_routes_to_balanced_local(tmp_path):
 
 def test_complex_architecture_prompt_routes_to_reasoning_local(tmp_path):
     prompt = (
-        "Design a multi-step architecture plan for a Hermes plugin with data flow, "
+        "Design a multi-step architecture plan for an agent plugin with data flow, "
         "edge cases, testing strategy, and rollout notes."
     )
     decision = route_prompt(prompt, config_path=_config_path(tmp_path))
@@ -187,7 +187,7 @@ def test_screenshot_ocr_routes_to_multimodal_vision(tmp_path):
 
 def test_image_generation_routes_to_image_generation_engine(tmp_path):
     decision = route_prompt(
-        "Generate an image of a Hermes router dashboard.",
+        "Generate an image of a ModelRouter dashboard.",
         config_path=_config_path(tmp_path),
     )
 

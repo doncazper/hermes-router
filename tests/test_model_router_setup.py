@@ -908,7 +908,7 @@ def test_setup_wizard_api_mode_can_use_api_key_routes(tmp_path):
 
     assert result.returncode == 0
     assert data["routing_targets"]["balanced"] == "openai_api"
-    assert data["engines"]["balanced_local"]["model"] == "hermes-balanced-local"
+    assert data["engines"]["balanced_local"]["model"] == "modelrouter-balanced-local"
     assert data["engines"]["openai_api"]["enabled"] is True
     assert data["engines"]["openai_api"]["availability"]["required_env"] == [
         "OPENAI_API_KEY"

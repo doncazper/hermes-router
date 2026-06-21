@@ -24,7 +24,7 @@ safety:
 engines:
   intent_router:
     provider: local
-    model: hermes-intent-router
+    model: modelrouter-intent-router
     adapter: heuristic_router
     strengths: [intent classification, routing decisions]
     max_context: 8192
@@ -90,7 +90,7 @@ engines:
 
   code_agent:
     provider: local
-    model: hermes-local-code-agent
+    model: modelrouter-local-code-agent
     adapter: local_code
     strengths: [deep reasoning and coding, repository inspection, tests]
     max_context: 65536
@@ -169,7 +169,7 @@ engines:
 
   web_research:
     provider: local
-    model: hermes-web-research
+    model: modelrouter-web-research
     adapter: web_research
     strengths: [current information, citations, local RAG, HTML extraction]
     max_context: 32768

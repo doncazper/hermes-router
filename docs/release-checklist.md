@@ -29,7 +29,7 @@ publishing and runs when the GitHub release is published.
 ## Release Notes Template
 
 ```markdown
-## Hermes Router v0.5.0
+## ModelRouter v0.5.0
 
 ### Highlights
 - Usable local OpenAI-compatible routing proxy beta.

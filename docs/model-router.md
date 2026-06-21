@@ -1,4 +1,4 @@
-# Hermes Model Router
+# ModelRouter
 
 ## Purpose
 
@@ -395,7 +395,7 @@ Each engine supports:
 
 ```yaml
 provider: local
-model: hermes-balanced-local
+model: modelrouter-balanced-local
 adapter: local_chat
 strengths:
   - summarization
@@ -414,7 +414,7 @@ availability:
   status: auto
 ```
 
-The numeric ranking fields are optional 0-100 values. If omitted, Hermes derives
+The numeric ranking fields are optional 0-100 values. If omitted, ModelRouter derives
 them from the tier fields and context window. They rank compatible alternatives;
 they do not override the configured route target when that target is enabled,
 available, and compatible.

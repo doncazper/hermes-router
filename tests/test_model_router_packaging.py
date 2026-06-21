@@ -22,13 +22,17 @@ def test_pyproject_declares_generic_package_metadata():
         pyproject = tomllib.load(handle)
 
     project = pyproject["project"]
+    assert project["name"] == "hermes-router"
     assert project["version"] == "0.5.2"
     assert project["license"] == "MIT"
     assert project["license-files"] == ["LICENSE"]
     assert (
         project["description"]
-        == "Fast deterministic model routing for custom AI agents"
+        == "ModelRouter: fast deterministic model routing and OpenAI-compatible proxying for custom AI agents"
     )
+    assert project["urls"]["Homepage"] == "https://github.com/doncazper/model-router"
+    assert project["urls"]["Repository"] == "https://github.com/doncazper/model-router"
+    assert project["urls"]["Issues"] == "https://github.com/doncazper/model-router/issues"
     assert (
         project["scripts"]["hermes-router"]
         == "hermes.plugins.model_router.cli:main"

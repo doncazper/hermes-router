@@ -18,7 +18,7 @@ safety:
 engines:
   intent_router:
     provider: local
-    model: hermes-intent-router
+    model: modelrouter-intent-router
     adapter: heuristic_router
     strengths:
       - intent classification
@@ -35,7 +35,7 @@ engines:
       status: auto
   fast_local:
     provider: local
-    model: hermes-fast-local
+    model: modelrouter-fast-local
     adapter: local_chat
     strengths:
       - rewrite
@@ -52,7 +52,7 @@ engines:
       status: auto
   balanced_local:
     provider: local
-    model: hermes-balanced-local
+    model: modelrouter-balanced-local
     adapter: local_chat
     strengths:
       - summarization
@@ -69,7 +69,7 @@ engines:
       status: auto
   reasoning_local:
     provider: local
-    model: hermes-reasoning-local
+    model: modelrouter-reasoning-local
     adapter: local_reasoning
     strengths:
       - architecture
@@ -87,7 +87,7 @@ engines:
       status: auto
   code_agent:
     provider: local
-    model: hermes-local-code-agent
+    model: modelrouter-local-code-agent
     adapter: local_code
     strengths:
       - deep reasoning and coding
@@ -184,7 +184,7 @@ engines:
         - ANTHROPIC_API_KEY
   web_research:
     provider: local
-    model: hermes-web-research
+    model: modelrouter-web-research
     adapter: web_research
     strengths:
       - current information
@@ -203,7 +203,7 @@ engines:
       status: auto
   multimodal_vision:
     provider: local
-    model: hermes-vision-local
+    model: modelrouter-vision-local
     adapter: local_vision
     strengths:
       - screenshots
@@ -224,7 +224,7 @@ engines:
       status: auto
   image_generation:
     provider: local
-    model: hermes-local-diffusion
+    model: modelrouter-local-diffusion
     adapter: local_image_generation
     strengths:
       - image generation

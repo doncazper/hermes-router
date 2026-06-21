@@ -1,8 +1,8 @@
-# Hermes Router
+# ModelRouter
 
 Deterministic, fast, safety-first model routing for custom AI agents.
 
-Hermes Router gives agents one local OpenAI-compatible endpoint that routes each
+ModelRouter gives agents one local OpenAI-compatible endpoint that routes each
 chat request to the right configured model server. Simple work can go to fast
 local models, complex work to stronger reasoning models, fresh research to
 research tools, repo work to code models, and risky actions to human
@@ -48,7 +48,7 @@ shell commands, send messages, delete files, or purchase anything.
 
 ## At a Glance
 
-| Need | Hermes Router provides |
+| Need | ModelRouter provides |
 | --- | --- |
 | Fast hot-path routing | `ModelRouter.route_fast(prompt)` returns an engine string |
 | Diagnostic decisions | `ModelRouter.route(prompt)` returns scores, flags, reasons, and alternatives |
@@ -79,7 +79,7 @@ shell commands, send messages, delete files, or purchase anything.
 
 ## Project Status
 
-Hermes Router is a lean production-ready decision layer when embedded through
+ModelRouter is a lean production-ready decision layer when embedded through
 the initialized Python API. The stable surface today is:
 
 - `ModelRouter.route_fast(...)` for production routing.
@@ -97,8 +97,8 @@ boundaries and confirmation gates.
 Requires Python 3.11 or newer.
 
 ```bash
-git clone https://github.com/doncazper/hermes-router.git
-cd hermes-router
+git clone https://github.com/doncazper/model-router.git
+cd model-router
 python -m pip install -e ".[dev]"
 ```
 
@@ -107,6 +107,12 @@ For normal use from PyPI:
 ```bash
 pip install "hermes-router[proxy]"
 ```
+
+ModelRouter began as Hermes Router and was renamed after evolving into a
+generic OpenAI-compatible routing proxy for local/custom agents. The PyPI
+distribution name remains `hermes-router` for compatibility because
+`model-router` is already occupied on PyPI. The primary command and Python API
+are `model-router`, `model-router-proxy`, and `import model_router`.
 
 If your shell does not provide `python`, use `python3`. If your system Python is
 older, use `uv`:
@@ -188,10 +194,12 @@ backward compatibility, but new custom-agent integrations should use
 After installation, you can use the console command:
 
 ```bash
-hermes-router decide "rewrite this text"
-hermes-router decide --json "fix the repo and run tests"
 model-router decide "rewrite this text"
+model-router decide --json "fix the repo and run tests"
 ```
+
+The old `hermes-router` command remains as a compatibility alias for existing
+scripts.
 
 Use a custom catalog:
 
@@ -584,7 +592,7 @@ Use a virtual environment so the router does not modify a managed Python
 installation:
 
 ```bash
-cd /path/to/hermes-router
+cd /path/to/model-router
 python3.11 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e ".[dev]"
@@ -594,11 +602,12 @@ model-router decide --json "fix the repo and run tests"
 For a non-editable install from GitHub:
 
 ```bash
-python -m pip install "git+https://github.com/doncazper/hermes-router.git@v0.5.0"
+python -m pip install "git+https://github.com/doncazper/model-router.git@v0.5.0"
 model-router decide "rewrite this text"
 ```
 
-The package exposes console commands, `hermes-router` and `model-router`, plus
+The package exposes console commands, `model-router` and the legacy
+`hermes-router` alias, plus
 the importable Python API:
 
 ```python
@@ -614,7 +623,7 @@ an explicit config path when an embedding app needs its own engine catalog.
 
 See `examples/basic_custom_agent.py` for a minimal host-neutral integration.
 
-Hermes Router does not currently claim any host-app plugin manifest or automatic
+ModelRouter does not currently claim any host-app plugin manifest or automatic
 per-turn model switching contract. Embedding applications should use their own
 runtime integration boundary and call the stable `route_fast(...)` production
 API.
@@ -690,9 +699,8 @@ Neither path is a host-application plugin registration point.
   rotation, and provider presets reliable.
 - Publish releases with a changelog, GitHub release notes, and benchmark output.
 
-### v0.6: Gateway Rename And Passthrough
+### v0.6: Passthrough And Gateway Mode
 
-- Rename the product toward a broader OpenAI-compatible local gateway identity.
 - Add router mode and passthrough mode.
 - Keep legacy command/import aliases for one release.
 - Add backend request overrides for temperature, context, max tokens, and common

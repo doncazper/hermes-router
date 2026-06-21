@@ -29,7 +29,7 @@ PARITY_CORPUS = (
     ("fix the repo and run tests", "code_agent"),
     ("search the web for the latest TypeScript release notes", "web_research"),
     ("Extract text from this screenshot.", "multimodal_vision"),
-    ("Generate an image of a Hermes router dashboard.", "image_generation"),
+    ("Generate an image of a ModelRouter dashboard.", "image_generation"),
     ("drop the production database", "human_confirm"),
     # previously-divergent cases now expected to agree
     ("write a test for this function", "code_agent"),

@@ -1,10 +1,10 @@
 # Contributing
 
-Thanks for helping make Hermes Router useful for custom-agent builders.
+Thanks for helping make ModelRouter useful for custom-agent builders.
 
 ## Project Direction
 
-Hermes Router should stay:
+ModelRouter should stay:
 
 - Generic: usable by any Python agent, local tool, or hosted service.
 - Fast: `ModelRouter.route_fast(...)` is the production hot path.

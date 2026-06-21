@@ -3,9 +3,11 @@ requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
+# PyPI distribution compatibility: the public product is ModelRouter, but the
+# installable package remains hermes-router because model-router is occupied.
 name = "hermes-router"
 version = "0.5.2"
-description = "Fast deterministic model routing for custom AI agents"
+description = "ModelRouter: fast deterministic model routing and OpenAI-compatible proxying for custom AI agents"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -18,9 +20,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/doncazper/hermes-router"
-Repository = "https://github.com/doncazper/hermes-router"
-Issues = "https://github.com/doncazper/hermes-router/issues"
+Homepage = "https://github.com/doncazper/model-router"
+Repository = "https://github.com/doncazper/model-router"
+Issues = "https://github.com/doncazper/model-router/issues"
 
 [project.scripts]
 hermes-router = "hermes.plugins.model_router.cli:main"

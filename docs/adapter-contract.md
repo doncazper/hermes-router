@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Hermes Router stays the fast decision layer. It should not load every model,
+ModelRouter stays the fast decision layer. It should not load every model,
 keep a large model pool hot, or execute user actions by itself. Adapter work is
 optional and lazy: the router decides, a dispatch plan explains what would be
 called, and future adapters can run only after the caller chooses to dispatch.

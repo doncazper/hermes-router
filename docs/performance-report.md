@@ -1,10 +1,10 @@
-# Hermes Router Performance Report
+# ModelRouter Performance Report
 
 Date: 2026-06-14
 
 ## Summary
 
-Hermes Router is already fast for embedded use. On this machine, initialized
+ModelRouter is already fast for embedded use. On this machine, initialized
 `route_fast(...)` takes about 2 us for ordinary prompts, while rich
 `route(...)` takes about 57 us with alternatives enabled. The main performance
 risks are not normal hot-path routing; they are long prompts, CLI process
@@ -24,8 +24,8 @@ The most promising improvements are:
 ## Benchmark Environment
 
 - Python: 3.11.15
-- Executable: `/tmp/hermes-router-venv/bin/python`
-- Working tree: `/Users/sambehdjou/Documents/GitHub/hermes-router`
+- Executable: `/tmp/model-router-venv/bin/python`
+- Working tree: `/Users/sambehdjou/Documents/GitHub/model-router`
 - Branch: `main`
 - Benchmark style: warmup, GC disabled during timed loops, 5 repeated samples
   for in-process calls, 8 repeated samples for CLI subprocess calls.
@@ -193,7 +193,7 @@ requests. The guard enforces the documented initialized `route_fast(...)` SLO:
 <= 25 us best sample and <= 50 us mean sample for ordinary mixed prompts on a
 shared-runner-friendly threshold.
 
-Packaging now exposes a `hermes-router` console command for diagnostics and
+Packaging keeps a `hermes-router` compatibility command for diagnostics and
 scripts. This interface stays outside the high-QPS boundary; services should
 still call initialized `route_fast(...)` in process.
 
@@ -384,7 +384,7 @@ prompt case slower, so the simpler token scanner remains the better tradeoff.
 Verification after the changes:
 
 ```bash
-/tmp/hermes-router-venv/bin/python -m pytest tests/test_model_router*.py
+/tmp/model-router-venv/bin/python -m pytest tests/test_model_router*.py
 ```
 
 Result: 175 passed.

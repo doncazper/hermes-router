@@ -67,7 +67,7 @@ def test_vision_prompts_set_multimodal_features():
 
 
 def test_image_generation_prompts_set_generation_features():
-    analysis = score_prompt("Generate an image of a clean Hermes router dashboard.")
+    analysis = score_prompt("Generate an image of a clean ModelRouter dashboard.")
 
     assert analysis.features.image_generation_intent is True
     assert analysis.features.requires_image_generation is True

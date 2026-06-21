@@ -119,7 +119,7 @@ def test_route_fast_matches_rich_route_for_golden_engine_selection(tmp_path):
         "fix the repo and run tests",
         "search the web for the latest TypeScript release notes",
         "Extract text from this screenshot.",
-        "Generate an image of a Hermes router dashboard.",
+        "Generate an image of a ModelRouter dashboard.",
         "drop the production database",
     )
 
