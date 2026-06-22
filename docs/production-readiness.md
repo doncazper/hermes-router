@@ -77,6 +77,12 @@ Use `model-router feedback` to label bad routes and
 `scripts/replay_routing_log.py` to replay labeled traffic against a new router
 implementation before changing routing thresholds.
 
+Optional classifier-based routing is not part of the production path. The
+Milestone 7 audit found no labeled replay mismatches that justify it. Revisit
+that decision only with recurring labeled replay failures, no deterministic fix
+without regressions, and proof that the default `route_fast(...)` latency guard
+still passes. See `docs/advanced-routing.md`.
+
 ## Safety Configuration
 
 Human confirmation is default-on for destructive, sending/publishing,

@@ -145,6 +145,12 @@ The optional proxy can write privacy-safe JSONL routing events for hindsight
 testing; raw prompts are opt-in. See `docs/production-readiness.md` for SLOs,
 benchmark guardrails, and replay workflow.
 
+Optional advanced routing is intentionally data-gated. Milestone 7 reviewed the
+checked-in replay, golden, and parity evidence and deferred a second-pass
+classifier because there were no labeled unresolved mismatches. See
+`docs/advanced-routing.md` for the decision record and acceptance criteria for
+revisiting classifier-based routing.
+
 The installed package exposes `model-router` as the generic console command and
 `hermes-router` as a backward-compatible alias for diagnostics and scripts.
 Host-app integrations should call the Python API directly or implement the host

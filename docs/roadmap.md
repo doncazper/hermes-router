@@ -253,9 +253,16 @@ At the end, tell me whether we should tag this work as v0.6.0, cut a smaller v0.
 
 Goal: improve hard cases only if data proves deterministic rules are not enough.
 
+Status: deferred after audit. Checked-in replay fixtures, golden tests, parity
+tests, and the fixture audit had 0 expected mismatches, no local replay logs
+were present, and no matching GitHub wrong-route issues were found. See
+`docs/advanced-routing.md` for the decision record and criteria for revisiting
+an optional classifier.
+
 Candidate tasks:
 
-- Add optional second-pass classification only for uncertain prompts.
+- Add optional second-pass classification only for uncertain prompts. Deferred
+  until labeled replay data proves need.
 - Keep it off by default.
 - Load it lazily.
 - Prove latency cost is isolated outside the normal `route_fast` path.
@@ -263,8 +270,8 @@ Candidate tasks:
 
 Done when:
 
-- Accuracy improves measurably on labeled logs with negligible default-path
-  impact.
+- Current data is audited, the implement/defer/drop decision is documented, and
+  any future classifier has replay and latency gates before acceptance.
 
 Prompt:
 
