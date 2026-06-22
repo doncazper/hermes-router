@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.2 - Installer And First-Run Polish
+
+- Added `model-router init --auto` to choose a local proxy preset from Ollama
+  and LM Studio first-run signals.
+- Added first-run guidance for starting Ollama, pulling recommended Ollama
+  models, and editing LM Studio backend model ids.
+- Improved readable `model-router doctor` output with agent endpoint,
+  telemetry log path, and concrete remediation for unreachable upstreams or
+  missing configured models.
+- Updated setup docs for the smoother install, init, doctor, proxy, and
+  telemetry dogfood loop.
+
 ## 0.6.1 - Routing Telemetry Dogfood Workflow
 
 - Added `model-router telemetry summary` for event/replay coverage, unlabeled

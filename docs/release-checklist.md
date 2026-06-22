@@ -19,8 +19,8 @@ notes.
 ## Tag And Release
 
 ```bash
-git tag v0.6.1
-git push origin v0.6.1
+git tag v0.6.2
+git push origin v0.6.2
 ```
 
 Create a GitHub release for the tag. The publish workflow uses PyPI trusted
@@ -29,12 +29,12 @@ publishing and runs when the GitHub release is published.
 ## Release Notes Template
 
 ```markdown
-## ModelRouter v0.6.1
+## ModelRouter v0.6.2
 
 ### Highlights
-- Routing telemetry dogfood workflow.
-- `model-router telemetry summary` coverage and mismatch grouping.
-- `model-router telemetry feedback` privacy-safe label inspection.
+- First-run proxy setup polish.
+- `model-router init --auto` preset selection from local Ollama/LM Studio signals.
+- `model-router doctor` remediation for upstream startup, missing models, and telemetry.
 
 ### Verification
 - Ruff: passed
