@@ -730,7 +730,7 @@ model-router decide --json "fix the repo and run tests"
 For a non-editable install from GitHub:
 
 ```bash
-python -m pip install "git+https://github.com/doncazper/model-router.git@v0.6.0"
+python -m pip install "git+https://github.com/doncazper/model-router.git@v0.6.1"
 model-router decide "rewrite this text"
 ```
 

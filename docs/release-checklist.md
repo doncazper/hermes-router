@@ -19,8 +19,8 @@ notes.
 ## Tag And Release
 
 ```bash
-git tag v0.6.0
-git push origin v0.6.0
+git tag v0.6.1
+git push origin v0.6.1
 ```
 
 Create a GitHub release for the tag. The publish workflow uses PyPI trusted
@@ -29,12 +29,12 @@ publishing and runs when the GitHub release is published.
 ## Release Notes Template
 
 ```markdown
-## ModelRouter v0.6.0
+## ModelRouter v0.6.1
 
 ### Highlights
-- `/v1/responses` passthrough and routing.
-- Common Responses API request-shape compatibility.
-- Streaming SSE passthrough, fallback, and human-confirm coverage.
+- Routing telemetry dogfood workflow.
+- `model-router telemetry summary` coverage and mismatch grouping.
+- `model-router telemetry feedback` privacy-safe label inspection.
 
 ### Verification
 - Ruff: passed

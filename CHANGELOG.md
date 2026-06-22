@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.1 - Routing Telemetry Dogfood Workflow
+
+- Added `model-router telemetry summary` for event/replay coverage, unlabeled
+  replayable request ids, skipped private/no-prompt events, route changes, and
+  `expected -> actual` mismatch groups.
+- Added `model-router telemetry feedback` for inspecting feedback labels without
+  printing feedback notes by default.
+- Shared replay analysis between the CLI and `scripts/replay_routing_log.py`.
+- Documented the privacy-safe dogfood loop and the 20-30 labeled wrong-route
+  threshold for revisiting optional advanced routing.
+
 ## 0.6.0 - Compatibility Expansion
 
 - Added `/v1/responses` passthrough and routing alongside
