@@ -115,6 +115,11 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
         help="Provider template to use",
     )
     init.add_argument(
+        "--auto",
+        action="store_true",
+        help="Choose a preset from local Ollama/LM Studio signals",
+    )
+    init.add_argument(
         "--config-dir",
         type=Path,
         default=Path(DEFAULT_CONFIG_DIR),
@@ -465,6 +470,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
     try:
         result = initialize_product_config(
             preset=args.preset,
+            auto_detect=args.auto,
             config_dir=args.config_dir,
             proxy_port=args.proxy_port,
             force=args.force,
@@ -648,6 +654,10 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         print(f"Proxy config valid: {str(report.proxy_config_valid).lower()}")
         print(f"Router config valid: {str(report.router_config_valid).lower()}")
         print(f"Overall ok: {str(report.ok).lower()}")
+        if report.proxy_endpoint:
+            print(f"Agent endpoint: {report.proxy_endpoint}")
+        if report.telemetry_log_path:
+            print(f"Telemetry log: {report.telemetry_log_path}")
         if report.errors:
             print("Errors:")
             for error in report.errors:
@@ -656,6 +666,10 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         for backend in report.backends:
             status = "reachable" if backend.reachable else "unreachable"
             print(f"- {backend.backend}: {status} ({backend.detail})")
+        if report.remediation:
+            print("Next steps:")
+            for item in report.remediation:
+                print(f"- {item}")
     return 0 if report.ok else 1
 
 

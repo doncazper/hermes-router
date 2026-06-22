@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from importlib import resources
 import json
 from pathlib import Path
+import shutil
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin
@@ -36,6 +37,14 @@ PRESETS = (
     "localai",
     "hosted-openai-compatible",
 )
+OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1"
+LMSTUDIO_BASE_URL = "http://127.0.0.1:1234/v1"
+OLLAMA_RECOMMENDED_MODELS = (
+    "qwen3:0.6b",
+    "qwen3:4b",
+    "qwen3:14b",
+    "qwen2.5-coder:7b",
+)
 
 
 @dataclass(frozen=True)
@@ -49,6 +58,21 @@ class InitResult:
     written: tuple[str, ...]
     skipped: tuple[str, ...]
     messages: tuple[str, ...]
+    detection: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class FirstRunSignals:
+    ollama_installed: bool
+    ollama_running: bool
+    lmstudio_running: bool
+    ollama_models: tuple[str, ...] = ()
+    lmstudio_models: tuple[str, ...] = ()
+    recommended_preset: str = "lmstudio"
+    notes: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -75,6 +99,9 @@ class DoctorReport:
     router_config: str | None
     backends: tuple[BackendHealth, ...]
     errors: tuple[str, ...]
+    proxy_endpoint: str | None = None
+    telemetry_log_path: str | None = None
+    remediation: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -85,20 +112,32 @@ class DoctorReport:
             "router_config": self.router_config,
             "backends": [backend.to_dict() for backend in self.backends],
             "errors": list(self.errors),
+            "proxy_endpoint": self.proxy_endpoint,
+            "telemetry_log_path": self.telemetry_log_path,
+            "remediation": list(self.remediation),
         }
 
 
 def initialize_product_config(
     *,
     preset: str | None = None,
+    auto_detect: bool = False,
     config_dir: str | Path = DEFAULT_CONFIG_DIR,
     proxy_port: int = DEFAULT_PROXY_PORT,
     force: bool = False,
     interactive: bool = False,
     input_func=input,
 ) -> InitResult:
-    selected_preset = preset or (
-        _ask_preset(input_func) if interactive else "lmstudio"
+    if preset and auto_detect:
+        raise ValueError("pass either --preset or --auto, not both")
+
+    signals = detect_first_run_environment() if auto_detect else None
+    selected_preset = _select_preset(
+        preset=preset,
+        interactive=interactive,
+        auto_detect=auto_detect,
+        signals=signals,
+        input_func=input_func,
     )
     _validate_preset(selected_preset)
 
@@ -152,8 +191,14 @@ def initialize_product_config(
         messages.append("Existing files skipped; pass --force to overwrite.")
     else:
         messages.append("Configuration ready.")
+    messages.extend(_init_guidance(selected_preset, signals))
     messages.append(f"Run: model-router-proxy --config {proxy_config}")
     messages.append(f"Agent endpoint: http://127.0.0.1:{proxy_port}/v1")
+    messages.append(
+        "Telemetry: model-router telemetry summary "
+        f"--events {log_dir / 'routing-events.jsonl'} "
+        f"--feedback {expanded_dir / 'routing-feedback.jsonl'}"
+    )
 
     return InitResult(
         ok=ok,
@@ -165,6 +210,38 @@ def initialize_product_config(
         written=tuple(written),
         skipped=tuple(skipped),
         messages=tuple(messages),
+        detection=signals.to_dict() if signals else {},
+    )
+
+
+def detect_first_run_environment(timeout_seconds: float = 0.25) -> FirstRunSignals:
+    ollama_installed = shutil.which("ollama") is not None
+    ollama_models = _fetch_model_ids(OLLAMA_BASE_URL, timeout_seconds=timeout_seconds)
+    lmstudio_models = _fetch_model_ids(
+        LMSTUDIO_BASE_URL,
+        timeout_seconds=timeout_seconds,
+    )
+    ollama_running = ollama_models is not None
+    lmstudio_running = lmstudio_models is not None
+    recommended_preset = _recommended_preset_from_signals(
+        ollama_installed=ollama_installed,
+        ollama_running=ollama_running,
+        lmstudio_running=lmstudio_running,
+    )
+    notes = _signal_notes(
+        ollama_installed=ollama_installed,
+        ollama_running=ollama_running,
+        lmstudio_running=lmstudio_running,
+        recommended_preset=recommended_preset,
+    )
+    return FirstRunSignals(
+        ollama_installed=ollama_installed,
+        ollama_running=ollama_running,
+        lmstudio_running=lmstudio_running,
+        ollama_models=tuple(sorted(ollama_models or ())),
+        lmstudio_models=tuple(sorted(lmstudio_models or ())),
+        recommended_preset=recommended_preset,
+        notes=notes,
     )
 
 
@@ -197,6 +274,9 @@ def doctor_proxy_config(
             router_config=None,
             backends=(),
             errors=tuple(errors),
+            proxy_endpoint=None,
+            telemetry_log_path=None,
+            remediation=("Fix routing proxy config before running doctor again.",),
         )
 
     try:
@@ -215,6 +295,7 @@ def doctor_proxy_config(
     ok = proxy_config_valid and router_config_valid and all(
         backend.ok for backend in backends
     )
+    remediation = _doctor_remediation(config, backends, router_config_valid)
     return DoctorReport(
         ok=ok,
         proxy_config_valid=proxy_config_valid,
@@ -223,6 +304,11 @@ def doctor_proxy_config(
         router_config=router_config_source,
         backends=backends,
         errors=tuple(errors),
+        proxy_endpoint=f"http://{config.proxy.host}:{config.proxy.port}/v1",
+        telemetry_log_path=(
+            config.observability.log_path if config.observability.enabled else None
+        ),
+        remediation=remediation,
     )
 
 
@@ -296,6 +382,165 @@ def _backend_model_detail(
 
 def preset_template_names() -> tuple[str, ...]:
     return tuple(f"proxy_template_{preset}.yaml" for preset in PRESETS)
+
+
+def _select_preset(
+    *,
+    preset: str | None,
+    interactive: bool,
+    auto_detect: bool,
+    signals: FirstRunSignals | None,
+    input_func,
+) -> str:
+    if preset:
+        return preset
+    if auto_detect and signals is not None:
+        return signals.recommended_preset
+    if interactive:
+        return _ask_preset(input_func)
+    return "lmstudio"
+
+
+def _fetch_model_ids(base_url: str, *, timeout_seconds: float) -> tuple[str, ...] | None:
+    url = urljoin(base_url.rstrip("/") + "/", "models")
+    request = Request(url, method="GET")
+    try:
+        with urlopen(request, timeout=timeout_seconds) as response:
+            body = response.read()
+    except (HTTPError, OSError, URLError):
+        return None
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return ()
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+        return ()
+    return tuple(
+        item["id"]
+        for item in payload["data"]
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    )
+
+
+def _recommended_preset_from_signals(
+    *,
+    ollama_installed: bool,
+    ollama_running: bool,
+    lmstudio_running: bool,
+) -> str:
+    if ollama_running:
+        return "ollama"
+    if lmstudio_running:
+        return "lmstudio"
+    if ollama_installed:
+        return "ollama"
+    return "lmstudio"
+
+
+def _signal_notes(
+    *,
+    ollama_installed: bool,
+    ollama_running: bool,
+    lmstudio_running: bool,
+    recommended_preset: str,
+) -> tuple[str, ...]:
+    notes = [f"Recommended preset: {recommended_preset}."]
+    if ollama_running:
+        notes.append(f"Ollama is reachable at {OLLAMA_BASE_URL}.")
+    elif ollama_installed:
+        notes.append("Ollama is installed but not reachable; start it with `ollama serve`.")
+    else:
+        notes.append("Ollama command not found.")
+    if lmstudio_running:
+        notes.append(f"LM Studio-style server is reachable at {LMSTUDIO_BASE_URL}.")
+    else:
+        notes.append(f"No LM Studio-style server detected at {LMSTUDIO_BASE_URL}.")
+    return tuple(notes)
+
+
+def _init_guidance(
+    selected_preset: str,
+    signals: FirstRunSignals | None,
+) -> tuple[str, ...]:
+    messages: list[str] = []
+    if signals is not None:
+        messages.extend(signals.notes)
+    if selected_preset == "ollama":
+        if signals is not None and not signals.ollama_running:
+            messages.append("Start Ollama before running the proxy: ollama serve")
+        models = set(signals.ollama_models) if signals is not None else set()
+        missing = (
+            tuple(model for model in OLLAMA_RECOMMENDED_MODELS if model not in models)
+            if signals is not None and signals.ollama_running
+            else OLLAMA_RECOMMENDED_MODELS
+        )
+        if missing:
+            messages.append("Recommended Ollama model pulls:")
+            messages.extend(f"- ollama pull {model}" for model in missing)
+    if selected_preset == "lmstudio":
+        messages.append(
+            "LM Studio: start the local server at http://127.0.0.1:1234/v1 "
+            "and edit backend model ids to the exact names LM Studio advertises."
+        )
+        messages.append(
+            "Replace lmstudio-fast-model, lmstudio-balanced-model, "
+            "lmstudio-reasoning-model, and lmstudio-code-model as needed."
+        )
+    return tuple(messages)
+
+
+def _doctor_remediation(
+    config: RoutingProxyConfig,
+    backends: tuple[BackendHealth, ...],
+    router_config_valid: bool,
+) -> tuple[str, ...]:
+    messages: list[str] = []
+    if not router_config_valid:
+        messages.append("Fix the router_config path before starting the proxy.")
+    backend_by_name = config.backends
+    unreachable_base_urls = {
+        backend_by_name[health.backend].base_url
+        for health in backends
+        if not health.reachable and health.backend in backend_by_name
+    }
+    if any(base_url.startswith(OLLAMA_BASE_URL) for base_url in unreachable_base_urls):
+        messages.append("Ollama backend unreachable; start Ollama with `ollama serve`.")
+    if any(base_url.startswith(LMSTUDIO_BASE_URL) for base_url in unreachable_base_urls):
+        messages.append(
+            "LM Studio backend unreachable; start the LM Studio local server "
+            "at http://127.0.0.1:1234/v1."
+        )
+    for health in backends:
+        backend = backend_by_name.get(health.backend)
+        if backend is None:
+            continue
+        if "not listed" not in health.detail:
+            continue
+        if backend.base_url.startswith(OLLAMA_BASE_URL):
+            messages.append(
+                f"Backend {backend.name} model missing; run `ollama pull {backend.model}`."
+            )
+        elif backend.base_url.startswith(LMSTUDIO_BASE_URL):
+            messages.append(
+                f"Backend {backend.name} model {backend.model!r} is not listed; "
+                "edit routing_proxy.yaml to use the exact LM Studio model id."
+            )
+        else:
+            messages.append(
+                f"Backend {backend.name} model {backend.model!r} is not listed by "
+                f"{backend.base_url}; update the model or upstream."
+            )
+    if config.observability.enabled:
+        messages.append(
+            "Telemetry is enabled; inspect dogfood data with "
+            "`model-router telemetry summary`."
+        )
+    messages.append(
+        f"Agent base URL: http://{config.proxy.host}:{config.proxy.port}/v1 "
+        "with model `model-router`."
+    )
+    messages.append(f"Start proxy: model-router-proxy --config {config.source_path}")
+    return tuple(dict.fromkeys(messages))
 
 
 def _template_data(preset: str) -> dict[str, Any]:

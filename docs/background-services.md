@@ -3,7 +3,7 @@
 These examples assume:
 
 ```bash
-model-router init --preset lmstudio --yes
+model-router init --auto --yes
 ```
 
 and a config at:
@@ -29,6 +29,10 @@ ollama pull qwen3:14b
 ollama pull qwen2.5-coder:7b
 model-router init --preset ollama --yes
 ```
+
+`model-router init --auto --yes` chooses Ollama when Ollama is installed or
+reachable, chooses LM Studio when an LM Studio-style server is reachable, and
+prints exact start/pull/edit guidance for the selected preset.
 
 Point the agent at:
 

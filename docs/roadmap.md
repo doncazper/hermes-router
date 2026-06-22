@@ -311,3 +311,22 @@ Done when:
 - Revisit criteria for optional advanced routing are based on roughly 20-30
   labeled wrong routes with repeated patterns that deterministic scoring cannot
   fix cleanly.
+
+## Milestone 9: Installer And First-Run Polish
+
+Goal: make install, init, doctor, and first-run proxy setup easier and more
+self-guiding so ModelRouter can be dogfooded for real routing data.
+
+Status: implemented. `model-router init --auto` now chooses a local proxy preset
+from Ollama/LM Studio signals, reports start and model-pull guidance, and keeps
+telemetry enabled. Readable `doctor` output now includes agent endpoint,
+telemetry log path, and next-step remediation for unreachable local upstreams
+or missing configured models.
+
+Done when:
+
+- Fresh users can run `model-router init --auto --yes`, see concrete next
+  steps, run `doctor`, start the proxy, and begin collecting telemetry without
+  reading YAML first.
+- Installer and doctor tests cover local signals with mocks and no real network
+  dependency.

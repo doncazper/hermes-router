@@ -130,7 +130,7 @@ application's actual integration contract is implemented.
 For local agents, the production-like smoke path is:
 
 ```bash
-model-router init --preset lmstudio --yes
+model-router init --auto --yes
 model-router doctor --config ~/.model-router/routing_proxy.yaml
 model-router-proxy --config ~/.model-router/routing_proxy.yaml --log-level info
 ```
@@ -150,6 +150,10 @@ router YAML, backend reachability, and advertised backend model ids when the
 upstream exposes `/v1/models`. It should fail clearly when LM Studio, Ollama,
 or another local upstream is not running, instead of leaving the agent to debug
 a generic connection error.
+
+Readable `doctor` output includes the agent base URL, telemetry log path, and
+next-step remediation such as starting Ollama, starting the LM Studio local
+server, pulling missing Ollama models, or editing LM Studio model ids.
 
 ## Regression Coverage
 

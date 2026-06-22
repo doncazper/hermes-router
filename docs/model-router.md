@@ -595,6 +595,15 @@ behavior.
 For LM Studio:
 
 ```bash
+model-router init --auto --yes
+```
+
+`--auto` checks local first-run signals and chooses Ollama when Ollama is
+installed/reachable, LM Studio when an LM Studio-style local server is
+reachable, and LM Studio as the conservative fallback. Use an explicit preset
+when you already know the target:
+
+```bash
 model-router init --preset lmstudio --yes
 model-router-proxy --config ~/.model-router/routing_proxy.yaml
 ```
@@ -616,6 +625,11 @@ model-router-proxy --config ~/.model-router/routing_proxy.yaml
 
 The Ollama preset targets `http://127.0.0.1:11434/v1`; change generated
 `model:` values if you prefer different local models.
+
+When Ollama is selected and expected models are missing, first-run output shows
+the exact `ollama pull ...` commands. When LM Studio is selected, first-run
+output reminds you to edit generated backend model ids to match the exact ids
+advertised by the LM Studio local server.
 
 Use these values in an OpenAI-compatible agent or SDK:
 

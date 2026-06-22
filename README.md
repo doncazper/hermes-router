@@ -19,7 +19,7 @@ pip install "hermes-router[proxy]"
 Create first-run configs:
 
 ```bash
-model-router init --preset lmstudio --yes
+model-router init --auto --yes
 ```
 
 Start the local routing proxy:
@@ -269,11 +269,18 @@ Packaged presets:
 
 ```bash
 model-router init --preset lmstudio --yes
+model-router init --auto --yes
 model-router init --preset ollama --yes
 model-router init --preset llamacpp --yes
 model-router init --preset localai --yes
 model-router init --preset hosted-openai-compatible --yes
 ```
+
+Use `--auto` when you want ModelRouter to choose from local first-run signals.
+It checks whether Ollama is installed, whether Ollama is reachable at
+`http://127.0.0.1:11434/v1`, and whether an LM Studio-style server is reachable
+at `http://127.0.0.1:1234/v1`. The generated config still uses privacy-safe
+telemetry defaults.
 
 ### Known-Good Local Setups
 
@@ -311,12 +318,22 @@ by default. If you choose different local models, edit the `model:` values in
 ### First-Run Transcript
 
 ```text
-$ model-router init --preset lmstudio --yes
+$ model-router init --auto --yes
 Created config directory: /Users/you/.model-router
 Created log directory: /Users/you/.model-router/logs
 Configuration ready.
+Recommended preset: ollama.
+Ollama is installed but not reachable; start it with `ollama serve`.
+No LM Studio-style server detected at http://127.0.0.1:1234/v1.
+Start Ollama before running the proxy: ollama serve
+Recommended Ollama model pulls:
+- ollama pull qwen3:0.6b
+- ollama pull qwen3:4b
+- ollama pull qwen3:14b
+- ollama pull qwen2.5-coder:7b
 Run: model-router-proxy --config /Users/you/.model-router/routing_proxy.yaml
 Agent endpoint: http://127.0.0.1:8082/v1
+Telemetry: model-router telemetry summary --events /Users/you/.model-router/logs/routing-events.jsonl --feedback /Users/you/.model-router/routing-feedback.jsonl
 Written:
 - /Users/you/.model-router/model_router.yaml
 - /Users/you/.model-router/routing_proxy.yaml
@@ -334,6 +351,11 @@ Backends:
 - balanced: unreachable (<urlopen error [Errno 61] Connection refused>)
 - reasoning: unreachable (<urlopen error [Errno 61] Connection refused>)
 - code: unreachable (<urlopen error [Errno 61] Connection refused>)
+Next steps:
+- Ollama backend unreachable; start Ollama with `ollama serve`.
+- Telemetry is enabled; inspect dogfood data with `model-router telemetry summary`.
+- Agent base URL: http://127.0.0.1:8082/v1 with model `model-router`.
+- Start proxy: model-router-proxy --config /Users/you/.model-router/routing_proxy.yaml
 ```
 
 Once LM Studio, Ollama, or another OpenAI-compatible upstream is running, start
