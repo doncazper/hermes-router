@@ -128,6 +128,8 @@ Use the matching OpenAI-compatible agent settings:
 Base URL: http://127.0.0.1:8082/v1
 Model: model-router
 API key: leave blank unless proxy.api_key or proxy.api_key_env is configured
+Chat endpoint: /v1/chat/completions
+Responses endpoint: /v1/responses
 ```
 
 `doctor` should be part of background-service setup. It verifies proxy YAML,

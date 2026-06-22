@@ -394,6 +394,7 @@ def test_proxy_strips_tools_only_for_configured_backend(monkeypatch):
                 "messages": [{"role": "user", "content": "rewrite this text"}],
                 "tools": [{"type": "function"}],
                 "tool_choice": "auto",
+                "parallel_tool_calls": True,
                 "functions": [{"name": "legacy"}],
             },
         )
@@ -404,6 +405,7 @@ def test_proxy_strips_tools_only_for_configured_backend(monkeypatch):
                 "messages": [{"role": "user", "content": "fix the repo"}],
                 "tools": [{"type": "function"}],
                 "tool_choice": "auto",
+                "parallel_tool_calls": True,
                 "functions": [{"name": "legacy"}],
             },
         )
@@ -412,10 +414,93 @@ def test_proxy_strips_tools_only_for_configured_backend(monkeypatch):
     deep_body = _FakeAsyncClient.requests[1]["body"]
     assert "tools" not in fast_body
     assert "tool_choice" not in fast_body
+    assert "parallel_tool_calls" not in fast_body
     assert "functions" not in fast_body
     assert deep_body["tools"] == [{"type": "function"}]
     assert deep_body["tool_choice"] == "auto"
+    assert deep_body["parallel_tool_calls"] is True
     assert deep_body["functions"] == [{"name": "legacy"}]
+
+
+def test_proxy_responses_routes_to_backend_and_preserves_common_shape(monkeypatch):
+    with _client(monkeypatch, _config()) as client:
+        response = client.post(
+            "/v1/responses",
+            json={
+                "model": "client-visible-model",
+                "input": [
+                    {"role": "system", "content": "be concise"},
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": "fix the repo and run tests",
+                            }
+                        ],
+                    },
+                ],
+                "instructions": "Return a compact answer.",
+                "tools": [{"type": "function", "name": "run_tests"}],
+                "tool_choice": "auto",
+                "parallel_tool_calls": True,
+                "metadata": {"client": "compat-test"},
+                "previous_response_id": "resp_previous",
+            },
+        )
+
+    body = _FakeAsyncClient.requests[0]["body"]
+    assert response.status_code == 200
+    assert response.headers["x-routed-engine"] == "code_agent"
+    assert response.headers["x-routed-backend"] == "deep"
+    assert _FakeAsyncClient.requests[0]["path"] == "/responses"
+    assert body["model"] == "deep-model"
+    assert body["input"][1]["content"][0]["text"] == "fix the repo and run tests"
+    assert body["instructions"] == "Return a compact answer."
+    assert body["tools"] == [{"type": "function", "name": "run_tests"}]
+    assert body["tool_choice"] == "auto"
+    assert body["parallel_tool_calls"] is True
+    assert body["metadata"] == {"client": "compat-test"}
+    assert body["previous_response_id"] == "resp_previous"
+
+
+def test_proxy_responses_streaming_preserves_sse_bytes(monkeypatch):
+    with _client(monkeypatch, _config()) as client:
+        _FakeAsyncClient.responses = {
+            "fast": [_stream_response(b"event: response.output_text.delta\n\n")]
+        }
+        with client.stream(
+            "POST",
+            "/v1/responses",
+            json={
+                "model": "model-router",
+                "stream": True,
+                "input": "rewrite this text",
+            },
+        ) as response:
+            body = response.read()
+
+    assert response.status_code == 200
+    assert body == b"event: response.output_text.delta\n\n"
+    assert response.headers["x-routed-backend"] == "fast"
+    assert _FakeAsyncClient.requests[0]["path"] == "/responses"
+    assert _FakeAsyncClient.requests[0]["stream"] is True
+    assert _FakeAsyncClient.requests[0]["body"]["model"] == "fast-model"
+
+
+def test_proxy_responses_blocks_human_confirm_without_upstream_call(monkeypatch):
+    with _client(monkeypatch, _config()) as client:
+        response = client.post(
+            "/v1/responses",
+            json={
+                "model": "model-router",
+                "input": "delete all production records",
+            },
+        )
+
+    assert response.status_code == 409
+    assert response.json()["selected_engine"] == "human_confirm"
+    assert _FakeAsyncClient.requests == []
 
 
 def test_proxy_uses_explicit_fallback_chain_on_upstream_5xx(monkeypatch):

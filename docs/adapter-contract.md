@@ -34,8 +34,9 @@ callers need a full diagnostic receipt.
 
 The optional `model-router-proxy` runtime adapter is the first supported
 execution boundary. It exposes one local OpenAI-compatible endpoint and forwards
-chat completions to configured OpenAI-compatible upstreams. It remains outside
-the router hot path and is installed only with the `proxy` extra.
+chat completions and Responses API requests to configured OpenAI-compatible
+upstreams. It remains outside the router hot path and is installed only with
+the `proxy` extra.
 
 The `hermes/plugins/model_router` package path is legacy Python packaging
 history, not a host-app adapter contract. New integrations should import

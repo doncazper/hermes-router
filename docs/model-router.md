@@ -575,11 +575,16 @@ Example receipt:
 ## Optional Proxy And Future Adapters
 
 The optional `model-router-proxy` command is the supported runtime boundary for
-OpenAI-compatible chat clients. It exposes a local `/v1/chat/completions`
-endpoint, routes each request through initialized `route_fast(...)`, maps the
-selected engine to a configured upstream backend, and forwards the request to
-that OpenAI-compatible server. It remains outside the router hot path and is
-installed only with the `proxy` extra.
+OpenAI-compatible clients. It exposes local `/v1/chat/completions` and
+`/v1/responses` endpoints, routes each request through initialized
+`route_fast(...)`, maps the selected engine to a configured upstream backend,
+and forwards the request to that OpenAI-compatible server. It remains outside
+the router hot path and is installed only with the `proxy` extra.
+
+For `/v1/responses`, ModelRouter extracts routing text from the `input` field
+and preserves the common Responses API request shape when forwarding, including
+instructions, tools, metadata, previous response ids, streaming, and fallback
+behavior.
 
 For LM Studio:
 

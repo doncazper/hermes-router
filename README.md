@@ -243,8 +243,8 @@ full receipt is useful.
 ## Local Routing Proxy
 
 Most agents can talk to an OpenAI-compatible local endpoint. Install the optional
-proxy extra to expose one local endpoint that routes each chat request to the
-configured upstream model server:
+proxy extra to expose one local endpoint that routes each chat or Responses API
+request to the configured upstream model server:
 
 ```bash
 model-router init --preset lmstudio --yes
@@ -257,13 +257,13 @@ Then point the agent at:
 http://127.0.0.1:8082/v1
 ```
 
-The proxy supports `/v1/chat/completions`, `/v1/models`, and `/health`. It
-calls initialized `route_fast(...)` once per chat request, maps the selected
-engine to a configured backend, overrides the outgoing backend model, and
-forwards to an OpenAI-compatible upstream such as LM Studio, llama.cpp server,
-LocalAI, or a frontier gateway. `human_confirm` returns HTTP `409` and is never
-forwarded. Tools are preserved by default and can be stripped per backend for
-small local models.
+The proxy supports `/v1/chat/completions`, `/v1/responses`, `/v1/models`, and
+`/health`. It calls initialized `route_fast(...)` once per chat or Responses
+request, maps the selected engine to a configured backend, overrides the
+outgoing backend model, and forwards to an OpenAI-compatible upstream such as
+LM Studio, llama.cpp server, LocalAI, or a frontier gateway. `human_confirm`
+returns HTTP `409` and is never forwarded. Tools are preserved by default and
+can be stripped per backend for small local models.
 
 Packaged presets:
 
@@ -352,6 +352,7 @@ Base URL: http://127.0.0.1:8082/v1
 Model: model-router
 API key: leave blank unless you set proxy.api_key or proxy.api_key_env
 Chat endpoint: /v1/chat/completions
+Responses endpoint: /v1/responses
 ```
 
 Use `model-router doctor --config ~/.model-router/routing_proxy.yaml` when a

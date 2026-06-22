@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 import time
 import uuid
-from typing import Any
+from typing import Any, Callable
 
 from hermes.plugins.model_router.policy import FAIL_CLOSED_ENGINE, ModelRouter
 from hermes.plugins.model_router.proxy_config import (
@@ -91,8 +91,12 @@ def create_app(config: RoutingProxyConfig):
         redoc_url=None,
     )
 
-    @app.post("/v1/chat/completions")
-    async def chat_completions(request: Request):
+    async def _forward_routed_request(
+        request: Request,
+        *,
+        upstream_path: str,
+        prompt_from_body: Callable[[dict[str, Any]], str],
+    ):
         auth_response = _authorize_request(request, config)
         if auth_response is not None:
             return auth_response
@@ -122,8 +126,7 @@ def create_app(config: RoutingProxyConfig):
                 },
             )
 
-        messages = body.get("messages", [])
-        prompt = _extract_recent_user_text(messages)
+        prompt = prompt_from_body(body)
         route_started = time.perf_counter()
         engine = router.route_fast(prompt) if prompt else FAIL_CLOSED_ENGINE
         route_latency_ms = (time.perf_counter() - route_started) * 1000
@@ -198,6 +201,7 @@ def create_app(config: RoutingProxyConfig):
                     clients,
                     backend,
                     config.fallback_chain_for_backend(backend.name),
+                    upstream_path,
                     payload,
                     body,
                 )
@@ -265,6 +269,7 @@ def create_app(config: RoutingProxyConfig):
                 clients,
                 backend,
                 config.fallback_chain_for_backend(backend.name),
+                upstream_path,
                 payload,
                 body,
             )
@@ -332,6 +337,26 @@ def create_app(config: RoutingProxyConfig):
                 "X-Routed-Backend": used_backend.name,
                 "X-Request-Id": request_id,
             },
+        )
+
+    @app.post("/v1/chat/completions")
+    async def chat_completions(request: Request):
+        return await _forward_routed_request(
+            request,
+            upstream_path="/chat/completions",
+            prompt_from_body=lambda body: _extract_recent_user_text(
+                body.get("messages", [])
+            ),
+        )
+
+    @app.post("/v1/responses")
+    async def responses(request: Request):
+        return await _forward_routed_request(
+            request,
+            upstream_path="/responses",
+            prompt_from_body=lambda body: _extract_responses_input_text(
+                body.get("input")
+            ),
         )
 
     @app.get("/v1/models")
@@ -498,12 +523,63 @@ def _message_content_text(content: Any) -> str:
     return ""
 
 
+def _extract_responses_input_text(input_value: Any, *, lookback: int = 3) -> str:
+    if isinstance(input_value, str):
+        return input_value
+    if isinstance(input_value, dict):
+        return _responses_content_text(
+            input_value.get("content", input_value.get("text", ""))
+        )
+    if not isinstance(input_value, list):
+        return ""
+
+    parts: list[str] = []
+    seen = 0
+    for item in reversed(input_value):
+        text = ""
+        if isinstance(item, str):
+            text = item
+        elif isinstance(item, dict):
+            role = item.get("role")
+            if role is not None and role != "user":
+                continue
+            text = _responses_content_text(
+                item.get("content", item.get("text", ""))
+            )
+        if not text:
+            continue
+        parts.append(text)
+        seen += 1
+        if seen >= lookback:
+            break
+    return " ".join(reversed(parts))
+
+
+def _responses_content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, dict):
+        text = content.get("text")
+        if isinstance(text, str):
+            return text
+        return _responses_content_text(content.get("content"))
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            text = _responses_content_text(part)
+            if text:
+                parts.append(text)
+        return " ".join(parts)
+    return ""
+
+
 def _payload_for_backend(body: dict[str, Any], backend: ProxyBackendConfig) -> bytes:
     payload = dict(body)
     payload["model"] = backend.model
     if backend.strip_tools:
         payload.pop("tools", None)
         payload.pop("tool_choice", None)
+        payload.pop("parallel_tool_calls", None)
         payload.pop("functions", None)
     return json.dumps(payload, separators=(",", ":")).encode("utf-8")
 
@@ -512,16 +588,21 @@ async def _post_with_fallbacks(
     clients: dict[str, Any],
     primary: ProxyBackendConfig,
     fallbacks: tuple[ProxyBackendConfig, ...],
+    upstream_path: str,
     primary_payload: bytes,
     original_body: dict[str, Any],
 ) -> tuple[Any, ProxyBackendConfig, bool]:
     attempted = (primary, *fallbacks)
     last_error: Exception | None = None
     for index, backend in enumerate(attempted):
-        payload = primary_payload if index == 0 else _payload_for_backend(original_body, backend)
+        payload = (
+            primary_payload
+            if index == 0
+            else _payload_for_backend(original_body, backend)
+        )
         try:
             response = await clients[backend.name].post(
-                "/chat/completions",
+                upstream_path,
                 content=payload,
             )
         except Exception as exc:
@@ -536,17 +617,22 @@ async def _open_stream_with_fallbacks(
     clients: dict[str, Any],
     primary: ProxyBackendConfig,
     fallbacks: tuple[ProxyBackendConfig, ...],
+    upstream_path: str,
     primary_payload: bytes,
     original_body: dict[str, Any],
 ) -> tuple[Any, Any, ProxyBackendConfig, bool]:
     attempted = (primary, *fallbacks)
     last_error: Exception | None = None
     for index, backend in enumerate(attempted):
-        payload = primary_payload if index == 0 else _payload_for_backend(original_body, backend)
+        payload = (
+            primary_payload
+            if index == 0
+            else _payload_for_backend(original_body, backend)
+        )
         try:
             stream_context = clients[backend.name].stream(
                 "POST",
-                "/chat/completions",
+                upstream_path,
                 content=payload,
             )
             response = await stream_context.__aenter__()
