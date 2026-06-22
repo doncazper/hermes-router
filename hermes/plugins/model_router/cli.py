@@ -39,7 +39,9 @@ from hermes.plugins.model_router.setup_assistant import (
     engine_override_for_download,
     engine_override_for_local_model,
     execute_download_plan,
+    execute_prereq_install_plan,
     plan_model_downloads,
+    plan_prereq_installs,
     recommend_setup,
     scan_local_environment,
     write_config_from_recommendation,
@@ -118,6 +120,24 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
         "--auto",
         action="store_true",
         help="Choose a preset from local Ollama/LM Studio signals",
+    )
+    init.add_argument(
+        "--auto-models",
+        action="store_true",
+        help="Scan local models and fill managed mlx-lm/llamacpp backend models",
+    )
+    init.add_argument(
+        "--model-dir",
+        action="append",
+        type=Path,
+        default=None,
+        help="Additional or replacement local model directory to scan",
+    )
+    init.add_argument(
+        "--profile",
+        default="balanced",
+        choices=("balanced", "lightweight", "quality"),
+        help="Recommendation profile for model suggestions",
     )
     init.add_argument(
         "--config-dir",
@@ -348,7 +368,36 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
         choices=("balanced", "lightweight", "quality"),
         help="Recommendation profile for future model download plans",
     )
+    recommend.add_argument(
+        "--download-alternatives",
+        type=_positive_int,
+        default=2,
+        help="Recommended download candidates per route",
+    )
     recommend.set_defaults(func=_cmd_setup_recommend)
+
+    prereqs = setup_subparsers.add_parser(
+        "install-prereqs",
+        help="Plan or install Python prerequisites into the active environment",
+    )
+    prereqs.add_argument(
+        "--preset",
+        default="proxy",
+        choices=("proxy", "mlx-lm", "llamacpp", "all"),
+        help="Prerequisite set to plan or install",
+    )
+    prereqs.add_argument(
+        "--execute",
+        action="store_true",
+        help="Run the planned pip install commands",
+    )
+    prereqs.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm execution without an interactive prompt",
+    )
+    prereqs.add_argument("--json", action="store_true", help="Emit JSON output")
+    prereqs.set_defaults(func=_cmd_setup_install_prereqs)
 
     download = setup_subparsers.add_parser(
         "download",
@@ -378,6 +427,12 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
         help="Adapter name for a custom repo download plan",
     )
     download.add_argument(
+        "--alternatives",
+        type=_positive_int,
+        default=1,
+        help="Recommended download candidates per route",
+    )
+    download.add_argument(
         "--local-root",
         type=Path,
         default=None,
@@ -405,6 +460,12 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
         default="balanced",
         choices=("balanced", "lightweight", "quality"),
         help="Recommendation profile for future model download plans",
+    )
+    write.add_argument(
+        "--download-alternatives",
+        type=_positive_int,
+        default=2,
+        help="Recommended download candidates per route",
     )
     write.add_argument(
         "--output",
@@ -471,6 +532,9 @@ def _cmd_init(args: argparse.Namespace) -> int:
         result = initialize_product_config(
             preset=args.preset,
             auto_detect=args.auto,
+            auto_models=args.auto_models,
+            model_dirs=_model_dirs_from_args(args),
+            profile=args.profile,
             config_dir=args.config_dir,
             proxy_port=args.proxy_port,
             force=args.force,
@@ -728,7 +792,11 @@ def _cmd_setup_scan(args: argparse.Namespace) -> int:
 
 def _cmd_setup_recommend(args: argparse.Namespace) -> int:
     discovery = scan_local_environment(model_dirs=_model_dirs_from_args(args))
-    recommendation = recommend_setup(discovery, profile=args.profile)
+    recommendation = recommend_setup(
+        discovery,
+        profile=args.profile,
+        download_alternatives=args.download_alternatives,
+    )
     if args.json:
         print(json.dumps(recommendation.to_dict(), indent=2, sort_keys=True))
     else:
@@ -745,6 +813,7 @@ def _cmd_setup_download(args: argparse.Namespace) -> int:
         local_root=args.local_root,
         repo_id=args.repo_id,
         adapter=args.adapter,
+        alternatives=args.alternatives,
     )
     confirmed = args.yes
     if args.execute and not confirmed and not args.json:
@@ -764,6 +833,26 @@ def _cmd_setup_download(args: argparse.Namespace) -> int:
     return 0 if result.ok else 1
 
 
+def _cmd_setup_install_prereqs(args: argparse.Namespace) -> int:
+    plan = plan_prereq_installs(preset=args.preset)
+    confirmed = args.yes
+    if args.execute and not confirmed and not args.json:
+        _print_prereq_plan(plan)
+        answer = input("Run these pip install commands? [y/N] ").strip().lower()
+        confirmed = answer in {"y", "yes"}
+
+    result = execute_prereq_install_plan(
+        plan,
+        execute=args.execute,
+        confirmed=confirmed,
+    )
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+    else:
+        _print_prereq_result(result)
+    return 0 if result.ok else 1
+
+
 def _cmd_setup_write(args: argparse.Namespace) -> int:
     discovery = scan_local_environment(model_dirs=_model_dirs_from_args(args))
     result = write_recommended_config(
@@ -771,6 +860,7 @@ def _cmd_setup_write(args: argparse.Namespace) -> int:
         discovery=discovery,
         force=args.force,
         profile=args.profile,
+        download_alternatives=args.download_alternatives,
     )
     if args.json:
         print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
@@ -920,9 +1010,9 @@ def _add_setup_scan_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _model_dirs_from_args(args: argparse.Namespace):
-    if args.no_default_dirs:
+    if getattr(args, "no_default_dirs", False):
         return args.model_dir or []
-    return args.model_dir
+    return getattr(args, "model_dir", None)
 
 
 def _load_wizard_config(output: Path) -> RouterConfig | None:
@@ -1364,6 +1454,39 @@ def _print_download_result(result) -> None:
     for item in result.results:
         print(f"- {item.route}: {item.status}")
         print(f"  repo: {item.repo_id}")
+        print(f"  command: {' '.join(item.command)}")
+        if item.returncode is not None:
+            print(f"  returncode: {item.returncode}")
+    print("Notes:")
+    if not result.notes:
+        print("- none")
+    for note in result.notes:
+        print(f"- {note}")
+
+
+def _print_prereq_plan(plan) -> None:
+    print("Prerequisite install plan:")
+    if not plan.steps:
+        print("- none")
+    for step in plan.steps:
+        print(f"- {step.name}: {' '.join(step.command)}")
+        print(f"  reason: {step.reason}")
+    print("Notes:")
+    if not plan.notes:
+        print("- none")
+    for note in plan.notes:
+        print(f"- {note}")
+
+
+def _print_prereq_result(result) -> None:
+    print(f"Executed: {str(result.executed).lower()}")
+    print(f"OK: {str(result.ok).lower()}")
+    print("Results:")
+    if not result.statuses:
+        print("- none")
+    for item in result.statuses:
+        print(f"- {item.route}: {item.status}")
+        print(f"  package: {item.repo_id}")
         print(f"  command: {' '.join(item.command)}")
         if item.returncode is not None:
             print(f"  returncode: {item.returncode}")

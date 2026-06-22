@@ -271,6 +271,45 @@ def test_init_cli_writes_configs(tmp_path):
     assert payload["preset"] == "lmstudio"
 
 
+def test_init_cli_accepts_auto_models_for_llamacpp(tmp_path):
+    model_dir = tmp_path / "models" / "Qwen3-4B-GGUF"
+    model_dir.mkdir(parents=True)
+    (model_dir / "Qwen3-4B-Q4_K_M.gguf").write_text("placeholder", encoding="utf-8")
+
+    result = _run_cli(
+        "init",
+        "--preset",
+        "llamacpp",
+        "--auto-models",
+        "--model-dir",
+        str(model_dir),
+        "--yes",
+        "--config-dir",
+        str(tmp_path / "config"),
+        "--json",
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert any("Auto-selected" in message for message in payload["messages"])
+
+
+def test_setup_install_prereqs_cli_defaults_to_dry_run():
+    result = _run_cli(
+        "setup",
+        "install-prereqs",
+        "--preset",
+        "mlx-lm",
+        "--json",
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["executed"] is False
+    assert any(step["command"][-1] == "mlx-lm" for step in payload["steps"])
+
+
 def test_validate_proxy_config_cli(tmp_path):
     init = _run_cli(
         "init",

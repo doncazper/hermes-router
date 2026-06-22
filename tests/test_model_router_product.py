@@ -3,6 +3,7 @@ import json
 import yaml
 
 from hermes.plugins.model_router.config import load_router_config
+from hermes.plugins.model_router.model_advisor import HardwareProfile
 import hermes.plugins.model_router.product as product
 from hermes.plugins.model_router.product import (
     PRESETS,
@@ -13,6 +14,7 @@ from hermes.plugins.model_router.product import (
     initialize_product_config,
 )
 from hermes.plugins.model_router.proxy_config import load_proxy_config
+from hermes.plugins.model_router.setup_assistant import DiscoveredModel, SetupDiscovery
 
 
 def test_init_noninteractive_lmstudio_writes_runnable_configs(tmp_path):
@@ -71,6 +73,76 @@ def test_init_auto_selects_ollama_and_reports_missing_model_pulls(
     missing = set(OLLAMA_RECOMMENDED_MODELS) - {"qwen3:0.6b"}
     for model in missing:
         assert f"- ollama pull {model}" in result.messages
+
+
+def test_first_run_auto_can_recommend_mlx_lm_on_apple_silicon(monkeypatch):
+    monkeypatch.setattr(
+        product,
+        "scan_local_environment",
+        lambda: SetupDiscovery(
+            commands={"ollama": False, "mlx_lm.server": True, "llama-server": False},
+            model_dirs=(),
+            models=(),
+        ),
+    )
+    monkeypatch.setattr(
+        product,
+        "detect_hardware_profile",
+        lambda: HardwareProfile(
+            system="Darwin",
+            machine="arm64",
+            total_memory_gb=32,
+            disk_free_gb=200,
+            apple_silicon=True,
+        ),
+    )
+    monkeypatch.setattr(product, "_fetch_model_ids", lambda *_args, **_kwargs: None)
+
+    signals = product.detect_first_run_environment()
+
+    assert signals.recommended_preset == "mlx-lm"
+    assert signals.apple_silicon is True
+    assert signals.mlx_lm_available is True
+
+
+def test_first_run_auto_can_recommend_llamacpp_for_gguf(monkeypatch, tmp_path):
+    gguf = tmp_path / "Qwen3-4B-Q4_K_M.gguf"
+    gguf.write_text("placeholder", encoding="utf-8")
+    monkeypatch.setattr(
+        product,
+        "scan_local_environment",
+        lambda: SetupDiscovery(
+            commands={"ollama": False, "mlx_lm.server": False, "llama-server": True},
+            model_dirs=(str(tmp_path),),
+            models=(
+                DiscoveredModel(
+                    name="Qwen3-4B-GGUF",
+                    repo_id="Qwen/Qwen3-4B-GGUF",
+                    path=str(tmp_path),
+                    source="local_directory",
+                    roles=("balanced_local",),
+                ),
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        product,
+        "detect_hardware_profile",
+        lambda: HardwareProfile(
+            system="Linux",
+            machine="x86_64",
+            total_memory_gb=32,
+            disk_free_gb=200,
+            apple_silicon=False,
+        ),
+    )
+    monkeypatch.setattr(product, "_fetch_model_ids", lambda *_args, **_kwargs: None)
+
+    signals = product.detect_first_run_environment()
+
+    assert signals.recommended_preset == "llamacpp"
+    assert signals.llama_server_available is True
+    assert signals.gguf_models == ("Qwen/Qwen3-4B-GGUF",)
 
 
 def test_init_auto_reports_ollama_start_when_installed_but_stopped(
@@ -173,6 +245,85 @@ def test_init_mlx_lm_writes_managed_runtime_preset_and_guidance(tmp_path):
         "/v1/responses translation is deferred" in message
         for message in result.messages
     )
+
+
+def test_init_mlx_lm_auto_models_uses_local_mlx_model(tmp_path, monkeypatch):
+    model_dir = tmp_path / "models" / "mlx"
+    model_dir.mkdir(parents=True)
+    monkeypatch.setattr(
+        product,
+        "scan_local_environment",
+        lambda model_dirs=None: SetupDiscovery(
+            commands={"mlx_lm.server": True},
+            model_dirs=tuple(str(path) for path in model_dirs or ()),
+            models=(
+                DiscoveredModel(
+                    name="Qwen3-4B-4bit",
+                    repo_id="mlx-community/Qwen3-4B-4bit",
+                    path=str(model_dir),
+                    source="huggingface_cache",
+                    roles=("balanced_local",),
+                ),
+            ),
+        ),
+    )
+
+    result = initialize_product_config(
+        preset="mlx-lm",
+        auto_models=True,
+        model_dirs=[model_dir],
+        config_dir=tmp_path / "config",
+        force=False,
+        interactive=False,
+    )
+    config = load_proxy_config(tmp_path / "config" / "routing_proxy.yaml")
+
+    assert result.ok is True
+    assert config.backends["balanced"].model == "mlx-community/Qwen3-4B-4bit"
+    assert "mlx-community/Qwen3-4B-4bit" in config.backends["balanced"].runtime.command
+    assert any("Auto-selected" in message for message in result.messages)
+    assert any("Recommended download" in message for message in result.messages)
+
+
+def test_init_llamacpp_auto_models_adds_managed_runtime_for_gguf(tmp_path, monkeypatch):
+    model_dir = tmp_path / "models" / "qwen"
+    model_dir.mkdir(parents=True)
+    gguf = model_dir / "Qwen3-4B-Q4_K_M.gguf"
+    gguf.write_text("placeholder", encoding="utf-8")
+    monkeypatch.setattr(
+        product,
+        "scan_local_environment",
+        lambda model_dirs=None: SetupDiscovery(
+            commands={"llama-server": True},
+            model_dirs=tuple(str(path) for path in model_dirs or ()),
+            models=(
+                DiscoveredModel(
+                    name="Qwen3-4B-GGUF",
+                    repo_id="Qwen/Qwen3-4B-GGUF",
+                    path=str(model_dir),
+                    source="local_directory",
+                    roles=("balanced_local",),
+                ),
+            ),
+        ),
+    )
+
+    result = initialize_product_config(
+        preset="llamacpp",
+        auto_models=True,
+        model_dirs=[model_dir],
+        config_dir=tmp_path / "config",
+        force=False,
+        interactive=False,
+    )
+    config = load_proxy_config(tmp_path / "config" / "routing_proxy.yaml")
+
+    balanced = config.backends["balanced"]
+    assert result.ok is True
+    assert balanced.runtime.enabled is True
+    assert balanced.runtime.kind == "llama-server"
+    assert str(gguf) in balanced.runtime.command
+    assert balanced.model == "Qwen3-4B-Q4_K_M"
 
 
 def test_doctor_mlx_lm_reports_runtime_guidance(tmp_path, monkeypatch):

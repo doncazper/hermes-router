@@ -203,6 +203,53 @@ class DownloadExecution:
 
 
 @dataclass(frozen=True)
+class PrereqInstallStep:
+    name: str
+    command: tuple[str, ...]
+    reason: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "command": list(self.command),
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True)
+class PrereqInstallPlan:
+    steps: tuple[PrereqInstallStep, ...]
+    notes: tuple[str, ...] = field(default_factory=tuple)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "steps": [step.to_dict() for step in self.steps],
+            "notes": list(self.notes),
+        }
+
+
+@dataclass(frozen=True)
+class PrereqInstallResult:
+    executed: bool
+    steps: tuple[PrereqInstallStep, ...]
+    statuses: tuple[DownloadResult, ...]
+    notes: tuple[str, ...] = field(default_factory=tuple)
+
+    @property
+    def ok(self) -> bool:
+        return all(status.status in {"planned", "completed"} for status in self.statuses)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "executed": self.executed,
+            "ok": self.ok,
+            "steps": [step.to_dict() for step in self.steps],
+            "results": [status.to_dict() for status in self.statuses],
+            "notes": list(self.notes),
+        }
+
+
+@dataclass(frozen=True)
 class SetupRecommendation:
     routing_targets: dict[str, str]
     engine_overrides: dict[str, dict[str, Any]]
@@ -280,6 +327,7 @@ def recommend_setup(
     *,
     profile: str = "balanced",
     hardware: HardwareProfile | None = None,
+    download_alternatives: int = 2,
 ) -> SetupRecommendation:
     routing_targets = dict(DEFAULT_ROUTING_TARGETS)
     engine_overrides: dict[str, dict[str, Any]] = {}
@@ -322,12 +370,14 @@ def recommend_setup(
         notes.append("ANTHROPIC_API_KEY detected; anthropic_api can be enabled.")
 
     matched_roles = _local_model_overrides(discovery.models, engine_overrides, notes)
-    download_suggestions = tuple(
-        suggestion
-        for suggestion in _default_download_suggestions(profile, hardware)
-        if suggestion.route not in matched_roles
+    download_suggestions = _default_download_suggestions(
+        profile,
+        hardware,
+        limit_per_route=download_alternatives,
     )
     for suggestion in download_suggestions:
+        if suggestion.route in matched_roles:
+            continue
         engine_name = ROLE_TO_ENGINE[suggestion.route]
         engine_overrides.setdefault(
             engine_name,
@@ -352,11 +402,16 @@ def write_recommended_config(
     discovery: SetupDiscovery | None = None,
     force: bool = False,
     profile: str = "balanced",
+    download_alternatives: int = 2,
     base_config_path: str | Path | None = None,
 ) -> ConfigWriteResult:
     output = Path(output_path).expanduser()
     discovery = discovery or scan_local_environment()
-    recommendation = recommend_setup(discovery, profile=profile)
+    recommendation = recommend_setup(
+        discovery,
+        profile=profile,
+        download_alternatives=download_alternatives,
+    )
 
     return write_config_from_recommendation(
         output,
@@ -453,6 +508,7 @@ def plan_model_downloads(
     local_root: str | Path | None = None,
     repo_id: str | None = None,
     adapter: str | None = None,
+    alternatives: int = 1,
 ) -> DownloadPlan:
     if repo_id is not None:
         route = _custom_download_route(routes)
@@ -479,7 +535,11 @@ def plan_model_downloads(
         )
 
     discovery = discovery or scan_local_environment()
-    recommendation = recommend_setup(discovery, profile=profile)
+    recommendation = recommend_setup(
+        discovery,
+        profile=profile,
+        download_alternatives=alternatives,
+    )
     selected_routes = set(routes or ())
     suggestions = tuple(
         _with_local_root(suggestion, local_root)
@@ -495,6 +555,191 @@ def plan_model_downloads(
                 "No download suggestions for routes: " + ", ".join(sorted(missing)),
             )
     return DownloadPlan(suggestions=suggestions, notes=notes)
+
+
+def mlx_lm_download_suggestions(
+    *,
+    local_root: str | Path | None = None,
+) -> tuple[DownloadSuggestion, ...]:
+    suggestions = (
+        DownloadSuggestion(
+            route="fast_local",
+            repo_id="mlx-community/Qwen3-0.6B-4bit",
+            provider="huggingface",
+            adapter="local_chat",
+            reason="Fast MLX-LM chat model for simple rewrite/extraction routes.",
+            command=(
+                "hf",
+                "download",
+                "mlx-community/Qwen3-0.6B-4bit",
+                "--local-dir",
+                "models/mlx-lm/fast_local/mlx-community--Qwen3-0.6B-4bit",
+            ),
+        ),
+        DownloadSuggestion(
+            route="balanced_local",
+            repo_id="mlx-community/Qwen3-4B-4bit",
+            provider="huggingface",
+            adapter="local_chat",
+            reason="Balanced MLX-LM chat model for general local assistant work.",
+            command=(
+                "hf",
+                "download",
+                "mlx-community/Qwen3-4B-4bit",
+                "--local-dir",
+                "models/mlx-lm/balanced_local/mlx-community--Qwen3-4B-4bit",
+            ),
+        ),
+        DownloadSuggestion(
+            route="reasoning_local",
+            repo_id="mlx-community/DeepSeek-R1-0528-Qwen3-8B-4bit",
+            provider="huggingface",
+            adapter="local_reasoning",
+            reason="MLX-LM reasoning model for planning-heavy local routes.",
+            command=(
+                "hf",
+                "download",
+                "mlx-community/DeepSeek-R1-0528-Qwen3-8B-4bit",
+                "--local-dir",
+                "models/mlx-lm/reasoning_local/"
+                "mlx-community--DeepSeek-R1-0528-Qwen3-8B-4bit",
+            ),
+        ),
+        DownloadSuggestion(
+            route="code_agent",
+            repo_id="mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
+            provider="huggingface",
+            adapter="local_code",
+            reason="MLX-LM coding model for repository and code-agent routes.",
+            command=(
+                "hf",
+                "download",
+                "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
+                "--local-dir",
+                "models/mlx-lm/code_agent/"
+                "mlx-community--Qwen2.5-Coder-7B-Instruct-4bit",
+            ),
+        ),
+    )
+    return tuple(_with_local_root(suggestion, local_root) for suggestion in suggestions)
+
+
+def plan_prereq_installs(*, preset: str = "proxy") -> PrereqInstallPlan:
+    packages = [
+        (
+            "FastAPI",
+            "fastapi>=0.115,<1",
+            "Proxy HTTP app dependency.",
+        ),
+        (
+            "httpx",
+            "httpx>=0.27,<1",
+            "Proxy upstream HTTP client dependency.",
+        ),
+        (
+            "uvicorn",
+            "uvicorn>=0.30,<1",
+            "ASGI server used by model-router-proxy.",
+        ),
+        (
+            "Hugging Face CLI",
+            "huggingface_hub[cli]",
+            "Model download plans use the `hf download` command.",
+        ),
+    ]
+    notes: list[str] = []
+    if preset in {"mlx-lm", "all"}:
+        packages.append(
+            (
+                "MLX-LM runtime",
+                "mlx-lm",
+                "Provides the `mlx_lm.server` OpenAI-compatible local server.",
+            )
+        )
+    if preset in {"llamacpp", "all"}:
+        notes.append(
+            "llama-server is a system executable; install llama.cpp separately "
+            "so `llama-server` is on PATH. On macOS, try `brew install llama.cpp`."
+        )
+    steps = tuple(
+        PrereqInstallStep(
+            name=name,
+            command=(sys.executable, "-m", "pip", "install", "--upgrade", package),
+            reason=reason,
+        )
+        for name, package, reason in packages
+    )
+    return PrereqInstallPlan(steps=steps, notes=tuple(notes))
+
+
+def execute_prereq_install_plan(
+    plan: PrereqInstallPlan,
+    *,
+    execute: bool,
+    confirmed: bool,
+    runner=None,
+) -> PrereqInstallResult:
+    if not execute:
+        return PrereqInstallResult(
+            executed=False,
+            steps=plan.steps,
+            statuses=tuple(
+                DownloadResult(
+                    route=step.name,
+                    repo_id=step.command[-1],
+                    command=step.command,
+                    status="planned",
+                )
+                for step in plan.steps
+            ),
+            notes=plan.notes,
+        )
+    if not confirmed:
+        return PrereqInstallResult(
+            executed=False,
+            steps=plan.steps,
+            statuses=tuple(
+                DownloadResult(
+                    route=step.name,
+                    repo_id=step.command[-1],
+                    command=step.command,
+                    status="confirmation_required",
+                )
+                for step in plan.steps
+            ),
+            notes=(*plan.notes, "Pass --yes or confirm interactively to execute."),
+        )
+    runner = runner or _run_prereq_command
+    statuses: list[DownloadResult] = []
+    for step in plan.steps:
+        try:
+            returncode = runner(step.command)
+        except FileNotFoundError:
+            statuses.append(
+                DownloadResult(
+                    route=step.name,
+                    repo_id=step.command[-1],
+                    command=step.command,
+                    status="missing_command",
+                    returncode=127,
+                )
+            )
+            continue
+        statuses.append(
+            DownloadResult(
+                route=step.name,
+                repo_id=step.command[-1],
+                command=step.command,
+                status="completed" if returncode == 0 else "failed",
+                returncode=returncode,
+            )
+        )
+    return PrereqInstallResult(
+        executed=True,
+        steps=plan.steps,
+        statuses=tuple(statuses),
+        notes=plan.notes,
+    )
 
 
 def _custom_download_route(routes: Sequence[str] | None) -> str:
@@ -589,6 +834,12 @@ def _scan_model_dirs(paths: Sequence[Path]) -> tuple[DiscoveredModel, ...]:
             for model in _lm_studio_models(root):
                 if model.repo_id in seen:
                     continue
+                seen.add(model.repo_id)
+                models.append(model)
+            continue
+        if _has_model_file_marker(root):
+            model = _model_from_dir(root)
+            if model.repo_id not in seen:
                 seen.add(model.repo_id)
                 models.append(model)
             continue
@@ -837,10 +1088,16 @@ def _engine_override_for_suggestion(suggestion: DownloadSuggestion) -> dict[str,
 def _default_download_suggestions(
     profile: str,
     hardware: HardwareProfile,
+    *,
+    limit_per_route: int = 1,
 ) -> tuple[DownloadSuggestion, ...]:
     return tuple(
         _download_suggestion_for_advice(advice)
-        for advice in recommend_catalog_models(profile=profile, hardware=hardware)
+        for advice in recommend_catalog_models(
+            profile=profile,
+            hardware=hardware,
+            limit_per_route=limit_per_route,
+        )
     )
 
 
@@ -890,6 +1147,11 @@ def _run_download_command(command: tuple[str, ...]) -> int:
     if executable is None:
         raise FileNotFoundError(command[0])
     completed = subprocess.run((executable, *command[1:]), check=False)
+    return int(completed.returncode)
+
+
+def _run_prereq_command(command: tuple[str, ...]) -> int:
+    completed = subprocess.run(command, check=False)
     return int(completed.returncode)
 
 

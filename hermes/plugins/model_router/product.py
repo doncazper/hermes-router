@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import shutil
 import socket
-from typing import Any
+from typing import Any, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
@@ -20,11 +20,19 @@ from hermes.plugins.model_router.config import (
     default_config_text,
     load_router_config,
 )
+from hermes.plugins.model_router.model_advisor import detect_hardware_profile
 from hermes.plugins.model_router.proxy_config import (
     ProxyBackendConfig,
     ProxyConfigError,
     RoutingProxyConfig,
     load_proxy_config,
+)
+from hermes.plugins.model_router.setup_assistant import (
+    DiscoveredModel,
+    default_model_dirs,
+    mlx_lm_download_suggestions,
+    plan_model_downloads,
+    scan_local_environment,
 )
 
 
@@ -71,8 +79,13 @@ class FirstRunSignals:
     ollama_installed: bool
     ollama_running: bool
     lmstudio_running: bool
+    apple_silicon: bool = False
+    mlx_lm_available: bool = False
+    llama_server_available: bool = False
     ollama_models: tuple[str, ...] = ()
     lmstudio_models: tuple[str, ...] = ()
+    mlx_lm_models: tuple[str, ...] = ()
+    gguf_models: tuple[str, ...] = ()
     recommended_preset: str = "lmstudio"
     notes: tuple[str, ...] = ()
 
@@ -124,6 +137,9 @@ def initialize_product_config(
     *,
     preset: str | None = None,
     auto_detect: bool = False,
+    auto_models: bool = False,
+    model_dirs: Sequence[str | Path] | None = None,
+    profile: str = "balanced",
     config_dir: str | Path = DEFAULT_CONFIG_DIR,
     proxy_port: int = DEFAULT_PROXY_PORT,
     force: bool = False,
@@ -164,6 +180,16 @@ def initialize_product_config(
     proxy_data.setdefault("observability", {})["log_path"] = str(
         log_dir / "routing-events.jsonl"
     )
+
+    if auto_models:
+        _apply_proxy_auto_models(
+            proxy_data,
+            preset=selected_preset,
+            config_dir=expanded_dir,
+            model_dirs=model_dirs,
+            profile=profile,
+            messages=messages,
+        )
 
     if interactive:
         _customize_backends(proxy_data, input_func)
@@ -217,7 +243,9 @@ def initialize_product_config(
 
 
 def detect_first_run_environment(timeout_seconds: float = 0.25) -> FirstRunSignals:
-    ollama_installed = shutil.which("ollama") is not None
+    discovery = scan_local_environment()
+    hardware = detect_hardware_profile()
+    ollama_installed = discovery.commands.get("ollama", False)
     ollama_models = _fetch_model_ids(OLLAMA_BASE_URL, timeout_seconds=timeout_seconds)
     lmstudio_models = _fetch_model_ids(
         LMSTUDIO_BASE_URL,
@@ -225,23 +253,44 @@ def detect_first_run_environment(timeout_seconds: float = 0.25) -> FirstRunSigna
     )
     ollama_running = ollama_models is not None
     lmstudio_running = lmstudio_models is not None
+    mlx_lm_models = tuple(
+        model.repo_id for model in discovery.models if _is_mlx_lm_compatible_model(model)
+    )
+    gguf_models = tuple(
+        model.repo_id for model in discovery.models if _is_llamacpp_compatible_model(model)
+    )
     recommended_preset = _recommended_preset_from_signals(
         ollama_installed=ollama_installed,
         ollama_running=ollama_running,
         lmstudio_running=lmstudio_running,
+        apple_silicon=hardware.apple_silicon,
+        mlx_lm_available=discovery.commands.get("mlx_lm.server", False),
+        llama_server_available=discovery.commands.get("llama-server", False),
+        mlx_lm_models=mlx_lm_models,
+        gguf_models=gguf_models,
     )
     notes = _signal_notes(
         ollama_installed=ollama_installed,
         ollama_running=ollama_running,
         lmstudio_running=lmstudio_running,
+        apple_silicon=hardware.apple_silicon,
+        mlx_lm_available=discovery.commands.get("mlx_lm.server", False),
+        llama_server_available=discovery.commands.get("llama-server", False),
+        mlx_lm_models=mlx_lm_models,
+        gguf_models=gguf_models,
         recommended_preset=recommended_preset,
     )
     return FirstRunSignals(
         ollama_installed=ollama_installed,
         ollama_running=ollama_running,
         lmstudio_running=lmstudio_running,
+        apple_silicon=hardware.apple_silicon,
+        mlx_lm_available=discovery.commands.get("mlx_lm.server", False),
+        llama_server_available=discovery.commands.get("llama-server", False),
         ollama_models=tuple(sorted(ollama_models or ())),
         lmstudio_models=tuple(sorted(lmstudio_models or ())),
+        mlx_lm_models=tuple(sorted(mlx_lm_models)),
+        gguf_models=tuple(sorted(gguf_models)),
         recommended_preset=recommended_preset,
         notes=notes,
     )
@@ -431,6 +480,11 @@ def _recommended_preset_from_signals(
     ollama_installed: bool,
     ollama_running: bool,
     lmstudio_running: bool,
+    apple_silicon: bool = False,
+    mlx_lm_available: bool = False,
+    llama_server_available: bool = False,
+    mlx_lm_models: tuple[str, ...] = (),
+    gguf_models: tuple[str, ...] = (),
 ) -> str:
     if ollama_running:
         return "ollama"
@@ -438,6 +492,10 @@ def _recommended_preset_from_signals(
         return "lmstudio"
     if ollama_installed:
         return "ollama"
+    if apple_silicon and (mlx_lm_available or mlx_lm_models):
+        return "mlx-lm"
+    if llama_server_available or gguf_models:
+        return "llamacpp"
     return "lmstudio"
 
 
@@ -446,9 +504,15 @@ def _signal_notes(
     ollama_installed: bool,
     ollama_running: bool,
     lmstudio_running: bool,
+    apple_silicon: bool = False,
+    mlx_lm_available: bool = False,
+    llama_server_available: bool = False,
+    mlx_lm_models: tuple[str, ...] = (),
+    gguf_models: tuple[str, ...] = (),
     recommended_preset: str,
 ) -> tuple[str, ...]:
     notes = [f"Recommended preset: {recommended_preset}."]
+    notes.append("Apple Silicon detected." if apple_silicon else "Non-Apple-Silicon machine detected.")
     if ollama_running:
         notes.append(f"Ollama is reachable at {OLLAMA_BASE_URL}.")
     elif ollama_installed:
@@ -459,6 +523,14 @@ def _signal_notes(
         notes.append(f"LM Studio-style server is reachable at {LMSTUDIO_BASE_URL}.")
     else:
         notes.append(f"No LM Studio-style server detected at {LMSTUDIO_BASE_URL}.")
+    if mlx_lm_available:
+        notes.append("mlx_lm.server command detected.")
+    if llama_server_available:
+        notes.append("llama-server command detected.")
+    if mlx_lm_models:
+        notes.append(f"Local MLX-compatible models detected: {len(mlx_lm_models)}.")
+    if gguf_models:
+        notes.append(f"Local GGUF models detected: {len(gguf_models)}.")
     return tuple(notes)
 
 
@@ -504,6 +576,252 @@ def _init_guidance(
             "clients or an upstream that supports Responses API."
         )
     return tuple(messages)
+
+
+_MLX_BACKEND_ROUTES = {
+    "fast": "fast_local",
+    "balanced": "balanced_local",
+    "reasoning": "reasoning_local",
+    "code": "code_agent",
+}
+
+
+def _apply_proxy_auto_models(
+    proxy_data: dict[str, Any],
+    *,
+    preset: str,
+    config_dir: Path,
+    model_dirs: Sequence[str | Path] | None,
+    profile: str,
+    messages: list[str],
+) -> None:
+    if preset not in {"mlx-lm", "llamacpp"}:
+        messages.append(
+            "Auto model selection currently supports managed mlx-lm and llamacpp "
+            "presets."
+        )
+        return
+    scan_dirs = _proxy_model_scan_dirs(config_dir, model_dirs)
+    discovery = scan_local_environment(model_dirs=scan_dirs)
+    suggestions = _proxy_download_suggestions(
+        preset=preset,
+        discovery=discovery,
+        profile=profile,
+        local_root=config_dir / "models",
+    )
+    messages.append(
+        "Scanned for local runtime-compatible models in: "
+        + ", ".join(str(path) for path in scan_dirs)
+    )
+    backends = proxy_data.get("backends", {})
+    if not isinstance(backends, dict):
+        return
+    for backend_name, route in _MLX_BACKEND_ROUTES.items():
+        backend = backends.get(backend_name)
+        if not isinstance(backend, dict):
+            continue
+        model = _select_proxy_model(discovery.models, route, preset)
+        if model is not None:
+            _apply_selected_proxy_model(
+                backend,
+                backend_name=backend_name,
+                preset=preset,
+                model=model,
+            )
+            messages.append(_selected_proxy_model_message(backend_name, route, model, preset))
+            continue
+        suggestion = suggestions.get(route)
+        if suggestion is None:
+            continue
+        messages.append(
+            f"No compatible local {preset} model found for backend {backend_name} "
+            f"({route}). Recommended download: {' '.join(suggestion.command)}"
+        )
+
+
+def _proxy_download_suggestions(
+    *,
+    preset: str,
+    discovery,
+    profile: str,
+    local_root: Path,
+) -> dict[str, Any]:
+    if preset == "mlx-lm":
+        return {
+            suggestion.route: suggestion
+            for suggestion in mlx_lm_download_suggestions(local_root=local_root)
+        }
+    plan = plan_model_downloads(
+        discovery=discovery,
+        profile=profile,
+        routes=tuple(_MLX_BACKEND_ROUTES.values()),
+        local_root=local_root,
+    )
+    return {suggestion.route: suggestion for suggestion in plan.suggestions}
+
+
+def _proxy_model_scan_dirs(
+    config_dir: Path,
+    model_dirs: Sequence[str | Path] | None,
+) -> tuple[Path, ...]:
+    configured = (
+        tuple(Path(path).expanduser() for path in model_dirs)
+        if model_dirs is not None
+        else default_model_dirs()
+    )
+    config_models = config_dir / "models"
+    if config_models in configured:
+        return configured
+    return (*configured, config_models)
+
+
+def _select_proxy_model(
+    models: tuple[DiscoveredModel, ...],
+    route: str,
+    preset: str,
+) -> DiscoveredModel | None:
+    predicate = (
+        _is_mlx_lm_compatible_model
+        if preset == "mlx-lm"
+        else _is_llamacpp_compatible_model
+    )
+    compatible = [model for model in models if predicate(model)]
+    role_matches = [model for model in compatible if route in model.roles]
+    if not role_matches:
+        return None
+    return sorted(role_matches, key=lambda model: _proxy_model_rank(model, route))[0]
+
+
+def _is_mlx_lm_compatible_model(model: DiscoveredModel) -> bool:
+    text = f"{model.repo_id} {model.path}".lower()
+    if any(token in text for token in ("gguf", "embedding", "embed", "bge", "flux")):
+        return False
+    return model.repo_id.startswith("mlx-community/") or "mlx" in text
+
+
+def _is_llamacpp_compatible_model(model: DiscoveredModel) -> bool:
+    text = f"{model.repo_id} {model.path}".lower()
+    return "gguf" in text or _first_gguf_file(Path(model.path)) is not None
+
+
+def _proxy_model_rank(model: DiscoveredModel, route: str) -> tuple[int, int, int, str]:
+    text = model.repo_id.lower()
+    role_penalty = 0 if route in model.roles else 10
+    if route == "fast_local":
+        route_penalty = 0 if any(token in text for token in ("0.6b", "1b")) else 3
+    elif route == "balanced_local":
+        route_penalty = 0 if any(token in text for token in ("4b", "7b")) else 3
+    elif route == "reasoning_local":
+        route_penalty = 0 if any(token in text for token in ("deepseek", "reason", "8b")) else 3
+    elif route == "code_agent":
+        route_penalty = 0 if any(token in text for token in ("coder", "code")) else 3
+    else:
+        route_penalty = 1
+    source_penalty = 0 if model.source in {"huggingface_cache", "local_directory"} else 1
+    return (role_penalty, route_penalty, source_penalty, model.repo_id)
+
+
+def _model_reference_for_mlx_lm(model: DiscoveredModel) -> str:
+    if model.source == "huggingface_cache":
+        return model.repo_id
+    return model.path
+
+
+def _selected_proxy_model_message(
+    backend_name: str,
+    route: str,
+    model: DiscoveredModel,
+    preset: str,
+) -> str:
+    if preset == "mlx-lm":
+        model_ref = _model_reference_for_mlx_lm(model)
+    else:
+        model_ref = str(_first_gguf_file(Path(model.path)) or model.path)
+    return (
+        f"Auto-selected {model_ref} for {preset} backend {backend_name} "
+        f"({route})."
+    )
+
+
+def _apply_selected_proxy_model(
+    backend: dict[str, Any],
+    *,
+    backend_name: str,
+    preset: str,
+    model: DiscoveredModel,
+) -> None:
+    if preset == "mlx-lm":
+        _replace_proxy_backend_model(backend, _model_reference_for_mlx_lm(model))
+        return
+
+    model_file = _first_gguf_file(Path(model.path))
+    if model_file is None:
+        return
+    model_id = model_file.stem
+    backend["model"] = model_id
+    port = _backend_port(backend) or _default_managed_port(backend_name)
+    backend["runtime"] = {
+        "enabled": True,
+        "kind": "llama-server",
+        "command": [
+            "llama-server",
+            "-m",
+            str(model_file),
+            "--port",
+            str(port),
+        ],
+        "readiness_url": f"http://127.0.0.1:{port}/v1/models",
+        "readiness_timeout_seconds": 30,
+        "idle_timeout_seconds": 900,
+        "shutdown_timeout_seconds": 5,
+        "log_path": f"~/.model-router/logs/llama-{backend_name}.log",
+    }
+
+
+def _first_gguf_file(path: Path) -> Path | None:
+    if path.is_file() and path.name.lower().endswith(".gguf"):
+        return path
+    if not path.is_dir():
+        return None
+    try:
+        candidates = sorted(
+            child for child in path.iterdir() if child.name.lower().endswith(".gguf")
+        )
+    except OSError:
+        return None
+    return candidates[0] if candidates else None
+
+
+def _backend_port(backend: dict[str, Any]) -> int | None:
+    base_url = backend.get("base_url")
+    if not isinstance(base_url, str):
+        return None
+    return urlparse(base_url).port
+
+
+def _default_managed_port(backend_name: str) -> int:
+    return {"fast": 8080, "balanced": 8081, "code": 8083, "reasoning": 8084}.get(
+        backend_name,
+        8080,
+    )
+
+
+def _replace_proxy_backend_model(backend: dict[str, Any], model_ref: str) -> None:
+    previous = backend.get("model")
+    backend["model"] = model_ref
+    runtime = backend.get("runtime")
+    if not isinstance(runtime, dict):
+        return
+    command = runtime.get("command")
+    if not isinstance(command, list):
+        return
+    runtime["command"] = [
+        model_ref
+        if isinstance(item, str)
+        and (item == previous or item.startswith("REPLACE_WITH_"))
+        else item
+        for item in command
+    ]
 
 
 def _doctor_remediation(

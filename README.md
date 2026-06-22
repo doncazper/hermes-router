@@ -42,6 +42,17 @@ model-router doctor --config ~/.model-router/routing_proxy.yaml
 curl http://127.0.0.1:8082/health
 ```
 
+If you are testing from a local checkout or setting up managed runtimes, install
+prerequisites into the active Python environment:
+
+```bash
+model-router setup install-prereqs --preset mlx-lm --execute --yes
+```
+
+Use `--preset proxy`, `--preset mlx-lm`, `--preset llamacpp`, or `--preset all`.
+The command runs pip through the current Python executable, so inside the repo
+venv it installs into `.venv` rather than Homebrew's externally managed Python.
+
 The router core is intentionally a decision router only. It does not execute
 prompts, browse the web, run shell commands, send messages, delete files, or
 purchase anything. The optional proxy forwards OpenAI-compatible requests to
@@ -367,6 +378,21 @@ Use argv lists, not shell strings. Runtime stdout/stderr is captured to the
 configured log path, and startup/readiness failures return a safe
 `runtime_start_failed` proxy response with route-identification headers.
 
+For managed-runtime presets, `--auto-models` scans local model folders and fills
+only route-matched backends. It does not reuse an unrelated model just to remove
+placeholders, and it does not download weights:
+
+```bash
+model-router init --preset mlx-lm --auto-models --yes
+model-router init --preset llamacpp --auto-models --yes
+```
+
+Apple Silicon machines can use MLX-LM or GGUF/llama.cpp. Other machines can use
+GGUF/llama.cpp, Ollama, LM Studio, or any OpenAI-compatible upstream. Setup
+commands prefer already-installed compatible models for config generation, but
+still show strong download candidates when a better or more targeted model is
+available.
+
 ### First-Run Transcript
 
 ```text
@@ -691,6 +717,7 @@ Get recommendations:
 
 ```bash
 model-router setup recommend
+model-router setup recommend --download-alternatives 2
 model-router setup recommend --json
 ```
 
@@ -723,8 +750,10 @@ The wizard asks whether you want:
 - A mix of local models, hosted APIs, and agent tools.
 
 It then walks each main route and shows numbered local model choices plus
-hardware-aware recommended downloads when a local role is missing. Downloads are
-never run by ordinary routing commands. They require explicit confirmation.
+hardware-aware recommended downloads. Local route-matched models can fill config
+defaults, but recommended downloads are still shown as alternatives when the
+catalog knows a stronger or better-fitting option. Downloads are never run by
+ordinary routing commands. They require explicit confirmation.
 
 The scanner includes current LM Studio model storage at
 `~/.lmstudio/models`, plus Ollama, Hugging Face cache, and common local model
@@ -740,6 +769,7 @@ Plan downloads:
 ```bash
 model-router setup download
 model-router setup download --route fast_local
+model-router setup download --route fast_local --alternatives 2
 ```
 
 Run an approved Hugging Face download:

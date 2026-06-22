@@ -357,3 +357,27 @@ Done when:
   port conflicts, placeholders, and the MLX-LM `/v1/responses` limitation.
 - The implementation stays outside `route_fast(...)` and the latency guard
   remains green.
+
+## Milestone 11: Hardware-Aware Runtime Recommendations And Benchmarks
+
+Goal: make first-run local runtime setup recommend several good choices instead
+of forcing one model or runtime.
+
+Status: in progress. Setup recommendations now keep local model discovery and
+download recommendations separate: compatible local models can fill generated
+configs, but hardware-aware download candidates are still shown as alternatives.
+Prerequisite installs are explicit and run through the active Python
+environment. `init --auto-models` can fill managed MLX-LM and llama.cpp/GGUF
+configs from route-matched local models only.
+
+Next:
+
+- Move runtime/format metadata into the model catalog so MLX-LM, GGUF,
+  Ollama, LM Studio, and generic OpenAI-compatible options are ranked by one
+  shared scoring path.
+- Add a local benchmark command that measures startup time, first-token latency,
+  throughput, failure rate, and route-specific smoke quality for configured
+  backends.
+- Save privacy-safe local scores under `~/.model-router/` and use them to
+  propose config changes, never to silently mutate routing policy.
+- Keep downloads and benchmark-driven config changes user-approved.

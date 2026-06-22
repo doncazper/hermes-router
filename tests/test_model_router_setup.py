@@ -14,9 +14,12 @@ from hermes.plugins.model_router.model_advisor import (
     recommend_catalog_models,
 )
 from hermes.plugins.model_router.setup_assistant import (
+    DiscoveredModel,
     DownloadPlan,
     DownloadSuggestion,
     default_model_dirs,
+    execute_prereq_install_plan,
+    plan_prereq_installs,
     execute_download_plan,
     plan_model_downloads,
     recommend_setup,
@@ -241,6 +244,37 @@ def test_recommend_setup_includes_download_plan_for_missing_roles():
     assert "hardware_profile" in payload
 
 
+def test_recommend_setup_keeps_download_options_when_local_model_exists(tmp_path):
+    local = DiscoveredModel(
+        name="Qwen3-0.6B",
+        repo_id="Qwen/Qwen3-0.6B",
+        path=str(tmp_path / "Qwen3-0.6B"),
+        source="local_directory",
+        roles=("fast_local",),
+    )
+
+    recommendation = recommend_setup(
+        setup_assistant_module.SetupDiscovery(
+            commands={},
+            model_dirs=(),
+            models=(local,),
+        ),
+        hardware=HardwareProfile(
+            system="Darwin",
+            machine="arm64",
+            total_memory_gb=24,
+            disk_free_gb=100,
+            apple_silicon=True,
+        ),
+    )
+
+    assert recommendation.engine_overrides["fast_local"]["model"] == "Qwen/Qwen3-0.6B"
+    assert any(
+        suggestion.route == "fast_local"
+        for suggestion in recommendation.download_suggestions
+    )
+
+
 def test_model_advisor_uses_hardware_profile_for_catalog_choices():
     lightweight = recommend_catalog_models(
         profile="lightweight",
@@ -269,6 +303,24 @@ def test_model_advisor_uses_hardware_profile_for_catalog_choices():
     assert lightweight_by_route["code_agent"] == "Qwen/Qwen2.5-Coder-3B-Instruct-GGUF"
     assert quality_by_route["code_agent"] == "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF"
     assert quality_by_route["image_generation"] == "black-forest-labs/FLUX.1-schnell"
+
+
+def test_model_advisor_can_return_multiple_candidates_per_route():
+    advice = recommend_catalog_models(
+        profile="quality",
+        hardware=HardwareProfile(
+            system="Darwin",
+            machine="arm64",
+            total_memory_gb=32,
+            disk_free_gb=200,
+            apple_silicon=True,
+        ),
+        limit_per_route=2,
+    )
+    fast = [item.repo_id for item in advice if item.route == "fast_local"]
+
+    assert len(fast) == 2
+    assert "lmstudio-community/Qwen3-4B-GGUF" in fast
 
 
 def test_packaged_model_catalog_covers_router_routes():
@@ -454,6 +506,30 @@ def test_execute_download_plan_uses_hf_next_to_current_python(tmp_path, monkeypa
     assert result.ok is True
     assert result.results[0].status == "completed"
     assert "download" in marker.read_text(encoding="utf-8")
+
+
+def test_prereq_install_plan_uses_current_python_for_mlx_lm():
+    plan = plan_prereq_installs(preset="mlx-lm")
+
+    commands = [step.command for step in plan.steps]
+    assert all(command[0] == sys.executable for command in commands)
+    assert any(command[-1] == "mlx-lm" for command in commands)
+    assert any(command[-1] == "huggingface_hub[cli]" for command in commands)
+
+
+def test_execute_prereq_install_plan_runs_confirmed_commands():
+    plan = plan_prereq_installs(preset="proxy")
+    calls: list[tuple[str, ...]] = []
+
+    result = execute_prereq_install_plan(
+        plan,
+        execute=True,
+        confirmed=True,
+        runner=lambda command: calls.append(command) or 0,
+    )
+
+    assert result.ok is True
+    assert calls == [step.command for step in plan.steps]
 
 
 def test_write_recommended_config_is_safe_by_default(tmp_path):

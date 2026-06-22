@@ -101,6 +101,7 @@ def recommend_catalog_models(
     profile: str = "balanced",
     hardware: HardwareProfile | None = None,
     catalog: ModelCatalog | None = None,
+    limit_per_route: int = 1,
 ) -> tuple[ModelAdvice, ...]:
     hardware = hardware or detect_hardware_profile()
     catalog = catalog or load_model_catalog()
@@ -108,10 +109,8 @@ def recommend_catalog_models(
     advice: list[ModelAdvice] = []
     for route in routes:
         candidates = [model for model in catalog.models if model.route == route]
-        selected = _select_candidate(candidates, profile, hardware)
-        if selected is None:
-            continue
-        advice.append(_advice_for_candidate(selected, hardware))
+        selected = _rank_candidates(candidates, profile, hardware)[:limit_per_route]
+        advice.extend(_advice_for_candidate(candidate, hardware) for candidate in selected)
     return tuple(advice)
 
 
@@ -132,22 +131,23 @@ def _catalog_model(item: dict[str, Any]) -> CatalogModel:
     )
 
 
-def _select_candidate(
+def _rank_candidates(
     candidates: Sequence[CatalogModel],
     profile: str,
     hardware: HardwareProfile,
-) -> CatalogModel | None:
+) -> tuple[CatalogModel, ...]:
     if not candidates:
-        return None
+        return ()
     profile_candidates = [
         candidate for candidate in candidates if profile in candidate.profiles
     ]
-    ranked = sorted(
+    return tuple(
+        sorted(
         profile_candidates or list(candidates),
         key=lambda candidate: _candidate_score(candidate, profile, hardware),
         reverse=True,
+        )
     )
-    return ranked[0] if ranked else None
 
 
 def _candidate_score(
