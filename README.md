@@ -42,6 +42,18 @@ model-router doctor --config ~/.model-router/routing_proxy.yaml
 curl http://127.0.0.1:8082/health
 ```
 
+Prefer a small local settings screen instead of editing YAML first:
+
+```bash
+model-router settings --config-dir ~/.model-router
+```
+
+This opens a localhost-only admin UI, defaulting to
+`http://127.0.0.1:8099`. It is for configuration and operations, not chat: pick
+presets, scan models, edit backend model ids/ports/runtime commands, toggle
+observability, run doctor, start/stop/restart the proxy, inspect telemetry, and
+label wrong routes.
+
 If you are testing from a local checkout or setting up managed runtimes, install
 prerequisites into the active Python environment:
 
@@ -305,6 +317,38 @@ It checks whether Ollama is installed, whether Ollama is reachable at
 `http://127.0.0.1:11434/v1`, and whether an LM Studio-style server is reachable
 at `http://127.0.0.1:1234/v1`. The generated config still uses privacy-safe
 telemetry defaults.
+
+### Local Admin Settings UI
+
+Run a small server-rendered admin UI when you want visual controls for the
+proxy without turning ModelRouter into a chat app:
+
+```bash
+model-router settings --config-dir ~/.model-router
+```
+
+Use `--no-open` when running in a terminal-only session:
+
+```bash
+model-router settings --config-dir ~/.model-router --no-open
+```
+
+The settings UI binds to `127.0.0.1:8099` by default and manages only local
+config and child processes you explicitly start. It can:
+
+- Show scanned local models and recommended Hugging Face downloads.
+- Edit `~/.model-router/routing_proxy.yaml` fields for the proxy, observability,
+  and per-route backends.
+- Show runtime state for managed `llama-server` and `mlx_lm.server` backends.
+- Start, stop, and restart `model-router-proxy` as a child process of the
+  settings command.
+- Run `doctor`, show telemetry counts/recent request ids, and write feedback
+  labels in the same JSONL format as `model-router feedback`.
+
+Privacy and mutation defaults stay conservative. The UI has no prompt box, no
+chat transcript, does not display literal API keys, does not display raw prompt
+text, and requires explicit Save/Download/Start/Restart clicks before changing
+files or processes.
 
 ### Known-Good Local Setups
 

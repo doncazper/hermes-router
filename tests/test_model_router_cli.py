@@ -146,6 +146,15 @@ def test_feedback_cli_appends_jsonl_label(tmp_path):
     assert row["notes"] == "should have used code"
 
 
+def test_settings_cli_help_exposes_local_admin_command():
+    result = _run_cli("settings", "--help")
+
+    assert result.returncode == 0
+    assert "--config-dir" in result.stdout
+    assert "--no-open" in result.stdout
+    assert "--port" in result.stdout
+
+
 def test_telemetry_summary_cli_groups_mismatches_without_prompt_text(tmp_path):
     events = tmp_path / "events.jsonl"
     feedback = tmp_path / "feedback.jsonl"

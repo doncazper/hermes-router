@@ -47,6 +47,16 @@ summary is best-effort and does not read prompts or call upstream services.
 
 ## Inspect Coverage
 
+For a local visual workflow, run:
+
+```bash
+model-router settings --config-dir ~/.model-router
+```
+
+The settings UI shows telemetry counts, recent request ids, and a feedback form
+that writes the same JSONL labels as `model-router feedback`. It does not show
+raw prompts or API keys and it has no chat prompt box.
+
 Summarize collected events, labels, replayability, mismatch groups, private
 events that were skipped, and unlabeled replayable request ids:
 

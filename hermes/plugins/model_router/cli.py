@@ -273,6 +273,40 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
     doctor.add_argument("--json", action="store_true", help="Emit JSON output")
     doctor.set_defaults(func=_cmd_doctor)
 
+    settings = subparsers.add_parser(
+        "settings",
+        help="Run the local ModelRouter admin settings UI",
+    )
+    settings.add_argument(
+        "--config-dir",
+        type=Path,
+        default=Path(DEFAULT_CONFIG_DIR),
+        help="Directory containing routing_proxy.yaml and telemetry files",
+    )
+    settings.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Settings UI bind host. Defaults to localhost.",
+    )
+    settings.add_argument(
+        "--port",
+        type=int,
+        default=8099,
+        help="Settings UI port",
+    )
+    settings.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Print the URL without opening a browser",
+    )
+    settings.add_argument(
+        "--log-level",
+        default="info",
+        choices=("critical", "error", "warning", "info", "debug"),
+        help="Uvicorn log level",
+    )
+    settings.set_defaults(func=_cmd_settings)
+
     feedback = subparsers.add_parser(
         "feedback",
         help="Append a hindsight label for a logged routing event",
@@ -735,6 +769,25 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
             for item in report.remediation:
                 print(f"- {item}")
     return 0 if report.ok else 1
+
+
+def _cmd_settings(args: argparse.Namespace) -> int:
+    from hermes.plugins.model_router.settings_ui import (
+        SettingsDependencyError,
+        run_settings_server,
+    )
+
+    try:
+        return run_settings_server(
+            config_dir=args.config_dir,
+            host=args.host,
+            port=args.port,
+            open_browser=not args.no_open,
+            log_level=args.log_level,
+        )
+    except SettingsDependencyError as exc:
+        print(f"Settings UI failed: {exc}", file=sys.stderr)
+        return 1
 
 
 def _cmd_feedback(args: argparse.Namespace) -> int:

@@ -381,3 +381,40 @@ Next:
 - Save privacy-safe local scores under `~/.model-router/` and use them to
   propose config changes, never to silently mutate routing policy.
 - Keep downloads and benchmark-driven config changes user-approved.
+
+## Milestone 12: Local Admin Settings UI
+
+Goal: make ModelRouter easier to configure and dogfood visually while keeping
+it a proxy/router, not a chat app or agent.
+
+Status: implemented. `model-router settings` starts a localhost-only FastAPI
+admin UI, defaulting to `127.0.0.1:8099`, with server-rendered pages and
+minimal JavaScript. The UI can scan local models, show recommended downloads,
+edit safe proxy/observability/backend/runtime fields, run doctor, start/stop/
+restart `model-router-proxy` as a settings-owned child process, inspect
+telemetry counts/recent request ids, and write feedback labels using the same
+JSONL format as the CLI.
+
+Done when:
+
+- The UI has no prompt box, no chat transcript surface, and no agent behavior.
+- Literal API keys and raw prompts are not displayed in settings state or
+  telemetry panels.
+- Downloads require explicit confirmation.
+- Config writes happen only through Save and validate before replacing
+  `routing_proxy.yaml`.
+- Proxy process changes happen only through explicit Start/Stop/Restart actions.
+- Managed model runtimes remain owned by `model-router-proxy`; the settings UI
+  controls them indirectly through config and proxy lifecycle.
+- The implementation stays outside `route_fast(...)` and the latency guard
+  remains green.
+
+Next:
+
+- Dogfood the settings UI during real local model setup.
+- If editing runtime commands as text remains too clunky, add more structured
+  runtime command builders for MLX-LM and llama.cpp.
+- If telemetry labeling still feels manual, add the deferred interactive
+  `model-router telemetry review` queue.
+- Continue Milestone 11's benchmark/scoring work before auto-tuning
+  recommendations.

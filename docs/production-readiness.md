@@ -144,6 +144,13 @@ model-router doctor --config ~/.model-router/routing_proxy.yaml
 model-router-proxy --config ~/.model-router/routing_proxy.yaml --log-level info
 ```
 
+For local admin/config work, `model-router settings --config-dir ~/.model-router`
+runs a localhost-only settings UI on `127.0.0.1:8099` by default. It can edit
+proxy config fields, run doctor, start/stop/restart the proxy as a child
+process, inspect telemetry counts, and write feedback labels. It is not a chat
+UI, does not submit prompts, and does not display literal API keys or raw prompt
+text.
+
 Use the matching OpenAI-compatible agent settings:
 
 ```text
