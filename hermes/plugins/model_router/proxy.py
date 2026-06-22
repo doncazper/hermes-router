@@ -2,6 +2,8 @@
 
 import argparse
 import asyncio
+from collections import Counter
+from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, version
 import json
 import logging
@@ -18,6 +20,7 @@ from hermes.plugins.model_router.proxy_config import (
     load_proxy_config,
 )
 from hermes.plugins.model_router.routing_log import (
+    DEFAULT_FEEDBACK_PATH,
     RoutingLogWriter,
     build_routing_event,
 )
@@ -37,6 +40,39 @@ class ProxyDependencyError(RuntimeError):
 
 class UpstreamRequestError(RuntimeError):
     """Raised when an upstream request cannot be completed."""
+
+
+@dataclass
+class ProxySessionStats:
+    """Privacy-safe per-process route counters for shutdown summaries."""
+
+    total_events: int = 0
+    engine_counts: Counter[str] = field(default_factory=Counter)
+    backend_counts: Counter[str] = field(default_factory=Counter)
+    status_counts: Counter[str] = field(default_factory=Counter)
+    fallback_count: int = 0
+    interruption_count: int = 0
+    error_count: int = 0
+
+    def record(
+        self,
+        *,
+        selected_engine: str,
+        status: str,
+        backend: str | None = None,
+        fallback_used: bool = False,
+    ) -> None:
+        self.total_events += 1
+        self.engine_counts.update([selected_engine])
+        self.status_counts.update([status])
+        if backend:
+            self.backend_counts.update([backend])
+        if fallback_used:
+            self.fallback_count += 1
+        if status == "stream_interrupted":
+            self.interruption_count += 1
+        if status in {"routing_backend_missing", "upstream_request_failed"}:
+            self.error_count += 1
 
 
 def create_app(config: RoutingProxyConfig):
@@ -65,6 +101,7 @@ def create_app(config: RoutingProxyConfig):
         if config.observability.enabled
         else None
     )
+    session_stats = ProxySessionStats()
     clients: dict[str, httpx.AsyncClient] = {}
 
     async def _lifespan(_: FastAPI):
@@ -81,8 +118,20 @@ def create_app(config: RoutingProxyConfig):
             config.proxy.port,
             ",".join(sorted(config.backends)),
         )
-        yield
-        await asyncio.gather(*(client.aclose() for client in clients.values()))
+        try:
+            yield
+        finally:
+            close_results = await asyncio.gather(
+                *(client.aclose() for client in clients.values()),
+                return_exceptions=True,
+            )
+            for result in close_results:
+                if isinstance(result, Exception):
+                    LOG.warning(
+                        "backend client cleanup failed error=%s",
+                        result.__class__.__name__,
+                    )
+            _print_proxy_session_summary(session_stats, config)
 
     app = FastAPI(
         title="model-router-proxy",
@@ -149,10 +198,15 @@ def create_app(config: RoutingProxyConfig):
                 config=config,
                 decision=diagnostic_decision,
                 status_code=409,
+                stats=session_stats,
             )
             return JSONResponse(
                 status_code=409,
-                headers={"X-Routed-Engine": engine, "X-Request-Id": request_id},
+                headers=_route_headers(
+                    request_id=request_id,
+                    engine=engine,
+                    fallback_used=False,
+                ),
                 content={
                     "error": {
                         "message": "Human confirmation is required before dispatch.",
@@ -176,10 +230,15 @@ def create_app(config: RoutingProxyConfig):
                 config=config,
                 decision=diagnostic_decision,
                 status_code=502,
+                stats=session_stats,
             )
             return JSONResponse(
                 status_code=502,
-                headers={"X-Routed-Engine": engine, "X-Request-Id": request_id},
+                headers=_route_headers(
+                    request_id=request_id,
+                    engine=engine,
+                    fallback_used=False,
+                ),
                 content={
                     "error": {
                         "message": f"No backend configured for selected engine {engine}.",
@@ -220,13 +279,16 @@ def create_app(config: RoutingProxyConfig):
                     backend=backend.name,
                     backend_model=backend.model,
                     status_code=502,
+                    stats=session_stats,
                 )
                 return JSONResponse(
                     status_code=502,
-                    headers={
-                        "X-Routed-Engine": engine,
-                        "X-Request-Id": request_id,
-                    },
+                    headers=_route_headers(
+                        request_id=request_id,
+                        engine=engine,
+                        backend=backend.name,
+                        fallback_used=False,
+                    ),
                     content={
                         "error": {
                             "message": f"Upstream backend request failed: {exc}",
@@ -250,17 +312,19 @@ def create_app(config: RoutingProxyConfig):
                     diagnostic_latency_ms,
                     config,
                     diagnostic_decision,
+                    session_stats,
                 ),
                 status_code=upstream_response.status_code,
                 media_type=upstream_response.headers.get(
                     "content-type",
                     "text/event-stream",
                 ),
-                headers={
-                    "X-Routed-Engine": engine,
-                    "X-Routed-Backend": used_backend.name,
-                    "X-Request-Id": request_id,
-                },
+                headers=_route_headers(
+                    request_id=request_id,
+                    engine=engine,
+                    backend=used_backend.name,
+                    fallback_used=fallback_used,
+                ),
             )
 
         upstream_started = time.perf_counter()
@@ -288,10 +352,16 @@ def create_app(config: RoutingProxyConfig):
                 backend=backend.name,
                 backend_model=backend.model,
                 status_code=502,
+                stats=session_stats,
             )
             return JSONResponse(
                 status_code=502,
-                headers={"X-Routed-Engine": engine, "X-Request-Id": request_id},
+                headers=_route_headers(
+                    request_id=request_id,
+                    engine=engine,
+                    backend=backend.name,
+                    fallback_used=False,
+                ),
                 content={
                     "error": {
                         "message": f"Upstream backend request failed: {exc}",
@@ -318,6 +388,7 @@ def create_app(config: RoutingProxyConfig):
             backend_model=used_backend.model,
             fallback_used=fallback_used,
             status_code=response.status_code,
+            stats=session_stats,
         )
         LOG.info(
             "request=%s engine=%s backend=%s status=%s fallback=%s latency_ms=%.2f",
@@ -332,11 +403,12 @@ def create_app(config: RoutingProxyConfig):
             content=response.content,
             status_code=response.status_code,
             media_type=response.headers.get("content-type", "application/json"),
-            headers={
-                "X-Routed-Engine": engine,
-                "X-Routed-Backend": used_backend.name,
-                "X-Request-Id": request_id,
-            },
+            headers=_route_headers(
+                request_id=request_id,
+                engine=engine,
+                backend=used_backend.name,
+                fallback_used=fallback_used,
+            ),
         )
 
     @app.post("/v1/chat/completions")
@@ -442,6 +514,38 @@ def _backend_headers(backend: ProxyBackendConfig) -> dict[str, str]:
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     return headers
+
+
+def _route_headers(
+    *,
+    request_id: str,
+    engine: str,
+    backend: str | None = None,
+    fallback_used: bool | None = None,
+    route_api: str = "route_fast",
+) -> dict[str, str]:
+    headers = {
+        "X-ModelRouter-Request-ID": _safe_header_value(request_id),
+        "X-ModelRouter-Engine": _safe_header_value(engine),
+        "X-ModelRouter-Route-API": _safe_header_value(route_api),
+        # Kept for compatibility with the earlier proxy header names.
+        "X-Request-Id": _safe_header_value(request_id),
+        "X-Routed-Engine": _safe_header_value(engine),
+    }
+    if backend:
+        safe_backend = _safe_header_value(backend)
+        headers["X-ModelRouter-Backend"] = safe_backend
+        headers["X-Routed-Backend"] = safe_backend
+    if fallback_used is not None:
+        headers["X-ModelRouter-Fallback"] = "true" if fallback_used else "false"
+    return headers
+
+
+def _safe_header_value(value: str) -> str:
+    return "".join(
+        character if 32 <= ord(character) < 127 and character not in "\r\n" else "?"
+        for character in value
+    )[:128]
 
 
 async def _check_backend_health(
@@ -660,6 +764,7 @@ async def _stream_response_bytes(
     diagnostic_latency_ms: float | None,
     config: RoutingProxyConfig,
     decision: Any,
+    session_stats: ProxySessionStats | None = None,
 ):
     status = "forwarded"
     exc_info: tuple[type[BaseException] | None, BaseException | None, Any] = (
@@ -704,6 +809,7 @@ async def _stream_response_bytes(
             backend_model=backend.model,
             fallback_used=fallback_used,
             status_code=response.status_code,
+            stats=session_stats,
         )
         LOG.info(
             "request=%s engine=%s backend=%s status=%s stream_status=%s fallback=%s latency_ms=%.2f",
@@ -734,7 +840,15 @@ def _write_proxy_event(
     backend_model: str | None = None,
     fallback_used: bool = False,
     status_code: int | None = None,
+    stats: ProxySessionStats | None = None,
 ) -> None:
+    if stats is not None:
+        stats.record(
+            selected_engine=selected_engine,
+            status=status,
+            backend=backend,
+            fallback_used=fallback_used,
+        )
     if writer is None:
         return
     writer.write(
@@ -758,6 +872,61 @@ def _write_proxy_event(
             prompt_capture=config.observability.prompt_capture,
         )
     )
+
+
+def _format_proxy_session_summary(
+    stats: ProxySessionStats,
+    config: RoutingProxyConfig,
+) -> str:
+    lines = [
+        "ModelRouter session summary",
+        f"Events: {stats.total_events}",
+        f"Engines: {_format_counter(stats.engine_counts)}",
+        f"Backends: {_format_counter(stats.backend_counts)}",
+        f"Statuses: {_format_counter(stats.status_counts)}",
+        f"Fallbacks: {stats.fallback_count}",
+        f"Interruptions: {stats.interruption_count}",
+        f"Errors: {stats.error_count}",
+    ]
+    if not config.observability.enabled:
+        lines.append("Telemetry: disabled; enable observability to persist events.")
+    lines.extend(
+        (
+            "Review:",
+            "  model-router telemetry summary "
+            f"--events {config.observability.log_path} "
+            f"--feedback {_feedback_path_for_config(config)}",
+        )
+    )
+    return "\n".join(lines)
+
+
+def _print_proxy_session_summary(
+    stats: ProxySessionStats,
+    config: RoutingProxyConfig,
+) -> None:
+    try:
+        print(_format_proxy_session_summary(stats, config), flush=True)
+    except Exception as exc:  # pragma: no cover - defensive only.
+        LOG.warning("proxy session summary failed error=%s", exc.__class__.__name__)
+
+
+def _format_counter(counter: Counter[str]) -> str:
+    if not counter:
+        return "none"
+    return ", ".join(
+        f"{name}={count}"
+        for name, count in sorted(counter.items(), key=lambda item: (-item[1], item[0]))
+    )
+
+
+def _feedback_path_for_config(config: RoutingProxyConfig) -> str:
+    if config.source_path.startswith("resource://"):
+        return DEFAULT_FEEDBACK_PATH
+    source_path = Path(config.source_path).expanduser()
+    if source_path.name:
+        return str(source_path.parent / "routing-feedback.jsonl")
+    return DEFAULT_FEEDBACK_PATH
 
 
 def build_parser() -> argparse.ArgumentParser:

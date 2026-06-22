@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import contextmanager
+from dataclasses import replace
 import json
 import logging
 import socket
@@ -15,7 +16,12 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from hermes.plugins.model_router.proxy import create_app, _stream_response_bytes
+from hermes.plugins.model_router.proxy import (
+    ProxySessionStats,
+    create_app,
+    _format_proxy_session_summary,
+    _stream_response_bytes,
+)
 from hermes.plugins.model_router.proxy_config import (
     ProxyBackendConfig,
     ProxyObservabilityConfig,
@@ -354,6 +360,41 @@ def _wait_for_log_row(path: Path) -> dict[str, Any]:
     raise AssertionError(f"routing log row was not written to {path}")
 
 
+def _assert_route_headers(
+    response,
+    *,
+    engine: str,
+    backend: str | None = None,
+    fallback: str = "false",
+) -> None:
+    assert response.headers["x-modelrouter-request-id"]
+    assert response.headers["x-modelrouter-engine"] == engine
+    assert response.headers["x-modelrouter-route-api"] == "route_fast"
+    assert response.headers["x-modelrouter-fallback"] == fallback
+    assert response.headers["x-request-id"] == response.headers[
+        "x-modelrouter-request-id"
+    ]
+    assert response.headers["x-routed-engine"] == engine
+    if backend is None:
+        assert "x-modelrouter-backend" not in response.headers
+        assert "x-routed-backend" not in response.headers
+    else:
+        assert response.headers["x-modelrouter-backend"] == backend
+        assert response.headers["x-routed-backend"] == backend
+
+
+def _serialized_route_headers(response) -> str:
+    return json.dumps(
+        {
+            key: value
+            for key, value in response.headers.items()
+            if key.startswith("x-modelrouter")
+            or key.startswith("x-routed")
+            or key == "x-request-id"
+        }
+    )
+
+
 def test_proxy_routes_to_backend_and_overrides_model(monkeypatch):
     with _client(monkeypatch, _config()) as client:
         response = client.post(
@@ -365,6 +406,7 @@ def test_proxy_routes_to_backend_and_overrides_model(monkeypatch):
         )
 
     assert response.status_code == 200
+    _assert_route_headers(response, engine="fast_local", backend="fast")
     assert response.headers["x-routed-engine"] == "fast_local"
     assert response.headers["x-routed-backend"] == "fast"
     assert _FakeAsyncClient.requests[0]["body"]["model"] == "fast-model"
@@ -382,6 +424,7 @@ def test_proxy_blocks_human_confirm_without_upstream_call(monkeypatch):
 
     assert response.status_code == 409
     assert response.json()["selected_engine"] == "human_confirm"
+    _assert_route_headers(response, engine="human_confirm")
     assert _FakeAsyncClient.requests == []
 
 
@@ -451,6 +494,7 @@ def test_proxy_responses_routes_to_backend_and_preserves_common_shape(monkeypatc
 
     body = _FakeAsyncClient.requests[0]["body"]
     assert response.status_code == 200
+    _assert_route_headers(response, engine="code_agent", backend="deep")
     assert response.headers["x-routed-engine"] == "code_agent"
     assert response.headers["x-routed-backend"] == "deep"
     assert _FakeAsyncClient.requests[0]["path"] == "/responses"
@@ -482,6 +526,7 @@ def test_proxy_responses_streaming_preserves_sse_bytes(monkeypatch):
 
     assert response.status_code == 200
     assert body == b"event: response.output_text.delta\n\n"
+    _assert_route_headers(response, engine="fast_local", backend="fast")
     assert response.headers["x-routed-backend"] == "fast"
     assert _FakeAsyncClient.requests[0]["path"] == "/responses"
     assert _FakeAsyncClient.requests[0]["stream"] is True
@@ -500,6 +545,7 @@ def test_proxy_responses_blocks_human_confirm_without_upstream_call(monkeypatch)
 
     assert response.status_code == 409
     assert response.json()["selected_engine"] == "human_confirm"
+    _assert_route_headers(response, engine="human_confirm")
     assert _FakeAsyncClient.requests == []
 
 
@@ -517,6 +563,7 @@ def test_proxy_uses_explicit_fallback_chain_on_upstream_5xx(monkeypatch):
 
     assert response.status_code == 200
     assert response.headers["x-routed-backend"] == "deep"
+    _assert_route_headers(response, engine="fast_local", backend="deep", fallback="true")
     assert [request["backend"] for request in _FakeAsyncClient.requests] == [
         "fast",
         "deep",
@@ -536,6 +583,7 @@ def test_proxy_does_not_fallback_when_chain_absent(monkeypatch):
 
     assert response.status_code == 503
     assert response.headers["x-routed-backend"] == "fast"
+    _assert_route_headers(response, engine="fast_local", backend="fast")
     assert [request["backend"] for request in _FakeAsyncClient.requests] == ["fast"]
 
 
@@ -552,6 +600,7 @@ def test_proxy_timeout_returns_502_when_fallback_unavailable(monkeypatch):
 
     assert response.status_code == 502
     assert response.json()["error"]["type"] == "upstream_request_failed"
+    _assert_route_headers(response, engine="fast_local", backend="fast")
     assert [request["backend"] for request in _FakeAsyncClient.requests] == ["fast"]
 
 
@@ -585,6 +634,7 @@ def test_proxy_streaming_preserves_sse_bytes(monkeypatch):
 
     assert response.status_code == 200
     assert body == b"data: chunk\n\n"
+    _assert_route_headers(response, engine="fast_local", backend="fast")
     assert _FakeAsyncClient.requests[0]["stream"] is True
 
 
@@ -605,6 +655,7 @@ def test_proxy_streaming_preserves_final_upstream_status(monkeypatch):
     assert response.status_code == 503
     assert body == b"busy"
     assert response.headers["x-routed-backend"] == "fast"
+    _assert_route_headers(response, engine="fast_local", backend="fast")
 
 
 def test_proxy_streaming_uses_explicit_fallback_on_upstream_5xx(monkeypatch):
@@ -627,6 +678,7 @@ def test_proxy_streaming_uses_explicit_fallback_on_upstream_5xx(monkeypatch):
     assert response.status_code == 200
     assert body == b"data: fallback\n\n"
     assert response.headers["x-routed-backend"] == "deep"
+    _assert_route_headers(response, engine="fast_local", backend="deep", fallback="true")
     assert [request["backend"] for request in _FakeAsyncClient.requests] == [
         "fast",
         "deep",
@@ -648,6 +700,7 @@ def test_proxy_streaming_open_timeout_returns_502_without_fallback(monkeypatch):
 
     assert response.status_code == 502
     assert response.json()["error"]["type"] == "upstream_request_failed"
+    _assert_route_headers(response, engine="fast_local", backend="fast")
     assert [request["backend"] for request in _FakeAsyncClient.requests] == ["fast"]
 
 
@@ -771,6 +824,9 @@ def test_proxy_models_and_health_do_not_expose_secrets(monkeypatch):
     assert "proxy-secret" not in serialized_health
     assert "deep-secret" not in serialized_health
     payload = health.json()
+    assert not any(
+        name.startswith("x-modelrouter") for name in health.headers.keys()
+    )
     assert payload["backends"] == ["deep", "fast"]
     assert payload["status"] == "ok"
     assert payload["backend_health"]["deep"]["reachable"] is True
@@ -838,7 +894,9 @@ def test_proxy_writes_privacy_safe_routing_event(monkeypatch, tmp_path):
 
     row = json.loads(log_path.read_text(encoding="utf-8").strip())
     serialized = json.dumps(row)
+    route_headers = _serialized_route_headers(response)
     assert response.status_code == 200
+    _assert_route_headers(response, engine="fast_local", backend="fast")
     assert row["event_type"] == "routing_event"
     assert row["selected_engine"] == "fast_local"
     assert row["backend"] == "fast"
@@ -849,6 +907,9 @@ def test_proxy_writes_privacy_safe_routing_event(monkeypatch, tmp_path):
     assert "prompt" not in row
     assert "secret123" not in serialized
     assert "private_tool" not in serialized
+    assert "secret123" not in route_headers
+    assert "private_tool" not in route_headers
+    assert "api_key" not in route_headers
 
 
 def test_proxy_logs_human_confirm_without_upstream_call(monkeypatch, tmp_path):
@@ -864,6 +925,7 @@ def test_proxy_logs_human_confirm_without_upstream_call(monkeypatch, tmp_path):
 
     row = json.loads(log_path.read_text(encoding="utf-8").strip())
     assert response.status_code == 409
+    _assert_route_headers(response, engine="human_confirm")
     assert row["status"] == "human_confirm"
     assert row["selected_engine"] == "human_confirm"
     assert _FakeAsyncClient.requests == []
@@ -886,8 +948,57 @@ def test_proxy_logs_upstream_failure(monkeypatch, tmp_path):
 
     row = json.loads(log_path.read_text(encoding="utf-8").strip())
     assert response.status_code == 502
+    _assert_route_headers(response, engine="fast_local", backend="fast")
     assert row["status"] == "upstream_request_failed"
     assert row["status_code"] == 502
+
+
+def test_proxy_session_summary_is_privacy_safe_and_actionable(tmp_path):
+    config = _config(api_key="client-secret", log_path=tmp_path / "routing-events.jsonl")
+    config = replace(config, source_path=str(tmp_path / "routing_proxy.yaml"))
+    stats = ProxySessionStats()
+    stats.record(
+        selected_engine="fast_local",
+        status="forwarded",
+        backend="fast",
+    )
+    stats.record(
+        selected_engine="fast_local",
+        status="stream_interrupted",
+        backend="deep",
+        fallback_used=True,
+    )
+    stats.record(
+        selected_engine="human_confirm",
+        status="human_confirm",
+    )
+    stats.record(
+        selected_engine="fast_local",
+        status="upstream_request_failed",
+        backend="fast",
+    )
+
+    summary = _format_proxy_session_summary(stats, config)
+
+    assert "ModelRouter session summary" in summary
+    assert "Events: 4" in summary
+    assert "Engines: fast_local=3, human_confirm=1" in summary
+    assert "Backends: fast=2, deep=1" in summary
+    assert "Statuses:" in summary
+    assert "Fallbacks: 1" in summary
+    assert "Interruptions: 1" in summary
+    assert "Errors: 1" in summary
+    assert "model-router telemetry summary" in summary
+    assert str(tmp_path / "routing-events.jsonl") in summary
+    assert str(tmp_path / "routing-feedback.jsonl") in summary
+    for sensitive_value in (
+        "client-secret",
+        "backend-secret",
+        "api_key",
+        "messages",
+        "raw prompt",
+    ):
+        assert sensitive_value not in summary
 
 
 def test_core_import_path_does_not_import_proxy_dependencies():

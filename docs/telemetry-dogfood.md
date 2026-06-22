@@ -23,6 +23,28 @@ and a redacted preview. It does not log raw prompts unless
 Telemetry inspection commands do not print raw prompt text. Feedback notes are
 hidden by default because they may contain private context.
 
+## Identify Routes Live
+
+Routed `/v1/chat/completions` and `/v1/responses` responses include
+privacy-safe headers:
+
+```text
+X-ModelRouter-Request-ID
+X-ModelRouter-Engine
+X-ModelRouter-Backend
+X-ModelRouter-Fallback
+X-ModelRouter-Route-API
+```
+
+These headers never include raw prompts, request bodies, API keys, or upstream
+secrets. When a route feels wrong, copy `X-ModelRouter-Request-ID` immediately
+and label it later with `model-router feedback`.
+
+When `model-router-proxy` exits, it prints a concise session summary with event
+count, engine/backend/status counts, fallback/interruption/error counts, and the
+`model-router telemetry summary ...` command for the configured log paths. This
+summary is best-effort and does not read prompts or call upstream services.
+
 ## Inspect Coverage
 
 Summarize collected events, labels, replayability, mismatch groups, private
@@ -56,8 +78,9 @@ context you put in feedback notes.
 
 ## Label Wrong Routes
 
-When a route is wrong, copy the `request_id` from the routing event and label
-the intended engine:
+When a route is wrong, copy `X-ModelRouter-Request-ID` from the proxy response,
+or copy the matching `request_id` from the routing event, and label the intended
+engine:
 
 ```bash
 model-router feedback req-123 code_agent \
@@ -79,6 +102,10 @@ event coverage and skipped-private counts. If a private event needs replay,
 reproduce the case intentionally with `prompt_capture: full`, or create a
 sanitized fixture prompt that preserves the routing behavior without private
 content.
+
+An interactive `model-router telemetry review` queue is deferred until
+dogfooding shows that response headers, telemetry summaries, and shutdown
+session summaries are still too clunky.
 
 ## Promote Regressions
 

@@ -380,6 +380,20 @@ Responses endpoint: /v1/responses
 Use `model-router doctor --config ~/.model-router/routing_proxy.yaml` when a
 backend is unavailable or a model name/endpoint is wrong.
 
+Routed proxy responses include privacy-safe identifiers you can copy while
+dogfooding:
+
+```text
+X-ModelRouter-Request-ID: req id to label with model-router feedback
+X-ModelRouter-Engine: selected route, such as fast_local or code_agent
+X-ModelRouter-Backend: configured backend name when a backend was used
+X-ModelRouter-Fallback: true when an upstream fallback was used
+X-ModelRouter-Route-API: route_fast
+```
+
+When the proxy shuts down, it prints a session summary with route counts and the
+`model-router telemetry summary ...` command for the configured event log.
+
 ## Hindsight Routing Logs
 
 The proxy can write privacy-safe JSONL events for calibration and replay:
@@ -396,7 +410,8 @@ scores, feature flags, backend, fallback status, and latencies. Raw prompts are
 not stored unless `prompt_capture: full` or `MODEL_ROUTER_LOG_PROMPTS=1` is set.
 Use full capture only during deliberate calibration runs.
 
-When a route is wrong, label it:
+When a route is wrong, copy `X-ModelRouter-Request-ID` from the response and
+label it:
 
 ```bash
 model-router feedback req-123 code_agent --notes "repo prompt routed too small"
@@ -435,8 +450,9 @@ latency, score, fallback, and route distribution analysis.
 
 1. Turn on observability during a calibration run. Use `prompt_capture: full`
    only when you are deliberately collecting replay fixtures.
-2. Send the prompt through the proxy and copy the `request_id` from the JSONL
-   event in `~/.model-router/logs/routing-events.jsonl`.
+2. Send the prompt through the proxy and copy `X-ModelRouter-Request-ID` from
+   the response. If the client hides response headers, copy the matching
+   `request_id` from `~/.model-router/logs/routing-events.jsonl`.
 3. Label the intended engine:
 
 ```bash
@@ -452,6 +468,10 @@ python scripts/replay_routing_log.py \
   --feedback ~/.model-router/routing-feedback.jsonl \
   --json
 ```
+
+An interactive `model-router telemetry review` command is intentionally
+deferred until dogfooding shows that header-based labeling plus shutdown
+summaries are still too clunky.
 
 5. Add the prompt to a small fixture or parametrized test, update deterministic
    scoring/routing rules, rerun replay, and keep the new test with the fix.

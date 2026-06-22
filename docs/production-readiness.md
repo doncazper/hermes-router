@@ -84,6 +84,15 @@ inspect labels. Both commands avoid printing raw prompt text by default; notes
 are hidden unless `--include-notes` is passed. See
 `docs/telemetry-dogfood.md`.
 
+The proxy adds route-identification headers to routed chat and Responses API
+responses so operators can label a bad route while it is fresh:
+`X-ModelRouter-Request-ID`, `X-ModelRouter-Engine`,
+`X-ModelRouter-Backend`, `X-ModelRouter-Fallback`, and
+`X-ModelRouter-Route-API`. These headers are metadata-only and must not include
+raw prompts, request bodies, API keys, or secrets. On shutdown, the proxy prints
+a best-effort session summary with route counts and the telemetry summary
+command for follow-up review.
+
 Optional classifier-based routing is not part of the production path. The
 Milestone 7 audit found no labeled replay mismatches that justify it. Revisit
 that decision only with recurring labeled replay failures, no deterministic fix
