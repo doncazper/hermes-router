@@ -16,6 +16,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+import hermes.plugins.model_router.proxy as proxy_module
 from hermes.plugins.model_router.proxy import (
     ProxySessionStats,
     create_app,
@@ -25,6 +26,7 @@ from hermes.plugins.model_router.proxy import (
 from hermes.plugins.model_router.proxy_config import (
     ProxyBackendConfig,
     ProxyObservabilityConfig,
+    ProxyRuntimeConfig,
     ProxyServerConfig,
     RoutingProxyConfig,
 )
@@ -166,6 +168,7 @@ def _config(
     api_key: str | None = None,
     fallback: bool = True,
     log_path: Path | None = None,
+    fast_runtime: ProxyRuntimeConfig | None = None,
 ) -> RoutingProxyConfig:
     fallback_backends = {"fast": ("deep",)} if fallback else {}
     return RoutingProxyConfig(
@@ -178,6 +181,7 @@ def _config(
                 base_url="http://fast.test/v1",
                 model="fast-model",
                 strip_tools=True,
+                runtime=fast_runtime or ProxyRuntimeConfig(),
             ),
             "deep": ProxyBackendConfig(
                 name="deep",
@@ -201,6 +205,59 @@ def _config(
             log_path=str(log_path or "~/.model-router/routing-events.jsonl"),
         ),
     )
+
+
+def _managed_runtime(tmp_path: Path, *, kind: str = "llama-server") -> ProxyRuntimeConfig:
+    return ProxyRuntimeConfig(
+        enabled=True,
+        kind=kind,
+        command=("fake-runtime", "--port", "8090"),
+        readiness_url="http://127.0.0.1:8090/v1/models",
+        readiness_timeout_seconds=1.0,
+        idle_timeout_seconds=900.0,
+        shutdown_timeout_seconds=1.0,
+        log_path=str(tmp_path / "runtime.log"),
+    )
+
+
+def _patch_runtime_manager(monkeypatch, *, start_error: Exception | None = None):
+    class FakeRuntimeManager:
+        instances: list["FakeRuntimeManager"] = []
+
+        def __init__(self, backends, **_kwargs):
+            self.backends = backends
+            self.has_managed_backends = any(
+                backend.runtime.enabled for backend in backends.values()
+            )
+            self.ensure_calls: list[str] = []
+            self.begin_calls: list[str] = []
+            self.end_calls: list[str] = []
+            self.touch_calls: list[str] = []
+            self.stop_all_called = False
+            type(self).instances.append(self)
+
+        async def ensure_running(self, backend):
+            self.ensure_calls.append(backend.name)
+            if start_error is not None:
+                raise start_error
+
+        def begin_request(self, backend_name: str) -> None:
+            self.begin_calls.append(backend_name)
+
+        def end_request(self, backend_name: str) -> None:
+            self.end_calls.append(backend_name)
+
+        def touch(self, backend_name: str) -> None:
+            self.touch_calls.append(backend_name)
+
+        async def reap_idle_forever(self):
+            await asyncio.Event().wait()
+
+        async def stop_all(self):
+            self.stop_all_called = True
+
+    monkeypatch.setattr(proxy_module, "ManagedRuntimeManager", FakeRuntimeManager)
+    return FakeRuntimeManager
 
 
 def _client(monkeypatch, config: RoutingProxyConfig) -> TestClient:
@@ -412,6 +469,67 @@ def test_proxy_routes_to_backend_and_overrides_model(monkeypatch):
     assert _FakeAsyncClient.requests[0]["body"]["model"] == "fast-model"
 
 
+def test_proxy_starts_managed_runtime_on_first_routed_request(monkeypatch, tmp_path):
+    fake_manager = _patch_runtime_manager(monkeypatch)
+    with _client(
+        monkeypatch,
+        _config(fast_runtime=_managed_runtime(tmp_path)),
+    ) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "model-router",
+                "messages": [{"role": "user", "content": "rewrite this text"}],
+            },
+        )
+
+    manager = fake_manager.instances[-1]
+    assert response.status_code == 200
+    assert manager.ensure_calls == ["fast"]
+    assert manager.begin_calls == ["fast"]
+    assert manager.end_calls == ["fast"]
+    assert manager.touch_calls == ["fast"]
+    assert manager.stop_all_called is True
+    assert _FakeAsyncClient.requests[0]["backend"] == "fast"
+
+
+def test_proxy_runtime_start_failure_returns_safe_502(
+    monkeypatch,
+    tmp_path,
+):
+    log_path = tmp_path / "routing-events.jsonl"
+    _patch_runtime_manager(
+        monkeypatch,
+        start_error=proxy_module.RuntimeStartError("runtime fast command not found"),
+    )
+    with _client(
+        monkeypatch,
+        _config(
+            log_path=log_path,
+            fast_runtime=_managed_runtime(tmp_path),
+        ),
+    ) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "model-router",
+                "messages": [
+                    {"role": "user", "content": "rewrite this api_key=secret"}
+                ],
+            },
+        )
+
+    row = json.loads(log_path.read_text(encoding="utf-8").strip())
+    serialized = json.dumps(response.json())
+    assert response.status_code == 502
+    assert response.json()["error"]["type"] == "runtime_start_failed"
+    _assert_route_headers(response, engine="fast_local", backend="fast")
+    assert _FakeAsyncClient.requests == []
+    assert row["status"] == "runtime_start_failed"
+    assert "secret" not in serialized
+    assert "messages" not in serialized
+
+
 def test_proxy_blocks_human_confirm_without_upstream_call(monkeypatch):
     with _client(monkeypatch, _config()) as client:
         response = client.post(
@@ -533,6 +651,31 @@ def test_proxy_responses_streaming_preserves_sse_bytes(monkeypatch):
     assert _FakeAsyncClient.requests[0]["body"]["model"] == "fast-model"
 
 
+def test_proxy_mlx_lm_runtime_rejects_responses_without_bridge(
+    monkeypatch,
+    tmp_path,
+):
+    fake_manager = _patch_runtime_manager(monkeypatch)
+    with _client(
+        monkeypatch,
+        _config(fast_runtime=_managed_runtime(tmp_path, kind="mlx-lm")),
+    ) as client:
+        response = client.post(
+            "/v1/responses",
+            json={
+                "model": "model-router",
+                "input": "rewrite this text",
+            },
+        )
+
+    manager = fake_manager.instances[-1]
+    assert response.status_code == 502
+    assert response.json()["error"]["type"] == "upstream_api_unsupported"
+    _assert_route_headers(response, engine="fast_local", backend="fast")
+    assert manager.ensure_calls == []
+    assert _FakeAsyncClient.requests == []
+
+
 def test_proxy_responses_blocks_human_confirm_without_upstream_call(monkeypatch):
     with _client(monkeypatch, _config()) as client:
         response = client.post(
@@ -636,6 +779,33 @@ def test_proxy_streaming_preserves_sse_bytes(monkeypatch):
     assert body == b"data: chunk\n\n"
     _assert_route_headers(response, engine="fast_local", backend="fast")
     assert _FakeAsyncClient.requests[0]["stream"] is True
+
+
+def test_proxy_streaming_touches_managed_runtime_after_cleanup(monkeypatch, tmp_path):
+    fake_manager = _patch_runtime_manager(monkeypatch)
+    with _client(
+        monkeypatch,
+        _config(fast_runtime=_managed_runtime(tmp_path)),
+    ) as client:
+        _FakeAsyncClient.responses = {"fast": [_stream_response(b"data: chunk\n\n")]}
+        with client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={
+                "model": "model-router",
+                "stream": True,
+                "messages": [{"role": "user", "content": "rewrite this text"}],
+            },
+        ) as response:
+            body = response.read()
+
+    manager = fake_manager.instances[-1]
+    assert response.status_code == 200
+    assert body == b"data: chunk\n\n"
+    assert manager.ensure_calls == ["fast"]
+    assert manager.begin_calls == ["fast"]
+    assert manager.end_calls == ["fast"]
+    assert manager.touch_calls == []
 
 
 def test_proxy_streaming_preserves_final_upstream_status(monkeypatch):

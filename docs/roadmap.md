@@ -330,3 +330,30 @@ Done when:
   reading YAML first.
 - Installer and doctor tests cover local signals with mocks and no real network
   dependency.
+
+## Milestone 10: Managed Local Runtime For llama.cpp And MLX-LM
+
+Goal: keep ModelRouter a proxy router while making local model-server ownership
+first-class when users explicitly opt in.
+
+Status: implemented. Proxy backends can now declare a `runtime` block with an
+argv-only command, runtime kind, readiness URL, idle timeout, shutdown timeout,
+and log path. `model-router-proxy` starts managed `llama-server`, `mlx_lm.server`,
+or generic local processes on the first route that needs them, keeps them warm,
+stops them after the configured idle timeout, and stops all managed children on
+proxy shutdown. The `mlx-lm` preset generates one managed `mlx_lm.server` process
+per route with placeholder model ids that users must replace. MLX-LM support is
+chat/models-first; `/v1/responses` requires an upstream that supports Responses
+API and translation remains deferred.
+
+Done when:
+
+- Runtime config validation rejects shell-string commands, invalid kinds,
+  invalid readiness URLs, invalid timeouts, and invalid log paths.
+- Runtime startup failures return safe `runtime_start_failed` proxy responses
+  with route-identification headers.
+- Streaming requests keep managed runtimes active until stream cleanup.
+- `doctor` reports managed runtime status, missing commands, readiness failures,
+  port conflicts, placeholders, and the MLX-LM `/v1/responses` limitation.
+- The implementation stays outside `route_fast(...)` and the latency guard
+  remains green.

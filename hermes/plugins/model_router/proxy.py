@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 from collections import Counter
+from contextlib import suppress
 from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, version
 import json
@@ -18,6 +19,10 @@ from hermes.plugins.model_router.proxy_config import (
     ProxyConfigError,
     RoutingProxyConfig,
     load_proxy_config,
+)
+from hermes.plugins.model_router.proxy_runtime import (
+    ManagedRuntimeManager,
+    RuntimeStartError,
 )
 from hermes.plugins.model_router.routing_log import (
     DEFAULT_FEEDBACK_PATH,
@@ -40,6 +45,10 @@ class ProxyDependencyError(RuntimeError):
 
 class UpstreamRequestError(RuntimeError):
     """Raised when an upstream request cannot be completed."""
+
+
+class UnsupportedUpstreamAPIError(RuntimeError):
+    """Raised when a backend cannot support the requested upstream API."""
 
 
 @dataclass
@@ -71,7 +80,12 @@ class ProxySessionStats:
             self.fallback_count += 1
         if status == "stream_interrupted":
             self.interruption_count += 1
-        if status in {"routing_backend_missing", "upstream_request_failed"}:
+        if status in {
+            "routing_backend_missing",
+            "runtime_start_failed",
+            "upstream_api_unsupported",
+            "upstream_request_failed",
+        }:
             self.error_count += 1
 
 
@@ -104,7 +118,18 @@ def create_app(config: RoutingProxyConfig):
     session_stats = ProxySessionStats()
     clients: dict[str, httpx.AsyncClient] = {}
 
+    async def _runtime_readiness_probe(url: str, timeout: float) -> bool:
+        async with httpx.AsyncClient(timeout=timeout) as readiness_client:
+            response = await readiness_client.get(url)
+        return 200 <= int(response.status_code) < 500
+
+    runtime_manager = ManagedRuntimeManager(
+        config.backends,
+        readiness_probe=_runtime_readiness_probe,
+    )
+
     async def _lifespan(_: FastAPI):
+        idle_reaper: asyncio.Task | None = None
         for backend in config.backends.values():
             headers = _backend_headers(backend)
             clients[backend.name] = httpx.AsyncClient(
@@ -118,9 +143,16 @@ def create_app(config: RoutingProxyConfig):
             config.proxy.port,
             ",".join(sorted(config.backends)),
         )
+        if runtime_manager.has_managed_backends:
+            idle_reaper = asyncio.create_task(runtime_manager.reap_idle_forever())
         try:
             yield
         finally:
+            if idle_reaper is not None:
+                idle_reaper.cancel()
+                with suppress(asyncio.CancelledError):
+                    await idle_reaper
+            await runtime_manager.stop_all()
             close_results = await asyncio.gather(
                 *(client.aclose() for client in clients.values()),
                 return_exceptions=True,
@@ -263,6 +295,73 @@ def create_app(config: RoutingProxyConfig):
                     upstream_path,
                     payload,
                     body,
+                    runtime_manager,
+                )
+            except RuntimeStartError as exc:
+                _write_proxy_event(
+                    event_writer,
+                    request_id=request_id,
+                    prompt=prompt,
+                    selected_engine=engine,
+                    status="runtime_start_failed",
+                    route_latency_ms=route_latency_ms,
+                    diagnostic_latency_ms=diagnostic_latency_ms,
+                    total_latency_ms=(time.perf_counter() - started) * 1000,
+                    config=config,
+                    decision=diagnostic_decision,
+                    backend=backend.name,
+                    backend_model=backend.model,
+                    status_code=502,
+                    stats=session_stats,
+                )
+                return JSONResponse(
+                    status_code=502,
+                    headers=_route_headers(
+                        request_id=request_id,
+                        engine=engine,
+                        backend=backend.name,
+                        fallback_used=False,
+                    ),
+                    content={
+                        "error": {
+                            "message": str(exc),
+                            "type": "runtime_start_failed",
+                        },
+                        "selected_engine": engine,
+                    },
+                )
+            except UnsupportedUpstreamAPIError as exc:
+                _write_proxy_event(
+                    event_writer,
+                    request_id=request_id,
+                    prompt=prompt,
+                    selected_engine=engine,
+                    status="upstream_api_unsupported",
+                    route_latency_ms=route_latency_ms,
+                    diagnostic_latency_ms=diagnostic_latency_ms,
+                    total_latency_ms=(time.perf_counter() - started) * 1000,
+                    config=config,
+                    decision=diagnostic_decision,
+                    backend=backend.name,
+                    backend_model=backend.model,
+                    status_code=502,
+                    stats=session_stats,
+                )
+                return JSONResponse(
+                    status_code=502,
+                    headers=_route_headers(
+                        request_id=request_id,
+                        engine=engine,
+                        backend=backend.name,
+                        fallback_used=False,
+                    ),
+                    content={
+                        "error": {
+                            "message": str(exc),
+                            "type": "upstream_api_unsupported",
+                        },
+                        "selected_engine": engine,
+                    },
                 )
             except UpstreamRequestError as exc:
                 _write_proxy_event(
@@ -313,6 +412,7 @@ def create_app(config: RoutingProxyConfig):
                     config,
                     diagnostic_decision,
                     session_stats,
+                    runtime_manager,
                 ),
                 status_code=upstream_response.status_code,
                 media_type=upstream_response.headers.get(
@@ -336,6 +436,73 @@ def create_app(config: RoutingProxyConfig):
                 upstream_path,
                 payload,
                 body,
+                runtime_manager,
+            )
+        except RuntimeStartError as exc:
+            _write_proxy_event(
+                event_writer,
+                request_id=request_id,
+                prompt=prompt,
+                selected_engine=engine,
+                status="runtime_start_failed",
+                route_latency_ms=route_latency_ms,
+                diagnostic_latency_ms=diagnostic_latency_ms,
+                total_latency_ms=(time.perf_counter() - started) * 1000,
+                config=config,
+                decision=diagnostic_decision,
+                backend=backend.name,
+                backend_model=backend.model,
+                status_code=502,
+                stats=session_stats,
+            )
+            return JSONResponse(
+                status_code=502,
+                headers=_route_headers(
+                    request_id=request_id,
+                    engine=engine,
+                    backend=backend.name,
+                    fallback_used=False,
+                ),
+                content={
+                    "error": {
+                        "message": str(exc),
+                        "type": "runtime_start_failed",
+                    },
+                    "selected_engine": engine,
+                },
+            )
+        except UnsupportedUpstreamAPIError as exc:
+            _write_proxy_event(
+                event_writer,
+                request_id=request_id,
+                prompt=prompt,
+                selected_engine=engine,
+                status="upstream_api_unsupported",
+                route_latency_ms=route_latency_ms,
+                diagnostic_latency_ms=diagnostic_latency_ms,
+                total_latency_ms=(time.perf_counter() - started) * 1000,
+                config=config,
+                decision=diagnostic_decision,
+                backend=backend.name,
+                backend_model=backend.model,
+                status_code=502,
+                stats=session_stats,
+            )
+            return JSONResponse(
+                status_code=502,
+                headers=_route_headers(
+                    request_id=request_id,
+                    engine=engine,
+                    backend=backend.name,
+                    fallback_used=False,
+                ),
+                content={
+                    "error": {
+                        "message": str(exc),
+                        "type": "upstream_api_unsupported",
+                    },
+                    "selected_engine": engine,
+                },
             )
         except UpstreamRequestError as exc:
             _write_proxy_event(
@@ -390,6 +557,7 @@ def create_app(config: RoutingProxyConfig):
             status_code=response.status_code,
             stats=session_stats,
         )
+        runtime_manager.touch(used_backend.name)
         LOG.info(
             "request=%s engine=%s backend=%s status=%s fallback=%s latency_ms=%.2f",
             request_id,
@@ -688,6 +856,21 @@ def _payload_for_backend(body: dict[str, Any], backend: ProxyBackendConfig) -> b
     return json.dumps(payload, separators=(",", ":")).encode("utf-8")
 
 
+def _ensure_backend_supports_upstream_path(
+    backend: ProxyBackendConfig,
+    upstream_path: str,
+) -> None:
+    if (
+        upstream_path == "/responses"
+        and backend.runtime.enabled
+        and backend.runtime.kind == "mlx-lm"
+    ):
+        raise UnsupportedUpstreamAPIError(
+            "MLX-LM managed runtimes are chat/models-first; "
+            "/v1/responses requires an upstream that supports Responses API."
+        )
+
+
 async def _post_with_fallbacks(
     clients: dict[str, Any],
     primary: ProxyBackendConfig,
@@ -695,6 +878,7 @@ async def _post_with_fallbacks(
     upstream_path: str,
     primary_payload: bytes,
     original_body: dict[str, Any],
+    runtime_manager: ManagedRuntimeManager,
 ) -> tuple[Any, ProxyBackendConfig, bool]:
     attempted = (primary, *fallbacks)
     last_error: Exception | None = None
@@ -704,6 +888,9 @@ async def _post_with_fallbacks(
             if index == 0
             else _payload_for_backend(original_body, backend)
         )
+        _ensure_backend_supports_upstream_path(backend, upstream_path)
+        await runtime_manager.ensure_running(backend)
+        runtime_manager.begin_request(backend.name)
         try:
             response = await clients[backend.name].post(
                 upstream_path,
@@ -711,7 +898,9 @@ async def _post_with_fallbacks(
             )
         except Exception as exc:
             last_error = exc
+            runtime_manager.end_request(backend.name)
             continue
+        runtime_manager.end_request(backend.name)
         if response.status_code < 500 or index == len(attempted) - 1:
             return response, backend, index > 0
     raise UpstreamRequestError(str(last_error) if last_error else "upstream failed")
@@ -724,6 +913,7 @@ async def _open_stream_with_fallbacks(
     upstream_path: str,
     primary_payload: bytes,
     original_body: dict[str, Any],
+    runtime_manager: ManagedRuntimeManager,
 ) -> tuple[Any, Any, ProxyBackendConfig, bool]:
     attempted = (primary, *fallbacks)
     last_error: Exception | None = None
@@ -733,6 +923,9 @@ async def _open_stream_with_fallbacks(
             if index == 0
             else _payload_for_backend(original_body, backend)
         )
+        _ensure_backend_supports_upstream_path(backend, upstream_path)
+        await runtime_manager.ensure_running(backend)
+        runtime_manager.begin_request(backend.name)
         try:
             stream_context = clients[backend.name].stream(
                 "POST",
@@ -742,9 +935,13 @@ async def _open_stream_with_fallbacks(
             response = await stream_context.__aenter__()
         except Exception as exc:
             last_error = exc
+            runtime_manager.end_request(backend.name)
             continue
         if response.status_code >= 500 and index < len(attempted) - 1:
-            await stream_context.__aexit__(None, None, None)
+            try:
+                await stream_context.__aexit__(None, None, None)
+            finally:
+                runtime_manager.end_request(backend.name)
             continue
         return stream_context, response, backend, index > 0
     raise UpstreamRequestError(str(last_error) if last_error else "upstream failed")
@@ -765,6 +962,7 @@ async def _stream_response_bytes(
     config: RoutingProxyConfig,
     decision: Any,
     session_stats: ProxySessionStats | None = None,
+    runtime_manager: ManagedRuntimeManager | None = None,
 ):
     status = "forwarded"
     exc_info: tuple[type[BaseException] | None, BaseException | None, Any] = (
@@ -811,6 +1009,8 @@ async def _stream_response_bytes(
             status_code=response.status_code,
             stats=session_stats,
         )
+        if runtime_manager is not None:
+            runtime_manager.end_request(backend.name)
         LOG.info(
             "request=%s engine=%s backend=%s status=%s stream_status=%s fallback=%s latency_ms=%.2f",
             request_id,

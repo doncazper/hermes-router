@@ -42,9 +42,11 @@ model-router doctor --config ~/.model-router/routing_proxy.yaml
 curl http://127.0.0.1:8082/health
 ```
 
-This project is intentionally a decision router only. It does not execute
-prompts, call model providers, load local model weights, browse the web, run
-shell commands, send messages, delete files, or purchase anything.
+The router core is intentionally a decision router only. It does not execute
+prompts, browse the web, run shell commands, send messages, delete files, or
+purchase anything. The optional proxy forwards OpenAI-compatible requests to
+configured upstreams; when explicitly configured with managed local runtimes, it
+can start and stop only those configured local model-server processes.
 
 ## At a Glance
 
@@ -69,6 +71,7 @@ shell commands, send messages, delete files, or purchase anything.
 - OpenAI-compatible proxy for agents that only know how to call a local AI
   endpoint.
 - First-run `model-router init` for local proxy configs.
+- Opt-in managed local runtimes for `llama-server` and `mlx_lm.server`.
 - User-configurable routing targets for local models, hosted APIs, web/RAG
   tools, vision, image generation, or custom adapters.
 - Fail-closed safety: missing/invalid config and high-risk actions route to
@@ -265,6 +268,15 @@ LM Studio, llama.cpp server, LocalAI, or a frontier gateway. `human_confirm`
 returns HTTP `409` and is never forwarded. Tools are preserved by default and
 can be stripped per backend for small local models.
 
+Managed local runtimes are opt-in per backend. A backend can declare an argv-only
+`runtime.command`, readiness URL, idle timeout, shutdown timeout, and log path.
+The proxy starts that configured process on the first route that needs it, keeps
+it warm, stops it after the idle timeout, and stops all managed child processes
+on proxy shutdown. Model loading/unloading is process-level: starting
+`llama-server` or `mlx_lm.server` loads the model, and stopping that process
+unloads it from memory. ModelRouter does not download models automatically and
+does not infer or execute arbitrary commands.
+
 Packaged presets:
 
 ```bash
@@ -272,6 +284,7 @@ model-router init --preset lmstudio --yes
 model-router init --auto --yes
 model-router init --preset ollama --yes
 model-router init --preset llamacpp --yes
+model-router init --preset mlx-lm --yes
 model-router init --preset localai --yes
 model-router init --preset hosted-openai-compatible --yes
 ```
@@ -314,6 +327,45 @@ model-router init --preset ollama --yes
 The Ollama preset targets `http://127.0.0.1:11434/v1` and uses those model ids
 by default. If you choose different local models, edit the `model:` values in
 `~/.model-router/routing_proxy.yaml`.
+
+MLX-LM managed runtime:
+
+```bash
+python -m pip install mlx-lm
+model-router init --preset mlx-lm --yes
+```
+
+Then edit `~/.model-router/routing_proxy.yaml` and replace every
+`REPLACE_WITH_MLX_*` value with an exact MLX/Hugging Face repo id or local model
+path. The generated preset uses one `mlx_lm.server` process per route on ports
+`8090`, `8091`, `8093`, and `8094`; each process starts on first use and idles
+out after 900 seconds. This first pass targets MLX-LM's OpenAI-compatible
+`/v1/chat/completions` and `/v1/models` shape. `/v1/responses` requires an
+upstream that supports the Responses API; MLX-LM translation is intentionally
+deferred.
+
+llama.cpp managed runtime example:
+
+```yaml
+runtime:
+  enabled: true
+  kind: llama-server
+  command:
+    - llama-server
+    - "-m"
+    - /Users/you/models/fast.gguf
+    - --port
+    - "8090"
+  readiness_url: http://127.0.0.1:8090/v1/models
+  readiness_timeout_seconds: 30
+  idle_timeout_seconds: 900
+  shutdown_timeout_seconds: 5
+  log_path: ~/.model-router/logs/llama-fast.log
+```
+
+Use argv lists, not shell strings. Runtime stdout/stderr is captured to the
+configured log path, and startup/readiness failures return a safe
+`runtime_start_failed` proxy response with route-identification headers.
 
 ### First-Run Transcript
 
@@ -881,9 +933,12 @@ integration point.
 
 ### v0.6.5: Managed Local Runtime Beta
 
-- Add explicit process configuration for llama.cpp and MLX backends.
-- Add start, stop, restart, status, and logs commands for configured runtimes.
-- Detect port conflicts and capture per-backend process logs.
+- Add explicit proxy-owned process configuration for llama.cpp and MLX backends.
+- Demand-start configured runtimes on first route and stop them after an idle
+  timeout.
+- Detect missing commands, readiness failures, placeholder model ids, and port
+  conflicts through `doctor`.
+- Capture per-backend process logs to configured files.
 - Keep process management opt-in and transparent; never auto-start arbitrary
   commands without user configuration.
 

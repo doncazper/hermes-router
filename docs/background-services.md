@@ -34,6 +34,15 @@ model-router init --preset ollama --yes
 reachable, chooses LM Studio when an LM Studio-style server is reachable, and
 prints exact start/pull/edit guidance for the selected preset.
 
+If you use managed local runtimes such as `runtime.kind: llama-server` or
+`runtime.kind: mlx-lm`, the background service should supervise
+`model-router-proxy` only. The proxy owns the configured child model-server
+processes, starts them on first routed use, captures their stdout/stderr under
+`~/.model-router/logs/`, stops them after the configured idle timeout, and stops
+them on proxy shutdown. Do not add separate launchd/systemd units for the same
+managed runtime ports unless you disable those runtime blocks in
+`routing_proxy.yaml`.
+
 Point the agent at:
 
 ```text

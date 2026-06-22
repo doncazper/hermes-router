@@ -592,6 +592,15 @@ and preserves the common Responses API request shape when forwarding, including
 instructions, tools, metadata, previous response ids, streaming, and fallback
 behavior.
 
+Managed local runtimes are an optional proxy feature, not part of
+`route_fast(...)`. A backend may declare an explicit argv-only runtime command,
+readiness URL, idle timeout, shutdown timeout, and log path. The proxy starts
+that child process on the first routed request that needs the backend, keeps it
+warm, stops it after the idle timeout, and stops all managed children on proxy
+shutdown. Starting the process loads the model; stopping the process unloads it
+from memory. The proxy never downloads models automatically and never infers
+commands beyond what is configured in YAML.
+
 For LM Studio:
 
 ```bash
@@ -630,6 +639,46 @@ When Ollama is selected and expected models are missing, first-run output shows
 the exact `ollama pull ...` commands. When LM Studio is selected, first-run
 output reminds you to edit generated backend model ids to match the exact ids
 advertised by the LM Studio local server.
+
+For MLX-LM managed runtimes:
+
+```bash
+python -m pip install mlx-lm
+model-router init --preset mlx-lm --yes
+model-router doctor --config ~/.model-router/routing_proxy.yaml
+model-router-proxy --config ~/.model-router/routing_proxy.yaml
+```
+
+Replace every generated `REPLACE_WITH_MLX_*` placeholder with an exact
+MLX/Hugging Face repo id or local model path before dogfooding. The preset uses
+one `mlx_lm.server` process per route on ports `8090`, `8091`, `8093`, and
+`8094`. MLX-LM support is chat/models-first: `/v1/chat/completions` can be
+forwarded to MLX-LM, `/v1/models` is used for readiness/model checks, and
+`/v1/responses` requires an upstream that supports the Responses API.
+
+For llama.cpp managed runtimes, start from the `llamacpp` preset and add runtime
+blocks to the backends you want the proxy to own:
+
+```yaml
+runtime:
+  enabled: true
+  kind: llama-server
+  command:
+    - llama-server
+    - "-m"
+    - /Users/you/models/model.gguf
+    - --port
+    - "8090"
+  readiness_url: http://127.0.0.1:8090/v1/models
+  readiness_timeout_seconds: 30
+  idle_timeout_seconds: 900
+  shutdown_timeout_seconds: 5
+  log_path: ~/.model-router/logs/llama-fast.log
+```
+
+`model-router doctor` reports whether managed runtimes are enabled, whether a
+runtime command is missing, whether a readiness URL is down, whether placeholders
+remain, and whether a readiness port appears occupied by a conflicting process.
 
 Use these values in an OpenAI-compatible agent or SDK:
 

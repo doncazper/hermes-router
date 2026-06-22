@@ -5,6 +5,7 @@ import yaml
 
 from hermes.plugins.model_router.proxy_config import (
     ProxyConfigError,
+    RUNTIME_KINDS,
     default_proxy_config_source,
     load_proxy_config,
 )
@@ -143,6 +144,104 @@ def test_load_proxy_config_accepts_observability_block(tmp_path, monkeypatch):
     assert config.observability.max_bytes == 1024
     assert config.observability.backups == 2
     assert config.health.backend_timeout_seconds == 2.5
+
+
+def test_load_proxy_config_accepts_backend_runtime_block(tmp_path, monkeypatch):
+    monkeypatch.setenv("MODEL_ROUTER_PROXY_API_KEY", "proxy-secret")
+    monkeypatch.setenv("DEEP_API_KEY", "deep-secret")
+    data = _valid_config()
+    data["backends"]["fast"]["runtime"] = {
+        "enabled": True,
+        "kind": "llama-server",
+        "command": [
+            "llama-server",
+            "-m",
+            "/models/fast.gguf",
+            "--alias",
+            "fast",
+            "--alias",
+            "fast",
+            "--port",
+            "8090",
+        ],
+        "readiness_url": "http://127.0.0.1:8090/v1/models",
+        "readiness_timeout_seconds": 10,
+        "idle_timeout_seconds": 900,
+        "shutdown_timeout_seconds": 5,
+        "log_path": "~/.model-router/logs/llama-fast.log",
+    }
+
+    config = load_proxy_config(_write_config(tmp_path, data))
+    runtime = config.backends["fast"].runtime
+
+    assert runtime.enabled is True
+    assert runtime.kind == "llama-server"
+    assert runtime.command == (
+        "llama-server",
+        "-m",
+        "/models/fast.gguf",
+        "--alias",
+        "fast",
+        "--alias",
+        "fast",
+        "--port",
+        "8090",
+    )
+    assert runtime.readiness_url == "http://127.0.0.1:8090/v1/models"
+    assert runtime.idle_timeout_seconds == 900
+    assert "llama-server" in RUNTIME_KINDS
+
+
+def test_load_proxy_config_rejects_runtime_shell_string_command(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("MODEL_ROUTER_PROXY_API_KEY", "proxy-secret")
+    monkeypatch.setenv("DEEP_API_KEY", "deep-secret")
+    data = _valid_config()
+    data["backends"]["fast"]["runtime"] = {
+        "enabled": True,
+        "kind": "llama-server",
+        "command": "llama-server -m /models/fast.gguf --port 8090",
+        "readiness_url": "http://127.0.0.1:8090/v1/models",
+        "log_path": "~/.model-router/logs/llama-fast.log",
+    }
+
+    with pytest.raises(ProxyConfigError, match="command"):
+        load_proxy_config(_write_config(tmp_path, data))
+
+
+def test_load_proxy_config_rejects_invalid_runtime_values(tmp_path, monkeypatch):
+    monkeypatch.setenv("MODEL_ROUTER_PROXY_API_KEY", "proxy-secret")
+    monkeypatch.setenv("DEEP_API_KEY", "deep-secret")
+    data = _valid_config()
+    data["backends"]["fast"]["runtime"] = {
+        "enabled": True,
+        "kind": "made-up",
+        "command": ["runtime"],
+        "readiness_url": "http://127.0.0.1:8090/v1/models",
+        "readiness_timeout_seconds": 0,
+        "log_path": "~/.model-router/logs/runtime.log",
+    }
+
+    with pytest.raises(ProxyConfigError, match="runtime kind"):
+        load_proxy_config(_write_config(tmp_path, data))
+
+    data["backends"]["fast"]["runtime"]["kind"] = "generic"
+    with pytest.raises(ProxyConfigError, match="readiness_timeout_seconds"):
+        load_proxy_config(_write_config(tmp_path, data))
+
+    data["backends"]["fast"]["runtime"]["readiness_timeout_seconds"] = 1
+    data["backends"]["fast"]["runtime"]["readiness_url"] = "127.0.0.1:8090/v1/models"
+    with pytest.raises(ProxyConfigError, match="readiness_url"):
+        load_proxy_config(_write_config(tmp_path, data))
+
+    data["backends"]["fast"]["runtime"]["readiness_url"] = (
+        "http://127.0.0.1:8090/v1/models"
+    )
+    data["backends"]["fast"]["runtime"]["log_path"] = "bad\x00path.log"
+    with pytest.raises(ProxyConfigError, match="log_path"):
+        load_proxy_config(_write_config(tmp_path, data))
 
 
 def test_load_proxy_config_rejects_invalid_prompt_capture(tmp_path, monkeypatch):

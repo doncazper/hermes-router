@@ -23,6 +23,7 @@ DEFAULT_PROXY_CONFIG_NAME = "routing_proxy.example.yaml"
 DEFAULT_PROXY_CONFIG_SOURCE = (
     f"resource://{DEFAULT_PROXY_CONFIG_PACKAGE}/{DEFAULT_PROXY_CONFIG_NAME}"
 )
+RUNTIME_KINDS = ("llama-server", "mlx-lm", "generic")
 
 
 class ProxyConfigError(ValueError):
@@ -45,6 +46,18 @@ class ProxyServerConfig:
 
 
 @dataclass(frozen=True)
+class ProxyRuntimeConfig:
+    enabled: bool = False
+    kind: str = "generic"
+    command: tuple[str, ...] = ()
+    readiness_url: str = ""
+    readiness_timeout_seconds: float = 30.0
+    idle_timeout_seconds: float = 900.0
+    shutdown_timeout_seconds: float = 5.0
+    log_path: str = "~/.model-router/logs/runtime.log"
+
+
+@dataclass(frozen=True)
 class ProxyBackendConfig:
     name: str
     base_url: str
@@ -53,6 +66,7 @@ class ProxyBackendConfig:
     api_key_env: str | None = None
     timeout_seconds: float = 300.0
     strip_tools: bool = False
+    runtime: ProxyRuntimeConfig = field(default_factory=ProxyRuntimeConfig)
 
     @property
     def resolved_api_key(self) -> str | None:
@@ -204,8 +218,53 @@ def _load_backends(data: Any) -> dict[str, ProxyBackendConfig]:
                 default=300.0,
             ),
             strip_tools=_bool(raw_backend, "strip_tools", default=False),
+            runtime=_load_runtime(raw_backend.get("runtime"), backend_name=name),
         )
     return backends
+
+
+def _load_runtime(data: Any, *, backend_name: str) -> ProxyRuntimeConfig:
+    if data is None:
+        return ProxyRuntimeConfig()
+    if not isinstance(data, dict):
+        raise ProxyConfigError(f"backend {backend_name!r} runtime must be a mapping")
+    enabled = _bool(data, "enabled", default=False)
+    if not enabled:
+        return ProxyRuntimeConfig(enabled=False)
+
+    kind = _string(data, "kind", default="generic")
+    if kind not in RUNTIME_KINDS:
+        raise ProxyConfigError(
+            f"backend {backend_name!r} runtime kind must be one of: "
+            + ", ".join(RUNTIME_KINDS)
+        )
+    command = _argv_tuple(data, "command")
+    if not command:
+        raise ProxyConfigError(
+            f"backend {backend_name!r} runtime command must be a non-empty list"
+        )
+    return ProxyRuntimeConfig(
+        enabled=True,
+        kind=kind,
+        command=command,
+        readiness_url=_http_url(data, "readiness_url"),
+        readiness_timeout_seconds=_positive_float(
+            data,
+            "readiness_timeout_seconds",
+            default=30.0,
+        ),
+        idle_timeout_seconds=_positive_float(
+            data,
+            "idle_timeout_seconds",
+            default=900.0,
+        ),
+        shutdown_timeout_seconds=_positive_float(
+            data,
+            "shutdown_timeout_seconds",
+            default=5.0,
+        ),
+        log_path=_path_string(data, "log_path"),
+    )
 
 
 def _load_observability(data: Any) -> ProxyObservabilityConfig:
@@ -382,3 +441,26 @@ def _string_tuple(
     ):
         raise ProxyConfigError(f"{key} must be a list of non-empty strings")
     return tuple(dict.fromkeys(value))
+
+
+def _argv_tuple(data: dict[str, Any], key: str) -> tuple[str, ...]:
+    value = data.get(key)
+    if not isinstance(value, list) or not all(
+        isinstance(item, str) and item.strip() for item in value
+    ):
+        raise ProxyConfigError(f"{key} must be a list of non-empty strings")
+    return tuple(value)
+
+
+def _http_url(data: dict[str, Any], key: str) -> str:
+    value = _string(data, key)
+    if not (value.startswith("http://") or value.startswith("https://")):
+        raise ProxyConfigError(f"{key} must be an http(s) URL")
+    return value
+
+
+def _path_string(data: dict[str, Any], key: str) -> str:
+    value = _string(data, key)
+    if "\x00" in value:
+        raise ProxyConfigError(f"{key} must not contain NUL bytes")
+    return value

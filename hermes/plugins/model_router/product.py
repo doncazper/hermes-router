@@ -7,9 +7,10 @@ from importlib import resources
 import json
 from pathlib import Path
 import shutil
+import socket
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
 
 import yaml
@@ -34,6 +35,7 @@ PRESETS = (
     "lmstudio",
     "ollama",
     "llamacpp",
+    "mlx-lm",
     "localai",
     "hosted-openai-compatible",
 )
@@ -293,7 +295,9 @@ def doctor_proxy_config(
         for backend in config.backends.values()
     )
     ok = proxy_config_valid and router_config_valid and all(
-        backend.ok for backend in backends
+        _backend_ok_for_doctor(config.backends[backend.backend], backend)
+        for backend in backends
+        if backend.backend in config.backends
     )
     remediation = _doctor_remediation(config, backends, router_config_valid)
     return DoctorReport(
@@ -486,6 +490,19 @@ def _init_guidance(
             "Replace lmstudio-fast-model, lmstudio-balanced-model, "
             "lmstudio-reasoning-model, and lmstudio-code-model as needed."
         )
+    if selected_preset == "mlx-lm":
+        messages.append(
+            "MLX-LM: replace every REPLACE_WITH_MLX_* placeholder with an "
+            "exact MLX/Hugging Face repo id or local model path."
+        )
+        messages.append(
+            "Managed MLX-LM runtimes start on first routed chat request and "
+            "idle out after 900 seconds."
+        )
+        messages.append(
+            "MLX-LM /v1/responses translation is deferred; use chat-compatible "
+            "clients or an upstream that supports Responses API."
+        )
     return tuple(messages)
 
 
@@ -510,9 +527,53 @@ def _doctor_remediation(
             "LM Studio backend unreachable; start the LM Studio local server "
             "at http://127.0.0.1:1234/v1."
         )
+    disabled_runtime_backends = [
+        backend.name for backend in backend_by_name.values() if not backend.runtime.enabled
+    ]
+    if disabled_runtime_backends:
+        messages.append(
+            "Managed runtimes disabled for backends: "
+            + ", ".join(sorted(disabled_runtime_backends))
+            + "; start those upstream servers separately."
+        )
+    for backend in backend_by_name.values():
+        runtime = backend.runtime
+        if not runtime.enabled:
+            continue
+        messages.append(
+            f"Backend {backend.name} managed runtime enabled ({runtime.kind}); "
+            "starts on first routed request."
+        )
+        if _runtime_has_placeholder(backend):
+            messages.append(
+                f"Backend {backend.name} has placeholder MLX/runtime model values; "
+                "replace REPLACE_WITH_* entries before dogfooding."
+            )
+        if not _runtime_command_available(runtime.command):
+            messages.append(
+                f"Backend {backend.name} runtime command missing: {runtime.command[0]}"
+            )
+        if runtime.kind == "mlx-lm":
+            messages.append(
+                "MLX-LM managed runtimes are chat/models-first; /v1/responses "
+                "requires an upstream that supports Responses API."
+            )
     for health in backends:
         backend = backend_by_name.get(health.backend)
         if backend is None:
+            continue
+        if backend.runtime.enabled and not health.reachable:
+            if _runtime_port_open(backend.runtime.readiness_url):
+                messages.append(
+                    f"Backend {backend.name} runtime port is in use but readiness "
+                    "is not HTTP-compatible; stop the conflicting process or fix "
+                    "the runtime command."
+                )
+            messages.append(
+                f"Backend {backend.name} readiness is not responding at "
+                f"{backend.runtime.readiness_url}; the proxy will try to start it "
+                "on first route."
+            )
             continue
         if "not listed" not in health.detail:
             continue
@@ -541,6 +602,52 @@ def _doctor_remediation(
     )
     messages.append(f"Start proxy: model-router-proxy --config {config.source_path}")
     return tuple(dict.fromkeys(messages))
+
+
+def _backend_ok_for_doctor(
+    backend: ProxyBackendConfig,
+    health: BackendHealth,
+) -> bool:
+    if health.ok:
+        return True
+    if not backend.runtime.enabled:
+        return False
+    if _runtime_has_placeholder(backend):
+        return False
+    if not _runtime_command_available(backend.runtime.command):
+        return False
+    if _runtime_port_open(backend.runtime.readiness_url):
+        return False
+    return True
+
+
+def _runtime_has_placeholder(backend: ProxyBackendConfig) -> bool:
+    values = (backend.model, *backend.runtime.command)
+    return any("REPLACE_WITH_" in value for value in values)
+
+
+def _runtime_command_available(command: tuple[str, ...]) -> bool:
+    if not command:
+        return False
+    executable = command[0]
+    path = Path(executable).expanduser()
+    if "/" in executable:
+        return path.exists()
+    return shutil.which(executable) is not None
+
+
+def _runtime_port_open(url: str, *, timeout_seconds: float = 0.05) -> bool:
+    parsed = urlparse(url)
+    if parsed.hostname is None or parsed.port is None:
+        return False
+    try:
+        with socket.create_connection(
+            (parsed.hostname, parsed.port),
+            timeout=timeout_seconds,
+        ):
+            return True
+    except OSError:
+        return False
 
 
 def _template_data(preset: str) -> dict[str, Any]:

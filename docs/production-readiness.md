@@ -164,6 +164,18 @@ Readable `doctor` output includes the agent base URL, telemetry log path, and
 next-step remediation such as starting Ollama, starting the LM Studio local
 server, pulling missing Ollama models, or editing LM Studio model ids.
 
+Managed local runtimes are opt-in per backend. When `runtime.enabled: true`, the
+proxy starts only the configured argv command, waits for the configured
+readiness URL, captures stdout/stderr to the configured log file, keeps the
+process warm while it is active, stops it after the idle timeout, and stops all
+managed child processes during proxy shutdown. It does not use a shell, infer
+commands, download models, or restart crashing runtimes in a loop.
+
+For `mlx-lm` runtimes, the first supported upstream shape is
+`/v1/chat/completions` plus `/v1/models`. `/v1/responses` is not translated for
+MLX-LM; use an upstream that supports Responses API when clients need that
+endpoint.
+
 ## Regression Coverage
 
 Production readiness is guarded by:

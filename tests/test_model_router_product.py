@@ -151,6 +151,132 @@ def test_all_presets_generate_valid_proxy_configs(tmp_path, monkeypatch):
         assert config.backend_for_engine("fast_local") is not None
 
 
+def test_init_mlx_lm_writes_managed_runtime_preset_and_guidance(tmp_path):
+    result = initialize_product_config(
+        preset="mlx-lm",
+        config_dir=tmp_path,
+        force=False,
+        interactive=False,
+    )
+
+    config = load_proxy_config(tmp_path / "routing_proxy.yaml")
+    fast = config.backends["fast"]
+
+    assert result.ok is True
+    assert fast.runtime.enabled is True
+    assert fast.runtime.kind == "mlx-lm"
+    assert fast.runtime.command[:2] == ("mlx_lm.server", "--model")
+    assert "REPLACE_WITH_MLX_FAST_MODEL" in fast.runtime.command
+    assert fast.runtime.idle_timeout_seconds == 900
+    assert any("REPLACE_WITH_MLX_*" in message for message in result.messages)
+    assert any(
+        "/v1/responses translation is deferred" in message
+        for message in result.messages
+    )
+
+
+def test_doctor_mlx_lm_reports_runtime_guidance(tmp_path, monkeypatch):
+    initialize_product_config(
+        preset="mlx-lm",
+        config_dir=tmp_path,
+        force=False,
+        interactive=False,
+    )
+
+    def fake_health(backend, *, timeout_seconds):
+        return BackendHealth(
+            backend=backend.name,
+            reachable=False,
+            ok=False,
+            status_code=None,
+            detail="connection refused",
+        )
+
+    monkeypatch.setattr(product, "check_backend_health", fake_health)
+    monkeypatch.setattr(product, "_runtime_command_available", lambda _command: True)
+    monkeypatch.setattr(product, "_runtime_port_open", lambda *_args, **_kwargs: False)
+
+    report = doctor_proxy_config(tmp_path / "routing_proxy.yaml")
+    remediation = "\n".join(report.remediation)
+
+    assert report.ok is False
+    assert "managed runtime enabled (mlx-lm)" in remediation
+    assert "placeholder MLX/runtime model values" in remediation
+    assert "readiness is not responding" in remediation
+    assert "/v1/responses requires an upstream" in remediation
+
+
+def test_doctor_reports_missing_managed_runtime_command(tmp_path, monkeypatch):
+    initialize_product_config(
+        preset="mlx-lm",
+        config_dir=tmp_path,
+        force=False,
+        interactive=False,
+    )
+
+    def fake_health(backend, *, timeout_seconds):
+        return BackendHealth(
+            backend=backend.name,
+            reachable=False,
+            ok=False,
+            status_code=None,
+            detail="connection refused",
+        )
+
+    monkeypatch.setattr(product, "check_backend_health", fake_health)
+    monkeypatch.setattr(product, "_runtime_command_available", lambda _command: False)
+    monkeypatch.setattr(product, "_runtime_port_open", lambda *_args, **_kwargs: False)
+
+    report = doctor_proxy_config(tmp_path / "routing_proxy.yaml")
+
+    assert report.ok is False
+    assert any(
+        "runtime command missing: mlx_lm.server" in item
+        for item in report.remediation
+    )
+
+
+def test_doctor_accepts_complete_managed_runtime_that_is_not_running(
+    tmp_path,
+    monkeypatch,
+):
+    initialize_product_config(
+        preset="mlx-lm",
+        config_dir=tmp_path,
+        force=False,
+        interactive=False,
+    )
+    config_path = tmp_path / "routing_proxy.yaml"
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    for backend in data["backends"].values():
+        placeholder = backend["model"]
+        replacement = placeholder.replace("REPLACE_WITH_MLX_", "mlx/")
+        backend["model"] = replacement
+        backend["runtime"]["command"] = [
+            replacement if item == placeholder else item
+            for item in backend["runtime"]["command"]
+        ]
+    config_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+    def fake_health(backend, *, timeout_seconds):
+        return BackendHealth(
+            backend=backend.name,
+            reachable=False,
+            ok=False,
+            status_code=None,
+            detail="connection refused",
+        )
+
+    monkeypatch.setattr(product, "check_backend_health", fake_health)
+    monkeypatch.setattr(product, "_runtime_command_available", lambda _command: True)
+    monkeypatch.setattr(product, "_runtime_port_open", lambda *_args, **_kwargs: False)
+
+    report = doctor_proxy_config(config_path)
+
+    assert report.ok is True
+    assert any("readiness is not responding" in item for item in report.remediation)
+
+
 def test_init_interactive_customizes_backend_values(tmp_path):
     answers = iter(
         [

@@ -31,6 +31,7 @@ DEFAULT_COMMANDS = (
     "hf",
     "ollama",
     "llama-server",
+    "mlx_lm.server",
     "lmstudio",
 )
 
