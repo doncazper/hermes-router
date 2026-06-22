@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.4 - Docs And Product UX Refresh
+
+- Refreshed the README/PyPI long description with a proxy-first setup path.
+- Added known-good LM Studio and Ollama setup examples for local routing.
+- Added sample transcripts for `model-router init`, `model-router doctor`,
+  `model-router-proxy`, and generic OpenAI-compatible agent configuration.
+- Documented the wrong-route feedback, replay, and regression-test workflow.
+- Clarified that `hermes/plugins/...` is only a legacy Python namespace, not a
+  host-application plugin integration point.
+
 ## 0.5.3 - Proxy Hardening Release
 
 - Added a live uvicorn/raw-socket streaming disconnect test that runs the real

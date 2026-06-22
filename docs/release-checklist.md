@@ -19,8 +19,8 @@ notes.
 ## Tag And Release
 
 ```bash
-git tag v0.5.3
-git push origin v0.5.3
+git tag v0.5.4
+git push origin v0.5.4
 ```
 
 Create a GitHub release for the tag. The publish workflow uses PyPI trusted
@@ -29,12 +29,12 @@ publishing and runs when the GitHub release is published.
 ## Release Notes Template
 
 ```markdown
-## ModelRouter v0.5.3
+## ModelRouter v0.5.4
 
 ### Highlights
-- Proxy hardening release for streaming disconnect cleanup.
-- Live ASGI/raw-socket disconnect coverage for client-aborted streams.
-- Metadata-only disconnect logging verification.
+- Docs refresh for the PyPI long description.
+- LM Studio and Ollama setup examples.
+- First-run transcripts and wrong-route regression workflow.
 
 ### Verification
 - Ruff: passed
