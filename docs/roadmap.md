@@ -214,10 +214,10 @@ At the end, tell me whether we should ship these docs/product fixes as an increm
 Goal: support more real clients while keeping the OpenAI-compatible proxy as the
 core.
 
-Status: initial compatibility work landed after v0.5.4. The proxy now routes
-and forwards `/v1/responses` requests alongside `/v1/chat/completions`, with
-tests for common Responses API request fields, streaming SSE passthrough,
-tool-call preservation/stripping, and `human_confirm` blocking.
+Status: shipped as v0.6.0. The proxy now routes and forwards `/v1/responses`
+requests alongside `/v1/chat/completions`, with tests for common Responses API
+request fields, streaming SSE passthrough, tool-call preservation/stripping,
+and `human_confirm` blocking.
 
 Candidate tasks:
 

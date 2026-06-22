@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.0 - Compatibility Expansion
+
+- Added `/v1/responses` passthrough and routing alongside
+  `/v1/chat/completions`.
+- Preserved common Responses API request fields when forwarding, including
+  `instructions`, `tools`, `tool_choice`, `parallel_tool_calls`, `metadata`,
+  `previous_response_id`, streaming, and fallback behavior.
+- Reused the same proxy auth, backend selection, model override, fallback,
+  streaming, and `human_confirm` blocking paths for Responses API requests.
+- Improved tool-call compatibility coverage, including `parallel_tool_calls`
+  preservation and per-backend stripping behavior.
+- Updated proxy documentation for the Responses API endpoint.
+
 ## 0.5.4 - Docs And Product UX Refresh
 
 - Refreshed the README/PyPI long description with a proxy-first setup path.

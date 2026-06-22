@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 # PyPI distribution compatibility: the public product is ModelRouter, but the
 # installable package remains hermes-router because model-router is occupied.
 name = "hermes-router"
-version = "0.5.4"
+version = "0.6.0"
 description = "ModelRouter: fast deterministic model routing and OpenAI-compatible proxying for custom AI agents"
 readme = "README.md"
 requires-python = ">=3.11"
