@@ -659,3 +659,9 @@ python scripts/replay_routing_log.py \
 
 This keeps the route-quality loop deterministic and auditable while preserving
 the `route_fast(...)` performance contract.
+
+Use `model-router telemetry summary` and `model-router telemetry feedback` while
+dogfooding to track replayable events, unlabeled request ids, skipped private
+events, and mismatch groups without printing prompt text. See
+`docs/telemetry-dogfood.md` for the full workflow and data threshold for
+revisiting optional advanced routing.

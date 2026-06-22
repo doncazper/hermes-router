@@ -77,6 +77,13 @@ Use `model-router feedback` to label bad routes and
 `scripts/replay_routing_log.py` to replay labeled traffic against a new router
 implementation before changing routing thresholds.
 
+Use `model-router telemetry summary` during dogfood runs to track event
+coverage, replayable events, unlabeled request ids, skipped private events, and
+`expected -> actual` mismatch groups. Use `model-router telemetry feedback` to
+inspect labels. Both commands avoid printing raw prompt text by default; notes
+are hidden unless `--include-notes` is passed. See
+`docs/telemetry-dogfood.md`.
+
 Optional classifier-based routing is not part of the production path. The
 Milestone 7 audit found no labeled replay mismatches that justify it. Revisit
 that decision only with recurring labeled replay failures, no deterministic fix

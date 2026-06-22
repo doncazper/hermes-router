@@ -18,6 +18,13 @@ def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.write_text(
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+
 def test_readable_cli_emits_selected_engine_and_scores():
     result = _run_cli("decide", "rewrite this text")
 
@@ -137,6 +144,110 @@ def test_feedback_cli_appends_jsonl_label(tmp_path):
     assert row["request_id"] == "req-123"
     assert row["expected_engine"] == "code_agent"
     assert row["notes"] == "should have used code"
+
+
+def test_telemetry_summary_cli_groups_mismatches_without_prompt_text(tmp_path):
+    events = tmp_path / "events.jsonl"
+    feedback = tmp_path / "feedback.jsonl"
+    _write_jsonl(
+        events,
+        [
+            {
+                "event_type": "routing_event",
+                "request_id": "secret-prompt",
+                "prompt": "api_key=secret-value rewrite this text",
+                "selected_engine": "balanced_local",
+                "status": "forwarded",
+                "route_latency_ms": 0.02,
+            },
+            {
+                "event_type": "routing_event",
+                "request_id": "private",
+                "prompt_hash": "abc",
+                "selected_engine": "balanced_local",
+                "status": "forwarded",
+            },
+        ],
+    )
+    _write_jsonl(
+        feedback,
+        [
+            {
+                "event_type": "routing_feedback",
+                "request_id": "secret-prompt",
+                "expected_engine": "fast_local",
+                "notes": "token=secret-value",
+            }
+        ],
+    )
+
+    result = _run_cli(
+        "telemetry",
+        "summary",
+        "--events",
+        str(events),
+        "--feedback",
+        str(feedback),
+        "--json",
+    )
+
+    assert result.returncode == 0
+    assert "secret-value" not in result.stdout
+    assert "rewrite this text" not in result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["routing_events"] == 2
+    assert payload["replayed"] == 1
+    assert payload["skipped_no_prompt"] == 1
+    assert payload["labeled_replayable"] == 1
+    assert payload["expected_mismatch_count"] == 1
+    assert payload["mismatch_groups"] == {"fast_local->reasoning_local": 1}
+    assert payload["skipped_no_prompt_request_ids"] == ["private"]
+
+
+def test_telemetry_feedback_cli_hides_notes_by_default(tmp_path):
+    events = tmp_path / "events.jsonl"
+    feedback = tmp_path / "feedback.jsonl"
+    _write_jsonl(
+        events,
+        [
+            {
+                "event_type": "routing_event",
+                "request_id": "req-1",
+                "prompt": "rewrite this text",
+                "selected_engine": "fast_local",
+                "status": "forwarded",
+            }
+        ],
+    )
+    _write_jsonl(
+        feedback,
+        [
+            {
+                "event_type": "routing_feedback",
+                "request_id": "req-1",
+                "expected_engine": "balanced_local",
+                "notes": "contains private note",
+            }
+        ],
+    )
+
+    result = _run_cli(
+        "telemetry",
+        "feedback",
+        "--events",
+        str(events),
+        "--feedback",
+        str(feedback),
+        "--json",
+    )
+
+    assert result.returncode == 0
+    assert "contains private note" not in result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["feedback_labels"] == 1
+    assert payload["labels"][0]["request_id"] == "req-1"
+    assert payload["labels"][0]["replayable"] is True
+    assert "notes" not in payload["labels"][0]
 
 
 def test_init_cli_writes_configs(tmp_path):

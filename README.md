@@ -383,10 +383,27 @@ model-router feedback req-123 code_agent --notes "repo prompt routed too small"
 Replay captured traffic against the current router:
 
 ```bash
+model-router telemetry summary \
+  --events ~/.model-router/logs/routing-events.jsonl \
+  --feedback ~/.model-router/routing-feedback.jsonl
+```
+
+Inspect labels without printing notes:
+
+```bash
+model-router telemetry feedback \
+  --events ~/.model-router/logs/routing-events.jsonl \
+  --feedback ~/.model-router/routing-feedback.jsonl
+```
+
+Run strict replay for CI-style checks:
+
+```bash
 python scripts/replay_routing_log.py \
   --events ~/.model-router/logs/routing-events.jsonl \
   --feedback ~/.model-router/routing-feedback.jsonl \
-  --json
+  --json \
+  --fail-on-regression
 ```
 
 Rows without full prompts are skipped for replay but still useful for aggregate
@@ -419,6 +436,9 @@ python scripts/replay_routing_log.py \
 
 This loop is the preferred way to turn a real wrong route into a durable
 regression case without adding LLM classification or slowing `route_fast(...)`.
+See [Routing telemetry dogfood](docs/telemetry-dogfood.md) for coverage
+summaries, feedback inspection, privacy defaults, and the data threshold for
+revisiting optional advanced routing.
 
 ## Troubleshooting
 

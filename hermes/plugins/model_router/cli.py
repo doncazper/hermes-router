@@ -26,6 +26,7 @@ from hermes.plugins.model_router.product import (
 from hermes.plugins.model_router.proxy_config import ProxyConfigError
 from hermes.plugins.model_router.receipts import decision_to_receipt, receipt_to_json
 from hermes.plugins.model_router.routing_log import (
+    DEFAULT_LOG_PATH,
     DEFAULT_FEEDBACK_PATH,
     RoutingLogWriter,
     build_feedback,
@@ -44,6 +45,7 @@ from hermes.plugins.model_router.setup_assistant import (
     write_config_from_recommendation,
     write_recommended_config,
 )
+from hermes.plugins.model_router.telemetry import feedback_summary, replay_events
 
 ROUTE_WIZARD_LABELS = (
     ("simple", "Simple rewrites/extraction"),
@@ -264,6 +266,58 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
     feedback.add_argument("request_id", help="Request id from routing-events JSONL")
     feedback.add_argument("expected_engine", help="Correct engine for this event")
     feedback.set_defaults(func=_cmd_feedback)
+
+    telemetry = subparsers.add_parser(
+        "telemetry",
+        help="Inspect routing events, feedback labels, and replay coverage",
+    )
+    telemetry_subparsers = telemetry.add_subparsers(
+        dest="telemetry_command",
+        required=True,
+    )
+    telemetry_summary = telemetry_subparsers.add_parser(
+        "summary",
+        help="Summarize routing telemetry and replay mismatches",
+    )
+    _add_telemetry_paths(telemetry_summary)
+    telemetry_summary.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Path to a model_router.yaml catalog",
+    )
+    telemetry_summary.add_argument(
+        "--max-examples",
+        type=_positive_int,
+        default=10,
+        help="Maximum request ids to show per example list",
+    )
+    telemetry_summary.add_argument("--json", action="store_true", help="Emit JSON")
+    telemetry_summary.add_argument(
+        "--fail-on-regression",
+        action="store_true",
+        help="Exit non-zero if any feedback-labeled event now routes incorrectly",
+    )
+    telemetry_summary.set_defaults(func=_cmd_telemetry_summary)
+
+    telemetry_feedback = telemetry_subparsers.add_parser(
+        "feedback",
+        help="List feedback labels without printing prompts",
+    )
+    _add_telemetry_paths(telemetry_feedback)
+    telemetry_feedback.add_argument(
+        "--include-notes",
+        action="store_true",
+        help="Include feedback notes in output",
+    )
+    telemetry_feedback.add_argument(
+        "--max-rows",
+        type=_positive_int,
+        default=50,
+        help="Maximum labels to show",
+    )
+    telemetry_feedback.add_argument("--json", action="store_true", help="Emit JSON")
+    telemetry_feedback.set_defaults(func=_cmd_telemetry_feedback)
 
     setup = subparsers.add_parser(
         "setup",
@@ -497,6 +551,28 @@ def _routing_hints_from_args(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be greater than 0")
+    return parsed
+
+
+def _add_telemetry_paths(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--events",
+        type=Path,
+        default=Path(DEFAULT_LOG_PATH),
+        help="Path to routing-events JSONL",
+    )
+    parser.add_argument(
+        "--feedback",
+        type=Path,
+        default=Path(DEFAULT_FEEDBACK_PATH),
+        help="Path to routing-feedback JSONL",
+    )
+
+
 def _cmd_validate_config(args: argparse.Namespace) -> int:
     try:
         config = load_router_config(args.config)
@@ -594,6 +670,36 @@ def _cmd_feedback(args: argparse.Namespace) -> int:
         print(f"Failed to write feedback to {args.output}", file=sys.stderr)
         return 1
     print(f"Feedback written to {args.output}")
+    return 0
+
+
+def _cmd_telemetry_summary(args: argparse.Namespace) -> int:
+    summary = replay_events(
+        events_path=args.events,
+        feedback_path=args.feedback,
+        config_path=args.config,
+        max_examples=args.max_examples,
+    )
+    if args.json:
+        print(json.dumps(summary, indent=2, sort_keys=True))
+    else:
+        _print_telemetry_summary(summary)
+    if args.fail_on_regression and summary["expected_mismatch_count"]:
+        return 1
+    return 0
+
+
+def _cmd_telemetry_feedback(args: argparse.Namespace) -> int:
+    summary = feedback_summary(
+        feedback_path=args.feedback,
+        events_path=args.events,
+        include_notes=args.include_notes,
+        max_rows=args.max_rows,
+    )
+    if args.json:
+        print(json.dumps(summary, indent=2, sort_keys=True))
+    else:
+        _print_feedback_summary(summary, include_notes=args.include_notes)
     return 0
 
 
@@ -1266,6 +1372,75 @@ def _print_dispatch_plan(plan) -> None:
     print("Reasons:")
     for reason in plan.reasons:
         print(f"- {reason}")
+
+
+def _print_telemetry_summary(summary: dict[str, Any]) -> None:
+    print("Routing telemetry summary")
+    print(f"Events: {summary['events']}")
+    print(f"Routing events: {summary['routing_events']}")
+    print(f"Replayable events: {summary['replayed']}")
+    print(f"Skipped without full prompt: {summary['skipped_no_prompt']}")
+    print(f"Feedback labels: {summary['feedback_labels']}")
+    print(f"Labeled replayable events: {summary['labeled_replayable']}")
+    print(f"Unlabeled replayable events: {summary['unlabeled_replayable']}")
+    print(f"Route changes: {summary['route_change_count']}")
+    print(f"Expected mismatches: {summary['expected_mismatch_count']}")
+    print(f"Replay mean latency: {summary['replay_route_latency_mean_ms']} ms")
+    _print_counter("Selected engines", summary["selected_engine_counts"])
+    _print_counter("Statuses", summary["status_counts"])
+    _print_counter("Mismatch groups", summary["mismatch_groups"])
+    _print_id_list(
+        "Unlabeled replayable request ids",
+        summary["unlabeled_replayable_request_ids"],
+    )
+    _print_id_list(
+        "Skipped private/no-prompt request ids",
+        summary["skipped_no_prompt_request_ids"],
+    )
+    _print_id_list(
+        "Feedback labels without matching events",
+        summary["feedback_without_event_request_ids"],
+    )
+    _print_id_list(
+        "Feedback labels for private/no-prompt events",
+        summary["feedback_for_private_event_request_ids"],
+    )
+
+
+def _print_feedback_summary(summary: dict[str, Any], *, include_notes: bool) -> None:
+    print(f"Feedback labels: {summary['feedback_labels']}")
+    _print_counter("Expected engines", summary["expected_engine_counts"])
+    print("Labels:")
+    if not summary["labels"]:
+        print("- none")
+    for label in summary["labels"]:
+        found = "yes" if label["event_found"] else "no"
+        replayable = "yes" if label["replayable"] else "no"
+        historical = label.get("historical_engine") or "unknown"
+        print(
+            f"- {label['request_id']}: {label['expected_engine']} "
+            f"(event: {found}, replayable: {replayable}, historical: {historical})"
+        )
+        if include_notes and label.get("notes"):
+            print(f"  notes: {label['notes']}")
+    if summary["truncated"]:
+        print("- output truncated; increase --max-rows to show more")
+
+
+def _print_counter(title: str, values: dict[str, int]) -> None:
+    print(f"{title}:")
+    if not values:
+        print("- none")
+    for key, value in values.items():
+        print(f"- {key}: {value}")
+
+
+def _print_id_list(title: str, values: list[str]) -> None:
+    print(f"{title}:")
+    if not values:
+        print("- none")
+    for value in values:
+        print(f"- {value}")
 
 
 def _print_readable(receipt) -> None:

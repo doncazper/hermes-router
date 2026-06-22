@@ -291,3 +291,23 @@ Tasks:
 
 At the end, tell me whether this should become a v0.6.x experimental feature, wait for more data, or be dropped.
 ```
+
+## Milestone 8: Routing Telemetry Dogfood Loop
+
+Goal: make routing telemetry dogfooding easier, safer, and more useful before
+considering classifier-based routing.
+
+Status: implemented. The CLI now exposes `model-router telemetry summary` for
+event/replay coverage, unlabeled replayable request ids, skipped private events,
+route changes, and `expected -> actual` mismatch groups. It also exposes
+`model-router telemetry feedback` for label inspection without printing notes
+by default. See `docs/telemetry-dogfood.md`.
+
+Done when:
+
+- Dogfood users can inspect routing events, feedback labels, replay coverage,
+  mismatch groups, and private/no-prompt skips without reading raw JSONL.
+- The workflow keeps prompt/privacy defaults safe.
+- Revisit criteria for optional advanced routing are based on roughly 20-30
+  labeled wrong routes with repeated patterns that deterministic scoring cannot
+  fix cleanly.
