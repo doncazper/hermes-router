@@ -10,6 +10,7 @@ from typing import Any
 
 import yaml
 
+from hermes.plugins.model_router.profiles import coerce_routing_profile
 from hermes.plugins.model_router.routing_log import (
     DEFAULT_LOG_PATH,
     PROMPT_CAPTURE_MODES,
@@ -24,6 +25,13 @@ DEFAULT_PROXY_CONFIG_SOURCE = (
     f"resource://{DEFAULT_PROXY_CONFIG_PACKAGE}/{DEFAULT_PROXY_CONFIG_NAME}"
 )
 RUNTIME_KINDS = ("llama-server", "mlx-lm", "generic")
+VERIFIER_MODES = ("off", "receipt-only", "sampled", "always-for-risky-output")
+VERIFIER_FAILURE_BEHAVIORS = ("log_only", "fail_closed")
+DEFAULT_VERIFIER_PROMPT_TEMPLATE = (
+    "Review the ModelRouter route receipt metadata. "
+    "Selected engine: {selected_engine}. Receipt summary: {receipt_summary}. "
+    "Return a concise JSON object with ok and rationale."
+)
 
 
 class ProxyConfigError(ValueError):
@@ -34,6 +42,7 @@ class ProxyConfigError(ValueError):
 class ProxyServerConfig:
     host: str = "127.0.0.1"
     port: int = 8082
+    routing_profile: str = "balanced"
     api_key: str | None = None
     api_key_env: str | None = None
     model_ids: tuple[str, ...] = (DEFAULT_PROXY_MODEL_ID,)
@@ -90,6 +99,48 @@ class ProxyHealthConfig:
 
 
 @dataclass(frozen=True)
+class ProxyBackendPolicyConfig:
+    version: int = 1
+    backend_allowlist: tuple[str, ...] = ()
+    backend_denylist: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "backend_allowlist": list(self.backend_allowlist),
+            "backend_denylist": list(self.backend_denylist),
+        }
+
+
+@dataclass(frozen=True)
+class ProxyVerifierConfig:
+    version: int = 1
+    mode: str = "off"
+    backend: str | None = None
+    sample_rate: float = 0.0
+    route_codes: tuple[str, ...] = ()
+    timeout_seconds: float = 10.0
+    failure_behavior: str = "log_only"
+    prompt_template: str = DEFAULT_VERIFIER_PROMPT_TEMPLATE
+    include_response_preview: bool = False
+    max_response_preview_chars: int = 500
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "mode": self.mode,
+            "backend": self.backend,
+            "sample_rate": self.sample_rate,
+            "route_codes": list(self.route_codes),
+            "timeout_seconds": self.timeout_seconds,
+            "failure_behavior": self.failure_behavior,
+            "prompt_template": self.prompt_template,
+            "include_response_preview": self.include_response_preview,
+            "max_response_preview_chars": self.max_response_preview_chars,
+        }
+
+
+@dataclass(frozen=True)
 class RoutingProxyConfig:
     proxy: ProxyServerConfig
     router_config: str | None
@@ -101,10 +152,16 @@ class RoutingProxyConfig:
         default_factory=ProxyObservabilityConfig
     )
     health: ProxyHealthConfig = field(default_factory=ProxyHealthConfig)
+    backend_policy: ProxyBackendPolicyConfig = field(
+        default_factory=ProxyBackendPolicyConfig
+    )
+    verifier: ProxyVerifierConfig = field(default_factory=ProxyVerifierConfig)
 
     def backend_for_engine(self, engine: str) -> ProxyBackendConfig | None:
         backend_name = self.engine_backends.get(engine)
         if backend_name is None:
+            return None
+        if self.backend_policy_rejection_reason(backend_name) is not None:
             return None
         return self.backends.get(backend_name)
 
@@ -113,7 +170,20 @@ class RoutingProxyConfig:
             self.backends[name]
             for name in self.fallback_backends.get(backend_name, ())
             if name in self.backends
+            and self.backend_policy_rejection_reason(name) is None
         )
+
+    def backend_policy_rejection_reason(self, backend_name: str | None) -> str | None:
+        if backend_name is None:
+            return None
+        if (
+            self.backend_policy.backend_allowlist
+            and backend_name not in self.backend_policy.backend_allowlist
+        ):
+            return f"backend {backend_name} not allowed by backend policy"
+        if backend_name in self.backend_policy.backend_denylist:
+            return f"backend {backend_name} denied by backend policy"
+        return None
 
 
 def default_proxy_config_resource() -> resources.abc.Traversable:
@@ -155,6 +225,8 @@ def load_proxy_config(config_path: str | Path | None = None) -> RoutingProxyConf
     health = _load_health(data.get("health"))
     router_config = _optional_string(data, "router_config")
     backends = _load_backends(data.get("backends"))
+    backend_policy = _load_backend_policy(data.get("backend_policy"), backends)
+    verifier = _load_verifier(data.get("verifier"), backends)
     _validate_resolved_env_secrets(proxy, backends)
     engine_backends = _load_engine_backends(data.get("engine_backends"), backends)
     fallback_backends = _load_fallback_backends(data.get("fallback_backends"), backends)
@@ -169,6 +241,8 @@ def load_proxy_config(config_path: str | Path | None = None) -> RoutingProxyConf
         source_path=source_path,
         observability=observability,
         health=health,
+        backend_policy=backend_policy,
+        verifier=verifier,
     )
 
 
@@ -185,6 +259,7 @@ def _load_proxy_server(data: Any) -> ProxyServerConfig:
     return ProxyServerConfig(
         host=_string(data, "host", default="127.0.0.1"),
         port=_positive_int(data, "port", default=8082),
+        routing_profile=_routing_profile(data),
         api_key=api_key,
         api_key_env=api_key_env,
         model_ids=model_ids,
@@ -305,6 +380,109 @@ def _load_health(data: Any) -> ProxyHealthConfig:
     )
 
 
+def _load_backend_policy(
+    data: Any,
+    backends: dict[str, ProxyBackendConfig],
+) -> ProxyBackendPolicyConfig:
+    if data is None:
+        return ProxyBackendPolicyConfig()
+    if not isinstance(data, dict):
+        raise ProxyConfigError("backend_policy must be a mapping")
+    allowed = {"version", "backend_allowlist", "backend_denylist"}
+    unknown = sorted(set(data) - allowed)
+    if unknown:
+        raise ProxyConfigError("backend_policy unknown keys: " + ", ".join(unknown))
+    version = data.get("version", 1)
+    if isinstance(version, bool) or version != 1:
+        raise ProxyConfigError("backend_policy version must be 1")
+    allowlist = _string_tuple(data, "backend_allowlist", default=())
+    denylist = _string_tuple(data, "backend_denylist", default=())
+    for backend_name in (*allowlist, *denylist):
+        if backend_name not in backends:
+            raise ProxyConfigError(
+                f"backend_policy references undefined backend {backend_name!r}"
+            )
+    return ProxyBackendPolicyConfig(
+        version=1,
+        backend_allowlist=allowlist,
+        backend_denylist=denylist,
+    )
+
+
+def _load_verifier(
+    data: Any,
+    backends: dict[str, ProxyBackendConfig],
+) -> ProxyVerifierConfig:
+    if data is None:
+        return ProxyVerifierConfig()
+    if not isinstance(data, dict):
+        raise ProxyConfigError("verifier must be a mapping")
+    allowed = {
+        "version",
+        "mode",
+        "backend",
+        "sample_rate",
+        "route_codes",
+        "timeout_seconds",
+        "failure_behavior",
+        "prompt_template",
+        "include_response_preview",
+        "max_response_preview_chars",
+    }
+    unknown = sorted(set(data) - allowed)
+    if unknown:
+        raise ProxyConfigError("verifier unknown keys: " + ", ".join(unknown))
+    version = data.get("version", 1)
+    if isinstance(version, bool) or version != 1:
+        raise ProxyConfigError("verifier version must be 1")
+    mode = _verifier_mode(data)
+    if mode not in VERIFIER_MODES:
+        raise ProxyConfigError("verifier mode must be one of: " + ", ".join(VERIFIER_MODES))
+    backend = _optional_string(data, "backend")
+    if backend is not None and backend not in backends:
+        raise ProxyConfigError(f"verifier references undefined backend {backend!r}")
+    if mode in {"sampled", "always-for-risky-output"} and backend is None:
+        raise ProxyConfigError(f"verifier mode {mode!r} requires backend")
+    sample_rate = _bounded_float(data, "sample_rate", default=0.0, minimum=0.0, maximum=1.0)
+    if mode == "sampled" and sample_rate <= 0:
+        raise ProxyConfigError("verifier sample_rate must be greater than 0 for sampled mode")
+    failure_behavior = _string(data, "failure_behavior", default="log_only")
+    if failure_behavior not in VERIFIER_FAILURE_BEHAVIORS:
+        raise ProxyConfigError(
+            "verifier failure_behavior must be one of: "
+            + ", ".join(VERIFIER_FAILURE_BEHAVIORS)
+        )
+    return ProxyVerifierConfig(
+        version=1,
+        mode=mode,
+        backend=backend,
+        sample_rate=sample_rate,
+        route_codes=_string_tuple(data, "route_codes", default=()),
+        timeout_seconds=_positive_float(data, "timeout_seconds", default=10.0),
+        failure_behavior=failure_behavior,
+        prompt_template=_string(
+            data,
+            "prompt_template",
+            default=DEFAULT_VERIFIER_PROMPT_TEMPLATE,
+        ),
+        include_response_preview=_bool(data, "include_response_preview", default=False),
+        max_response_preview_chars=_non_negative_int(
+            data,
+            "max_response_preview_chars",
+            default=500,
+        ),
+    )
+
+
+def _verifier_mode(data: dict[str, Any]) -> str:
+    value = data.get("mode", "off")
+    if value is False:
+        return "off"
+    if not isinstance(value, str) or not value.strip():
+        raise ProxyConfigError("verifier mode must be a non-empty string")
+    return value.strip()
+
+
 def _load_engine_backends(data: Any, backends: dict[str, ProxyBackendConfig]) -> dict[str, str]:
     if not isinstance(data, dict) or not data:
         raise ProxyConfigError(
@@ -399,6 +577,13 @@ def _optional_string(data: dict[str, Any], key: str) -> str | None:
     return value
 
 
+def _routing_profile(data: dict[str, Any]) -> str:
+    try:
+        return coerce_routing_profile(data.get("routing_profile")).value
+    except ValueError as exc:
+        raise ProxyConfigError(str(exc)) from exc
+
+
 def _positive_int(data: dict[str, Any], key: str, default: int) -> int:
     value = data.get(key, default)
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
@@ -417,6 +602,24 @@ def _positive_float(data: dict[str, Any], key: str, default: float) -> float:
     value = data.get(key, default)
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
         raise ProxyConfigError(f"{key} must be a positive number")
+    return float(value)
+
+
+def _bounded_float(
+    data: dict[str, Any],
+    key: str,
+    *,
+    default: float,
+    minimum: float,
+    maximum: float,
+) -> float:
+    value = data.get(key, default)
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not minimum <= float(value) <= maximum
+    ):
+        raise ProxyConfigError(f"{key} must be a number between {minimum} and {maximum}")
     return float(value)
 
 

@@ -15,6 +15,15 @@ safety:
     allow_purchase_actions: false
     allow_high_impact_external_actions: false
     allow_ambiguous_high_impact: false
+provider_policy:
+  version: 1
+  provider_allowlist: []
+  provider_denylist: []
+  local_only: false
+  hosted_allowed: true
+  max_cost_tier: null
+  max_latency_tier: null
+  route_pools: {}
 engines:
   intent_router:
     provider: local

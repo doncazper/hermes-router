@@ -73,11 +73,13 @@ def _config_path(tmp_path: Path) -> Path:
 def test_public_api_exports_stable_router_surface():
     assert public_api.__all__ == [
         "ModelRouter",
+        "RoutingProfile",
         "build_dispatch_plan",
         "route_prompt",
         "score_prompt",
     ]
     assert public_api.ModelRouter is ModelRouter
+    assert public_api.RoutingProfile.PRIVATE == "private"
 
 
 def test_route_fast_is_production_api_and_route_is_diagnostic_api(tmp_path):
@@ -103,6 +105,26 @@ def test_route_fast_does_not_call_rich_scorer(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes.plugins.model_router.policy.score_prompt", explode)
 
     assert router.route_fast("rewrite this text") == "fast_local"
+
+
+def test_route_fast_honors_configured_provider_policy(tmp_path):
+    path = _config_path(tmp_path)
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data["engines"]["hosted_fast"] = _engine("hosted_fast", fallback="fast_local") | {
+        "provider": "openai",
+        "adapter": "openai",
+    }
+    data["routing_targets"]["simple"] = "hosted_fast"
+    data["provider_policy"] = {"version": 1, "local_only": True}
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    router = ModelRouter.from_config(path)
+
+    assert router.route_fast("rewrite this text") == "fast_local"
+    assert router.route_fast(
+        "rewrite this text",
+        hints={"force_engine": "hosted_fast"},
+    ) == "fast_local"
 
 
 def test_route_fast_source_has_no_hot_path_logging_or_scorer_call():

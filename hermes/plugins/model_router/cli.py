@@ -11,6 +11,11 @@ import sys
 from typing import Any
 
 from hermes.plugins.model_router.availability import validate_router_availability
+from hermes.plugins.model_router.catalog_update import (
+    apply_catalog_update,
+    catalog_diff,
+    catalog_status,
+)
 from hermes.plugins.model_router.config import RouterConfigError, load_router_config
 from hermes.plugins.model_router.dispatch import build_dispatch_plan, dispatch_plan_to_json
 from hermes.plugins.model_router.models import ModelEngine, RouterConfig
@@ -22,6 +27,7 @@ from hermes.plugins.model_router.model_benchmark import (
     plan_backend_benchmarks,
 )
 from hermes.plugins.model_router.policy import ModelRouter, route_prompt
+from hermes.plugins.model_router.profiles import ROUTING_PROFILE_VALUES
 from hermes.plugins.model_router.product import (
     DEFAULT_CONFIG_DIR,
     DEFAULT_PROXY_PORT,
@@ -55,6 +61,11 @@ from hermes.plugins.model_router.setup_assistant import (
     write_recommended_config,
 )
 from hermes.plugins.model_router.telemetry import feedback_summary, replay_events
+from hermes.plugins.model_router.workflow_benchmark import (
+    run_workflow_benchmarks,
+    workflow_case_names,
+    workflow_cases_by_name,
+)
 
 ROUTE_WIZARD_LABELS = (
     ("simple", "Simple rewrites/extraction"),
@@ -178,10 +189,22 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
         help="Emit a JSON routing receipt",
     )
     decide.add_argument(
+        "--explain",
+        action="store_true",
+        help="Emit a concise human-readable receipt explanation",
+    )
+    decide.add_argument(
         "--config",
         type=Path,
         default=None,
         help="Path to a model_router.yaml catalog",
+    )
+    decide.add_argument(
+        "--profile",
+        dest="routing_profile",
+        default="balanced",
+        choices=ROUTING_PROFILE_VALUES,
+        help="Routing profile to compile into routing constraints",
     )
     decide.add_argument(
         "--force-engine",
@@ -210,6 +233,28 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
         action="store_true",
         help="Prefer lower-latency engines when possible",
     )
+    decide.add_argument(
+        "--provider-allow",
+        action="append",
+        default=None,
+        help="Only allow this provider; repeat for multiple providers",
+    )
+    decide.add_argument(
+        "--provider-deny",
+        action="append",
+        default=None,
+        help="Deny this provider; repeat for multiple providers",
+    )
+    decide.add_argument(
+        "--local-only",
+        action="store_true",
+        help="Reject hosted/API providers for this decision",
+    )
+    decide.add_argument(
+        "--no-hosted",
+        action="store_true",
+        help="Alias for --local-only",
+    )
     decide.add_argument("prompt", nargs="+", help="Prompt text to route")
     decide.set_defaults(func=_cmd_decide)
 
@@ -230,6 +275,117 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
     )
     dispatch.add_argument("prompt", nargs="+", help="Prompt text to plan")
     dispatch.set_defaults(func=_cmd_dispatch_plan)
+
+    workflow_benchmark = subparsers.add_parser(
+        "workflow-benchmark",
+        help="Run offline workflow routing correctness benchmarks",
+    )
+    workflow_benchmark.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Path to a model_router.yaml catalog",
+    )
+    workflow_benchmark.add_argument(
+        "--case",
+        action="append",
+        choices=workflow_case_names(),
+        default=None,
+        help="Run one workflow fixture by name; repeat for multiple cases",
+    )
+    workflow_benchmark.add_argument(
+        "--fail-on-mismatch",
+        action="store_true",
+        help="Exit non-zero when any expected route changes",
+    )
+    workflow_benchmark.add_argument("--json", action="store_true", help="Emit JSON output")
+    workflow_benchmark.set_defaults(func=_cmd_workflow_benchmark)
+
+    catalog = subparsers.add_parser(
+        "catalog",
+        help="Inspect and apply packaged catalog updates",
+    )
+    catalog_subparsers = catalog.add_subparsers(
+        dest="catalog_command",
+        required=True,
+    )
+    catalog_status_parser = catalog_subparsers.add_parser(
+        "status",
+        help="Show packaged catalog and local config status",
+    )
+    catalog_status_parser.add_argument(
+        "--config",
+        type=Path,
+        default=Path(DEFAULT_CONFIG_DIR) / "model_router.yaml",
+        help="Path to local model_router.yaml",
+    )
+    catalog_status_parser.add_argument(
+        "--migration-log",
+        type=Path,
+        default=None,
+        help="Path to catalog migration JSONL",
+    )
+    catalog_status_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit JSON output",
+    )
+    catalog_status_parser.set_defaults(func=_cmd_catalog_status)
+
+    catalog_diff_parser = catalog_subparsers.add_parser(
+        "diff",
+        help="Preview packaged router catalog changes without applying them",
+    )
+    catalog_diff_parser.add_argument(
+        "--config",
+        type=Path,
+        default=Path(DEFAULT_CONFIG_DIR) / "model_router.yaml",
+        help="Path to local model_router.yaml",
+    )
+    catalog_diff_parser.add_argument(
+        "--migration-log",
+        type=Path,
+        default=None,
+        help="Path to catalog migration JSONL",
+    )
+    catalog_diff_parser.add_argument(
+        "--context",
+        type=_positive_int,
+        default=3,
+        help="Unified diff context lines",
+    )
+    catalog_diff_parser.add_argument(
+        "--max-lines",
+        type=_positive_int,
+        default=240,
+        help="Maximum diff lines to print",
+    )
+    catalog_diff_parser.add_argument("--json", action="store_true", help="Emit JSON output")
+    catalog_diff_parser.set_defaults(func=_cmd_catalog_diff)
+
+    catalog_apply_parser = catalog_subparsers.add_parser(
+        "apply",
+        help="Apply packaged router catalog defaults after confirmation",
+    )
+    catalog_apply_parser.add_argument(
+        "--config",
+        type=Path,
+        default=Path(DEFAULT_CONFIG_DIR) / "model_router.yaml",
+        help="Path to local model_router.yaml",
+    )
+    catalog_apply_parser.add_argument(
+        "--migration-log",
+        type=Path,
+        default=None,
+        help="Path to catalog migration JSONL",
+    )
+    catalog_apply_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Apply without an interactive prompt",
+    )
+    catalog_apply_parser.add_argument("--json", action="store_true", help="Emit JSON output")
+    catalog_apply_parser.set_defaults(func=_cmd_catalog_apply)
 
     validate = subparsers.add_parser(
         "validate-config",
@@ -616,6 +772,8 @@ def _cmd_decide(args: argparse.Namespace) -> int:
     receipt = decision_to_receipt(decision)
     if args.json:
         print(receipt_to_json(receipt))
+    elif args.explain:
+        _print_explain(receipt)
     else:
         _print_readable(receipt)
     return 0
@@ -669,12 +827,77 @@ def _cmd_dispatch_plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_workflow_benchmark(args: argparse.Namespace) -> int:
+    report = run_workflow_benchmarks(
+        config_path=args.config,
+        cases=workflow_cases_by_name(args.case),
+    )
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+    else:
+        _print_workflow_benchmark_report(report)
+    return 1 if args.fail_on_mismatch and not report.ok else 0
+
+
+def _cmd_catalog_status(args: argparse.Namespace) -> int:
+    status = catalog_status(args.config, migration_log=args.migration_log)
+    if args.json:
+        print(json.dumps(status.to_dict(), indent=2, sort_keys=True))
+    else:
+        _print_catalog_status(status)
+    return 0
+
+
+def _cmd_catalog_diff(args: argparse.Namespace) -> int:
+    diff = catalog_diff(
+        args.config,
+        migration_log=args.migration_log,
+        context_lines=args.context,
+        max_lines=args.max_lines,
+    )
+    if args.json:
+        print(json.dumps(diff.to_dict(), indent=2, sort_keys=True))
+    else:
+        _print_catalog_diff(diff)
+    return 0
+
+
+def _cmd_catalog_apply(args: argparse.Namespace) -> int:
+    confirmed = args.yes
+    if not confirmed and not args.json:
+        diff = catalog_diff(args.config, migration_log=args.migration_log)
+        _print_catalog_diff(diff)
+        if diff.has_changes:
+            answer = input("Apply packaged catalog update? [y/N] ").strip().lower()
+            confirmed = answer in {"y", "yes"}
+        else:
+            confirmed = True
+
+    result = apply_catalog_update(
+        args.config,
+        confirmed=confirmed,
+        migration_log=args.migration_log,
+    )
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+    else:
+        _print_catalog_apply_result(result)
+    return 0 if result.ok else 1
+
+
 def _add_routing_hint_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--config",
         type=Path,
         default=None,
         help="Path to a model_router.yaml catalog",
+    )
+    parser.add_argument(
+        "--profile",
+        dest="routing_profile",
+        default="balanced",
+        choices=ROUTING_PROFILE_VALUES,
+        help="Routing profile to compile into routing constraints",
     )
     parser.add_argument(
         "--force-engine",
@@ -703,15 +926,43 @@ def _add_routing_hint_args(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Prefer lower-latency engines when possible",
     )
+    parser.add_argument(
+        "--provider-allow",
+        action="append",
+        default=None,
+        help="Only allow this provider; repeat for multiple providers",
+    )
+    parser.add_argument(
+        "--provider-deny",
+        action="append",
+        default=None,
+        help="Deny this provider; repeat for multiple providers",
+    )
+    parser.add_argument(
+        "--local-only",
+        action="store_true",
+        help="Reject hosted/API providers for this decision",
+    )
+    parser.add_argument(
+        "--no-hosted",
+        action="store_true",
+        help="Alias for --local-only",
+    )
 
 
 def _routing_hints_from_args(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "force_engine": args.force_engine,
+        "profile": getattr(args, "routing_profile", "balanced"),
         "attachments": args.attachment or [],
         "max_cost_tier": args.max_cost_tier,
         "max_latency_tier": args.max_latency_tier,
         "latency_sensitive": args.latency_sensitive,
+        "provider_allowlist": getattr(args, "provider_allow", None) or [],
+        "provider_denylist": getattr(args, "provider_deny", None) or [],
+        "local_only": bool(getattr(args, "local_only", False))
+        or bool(getattr(args, "no_hosted", False)),
+        "hosted_allowed": False if getattr(args, "no_hosted", False) else None,
     }
 
 
@@ -784,7 +1035,10 @@ def _cmd_validate_proxy_config(args: argparse.Namespace) -> int:
         "config_valid": True,
         "proxy_config": config.source_path,
         "router_config": config.router_config or "default",
+        "routing_profile": config.proxy.routing_profile,
         "backends": sorted(config.backends),
+        "backend_policy": config.backend_policy.to_dict(),
+        "verifier": config.verifier.to_dict(),
         "engine_backends": dict(sorted(config.engine_backends.items())),
         "observability": {
             "enabled": config.observability.enabled,
@@ -799,6 +1053,7 @@ def _cmd_validate_proxy_config(args: argparse.Namespace) -> int:
         print("Proxy config valid: true")
         print(f"Proxy config: {config.source_path}")
         print(f"Router config: {config.router_config or 'default'}")
+        print(f"Routing profile: {config.proxy.routing_profile}")
         print("Backends: " + ", ".join(sorted(config.backends)))
     return 0
 
@@ -1637,6 +1892,93 @@ def _print_benchmark_result(result) -> None:
         print(f"- {note}")
 
 
+def _print_workflow_benchmark_report(report) -> None:
+    print("Workflow Routing Benchmark")
+    print(f"OK: {str(report.ok).lower()}")
+    print(
+        "Summary: "
+        f"{report.passed}/{report.total} passed; "
+        f"{report.route_changes} route changes"
+    )
+    print("Results:")
+    if not report.results:
+        print("- none")
+    for item in report.results:
+        status = "pass" if item.passed else "fail"
+        print(
+            f"- {item.name}: {status} "
+            f"({item.expected_engine} -> {item.selected_engine}; "
+            f"{item.route_latency_us} us)"
+        )
+        print(f"  profile: {item.routing_profile}")
+        if item.reason_codes:
+            print(f"  codes: {', '.join(item.reason_codes[:8])}")
+        for reason in item.failure_reasons:
+            print(f"  failure: {reason}")
+    print("Notes:")
+    if not report.notes:
+        print("- none")
+    for note in report.notes:
+        print(f"- {note}")
+
+
+def _print_catalog_status(status) -> None:
+    local_state = (
+        "missing"
+        if not status.local_exists
+        else ("matches packaged" if status.local_matches_packaged else "customized")
+    )
+    print("Catalog Status")
+    print(f"Packaged model catalog: v{status.packaged_model_catalog_version}")
+    print(f"Packaged router config: {status.packaged_router_config_source}")
+    print(f"Local config: {status.local_config} ({local_state})")
+    print(f"Migration log: {status.migration_log}")
+    print(f"Remote checks: {str(status.remote_checks_enabled).lower()}")
+    if status.last_applied_model_catalog_version is not None:
+        print(f"Last applied catalog: v{status.last_applied_model_catalog_version}")
+    print("Overrides:")
+    if not status.overrides:
+        print("- none")
+    for item in status.overrides:
+        print(f"- {item}")
+    print("Notes:")
+    for note in status.notes:
+        print(f"- {note}")
+
+
+def _print_catalog_diff(diff) -> None:
+    print("Catalog Diff")
+    print(f"Action: {diff.action}")
+    print(f"Changes: {str(diff.has_changes).lower()}")
+    if diff.diff_lines:
+        print("Diff:")
+        for line in diff.diff_lines:
+            print(line)
+    else:
+        print("Diff: none")
+    print("Notes:")
+    if not diff.notes:
+        print("- none")
+    for note in diff.notes:
+        print(f"- {note}")
+
+
+def _print_catalog_apply_result(result) -> None:
+    print("Catalog Apply")
+    print(f"OK: {str(result.ok).lower()}")
+    print(f"Executed: {str(result.executed).lower()}")
+    print(f"Action: {result.action}")
+    print(f"Config: {result.config_path}")
+    if result.backup_path:
+        print(f"Backup: {result.backup_path}")
+    print(f"Migration log: {result.migration_log}")
+    print("Notes:")
+    if not result.notes:
+        print("- none")
+    for note in result.notes:
+        print(f"- {note}")
+
+
 def _print_download_result(result) -> None:
     print(f"Executed: {str(result.executed).lower()}")
     print(f"OK: {str(result.ok).lower()}")
@@ -1773,7 +2115,9 @@ def _print_id_list(title: str, values: list[str]) -> None:
 
 
 def _print_readable(receipt) -> None:
+    print(f"Summary: {receipt.summary}")
     print(f"Selected engine: {receipt.selected_engine}")
+    print(f"Routing profile: {receipt.routing_profile}")
     print(f"Fallback engine: {receipt.fallback_engine or 'none'}")
     print(f"Complexity: {receipt.complexity_score}/100")
     print(f"Risk: {receipt.risk_score}/100")
@@ -1810,6 +2154,21 @@ def _print_readable(receipt) -> None:
     print("Reasons:")
     for reason in receipt.reasons:
         print(f"- {reason}")
+
+
+def _print_explain(receipt) -> None:
+    print("Route Receipt")
+    print(f"Summary: {receipt.summary}")
+    print(f"Selected: {receipt.selected_engine}")
+    print(f"Profile: {receipt.routing_profile}")
+    print(f"Reason codes: {', '.join(receipt.reason_codes) or 'none'}")
+    print(f"Selected route: {receipt.selected_route_explanation}")
+    print(f"Policy: {receipt.policy_explanation}")
+    print(f"Rejected: {receipt.rejection_explanation}")
+    print(f"Fallback: {receipt.fallback_explanation}")
+    print(f"Safety: {receipt.safety_explanation}")
+    print(f"Privacy: {receipt.privacy_explanation}")
+    print(f"Wrong route: {receipt.wrong_route_next_action}")
 
 
 if __name__ == "__main__":

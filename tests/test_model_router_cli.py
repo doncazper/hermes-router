@@ -29,6 +29,7 @@ def test_readable_cli_emits_selected_engine_and_scores():
     result = _run_cli("decide", "rewrite this text")
 
     assert result.returncode == 0
+    assert "Summary: Selected fast_local" in result.stdout
     assert "Selected engine: fast_local" in result.stdout
     assert "Complexity:" in result.stdout
     assert "Risk:" in result.stdout
@@ -43,6 +44,21 @@ def test_json_cli_emits_parseable_receipt():
     assert payload["requires_code_execution"] is True
     assert payload["requires_tools"] is True
     assert "alternatives" in payload
+    assert "summary" in payload
+    assert "route.coding" in payload["reason_codes"]
+
+
+def test_explain_cli_emits_privacy_safe_receipt_summary():
+    prompt = "fix the repo with token=secret-value and run tests"
+    result = _run_cli("decide", "--explain", prompt)
+
+    assert result.returncode == 0
+    assert "Route Receipt" in result.stdout
+    assert "Summary: Selected code_agent" in result.stdout
+    assert "Reason codes:" in result.stdout
+    assert "route.coding" in result.stdout
+    assert "Wrong route:" in result.stdout
+    assert "secret-value" not in result.stdout
 
 
 def test_json_cli_accepts_force_engine_hint():
@@ -58,6 +74,37 @@ def test_json_cli_accepts_force_engine_hint():
     payload = json.loads(result.stdout)
     assert payload["selected_engine"] == "reasoning_local"
     assert any("forced engine reasoning_local" in reason for reason in payload["reasons"])
+
+
+def test_json_cli_accepts_routing_profile():
+    result = _run_cli(
+        "decide",
+        "--json",
+        "--profile",
+        "private",
+        "rewrite this text",
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["routing_profile"] == "private"
+    assert payload["requirements"]["allowed_providers"] == ["local", "human"]
+
+
+def test_json_cli_accepts_provider_policy_hints():
+    result = _run_cli(
+        "decide",
+        "--json",
+        "--provider-deny",
+        "openai",
+        "--no-hosted",
+        "research latest model routing approaches",
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["requirements"]["provider_denylist"] == ["openai"]
+    assert payload["requirements"]["allowed_providers"] == ["local", "human"]
 
 
 def test_json_cli_accepts_attachment_hint():

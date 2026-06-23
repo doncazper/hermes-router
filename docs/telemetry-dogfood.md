@@ -15,10 +15,27 @@ observability:
   prompt_capture: redacted_preview
 ```
 
-The proxy logs request metadata, selected engine, scores, feature flags,
-backend, fallback status, latency, prompt hash, prompt length, estimated tokens,
-and a redacted preview. It does not log raw prompts unless
+The proxy logs request metadata, selected engine, routing profile, scores,
+feature flags, backend, fallback status, latency, prompt hash, prompt length,
+estimated tokens, and a redacted preview. It does not log raw prompts unless
 `prompt_capture: full` or `MODEL_ROUTER_LOG_PROMPTS=1` is explicitly enabled.
+
+When provider policy rejects an engine, the diagnostic receipt includes the
+policy reason and rejected engine without raw prompt text. When proxy backend
+policy rejects forwarding, the event status is `backend_policy_rejected`, the
+proxy returns a structured error, and no upstream backend is called.
+
+When proxy observability has a diagnostic decision, routing events also include
+privacy-safe receipt fields such as `receipt_summary`, `reason_codes`,
+`policy_explanation`, `fallback_explanation`, `safety_explanation`,
+`privacy_explanation`, and `wrong_route_next_action`. These fields are derived
+from routing metadata and do not include raw prompts.
+
+If the optional verifier is enabled, routing events include verifier metadata:
+`verification_mode`, `verification_status`, `verification_backend`,
+`verification_status_code`, `verification_latency_ms`, and
+`verification_error`. Streaming requests report `skipped_streaming`; default
+configs keep verification `off`.
 
 Telemetry inspection commands do not print raw prompt text. Feedback notes are
 hidden by default because they may contain private context.
@@ -31,6 +48,7 @@ privacy-safe headers:
 ```text
 X-ModelRouter-Request-ID
 X-ModelRouter-Engine
+X-ModelRouter-Profile
 X-ModelRouter-Backend
 X-ModelRouter-Fallback
 X-ModelRouter-Route-API
@@ -97,6 +115,12 @@ model-router feedback req-123 code_agent \
   --notes "repo prompt routed too small"
 ```
 
+For a one-off explanation without reading JSON:
+
+```bash
+model-router decide --explain "fix the repo and run tests"
+```
+
 Then replay labeled traffic against the current router:
 
 ```bash
@@ -123,6 +147,39 @@ Promote recurring wrong-route clusters into checked-in fixtures or parametrized
 tests only after replay shows the pattern. Keep the fixture prompt sanitized,
 rerun replay before and after any scoring change, and keep the regression test
 with the fix.
+
+Use the offline workflow benchmark for broad release evidence:
+
+```bash
+model-router workflow-benchmark --json --fail-on-mismatch
+```
+
+The workflow report has the same privacy posture as telemetry summaries:
+prompt hashes, expected/selected routes, receipt summaries, reason codes,
+policy/fallback/safety explanations, and route-change counts, but no prompt
+bodies. Promote stable wrong-route clusters into workflow fixtures only after
+sanitizing the prompt enough to preserve routing behavior without private
+content.
+
+## Maintain Catalogs
+
+Use the packaged catalog workflow when updating local recommendations or
+checking whether a user config has drifted from packaged defaults:
+
+```bash
+model-router catalog status --config ~/.model-router/model_router.yaml
+model-router catalog diff --config ~/.model-router/model_router.yaml
+```
+
+These commands perform no remote checks and write nothing. Apply packaged
+defaults only after reviewing the diff:
+
+```bash
+model-router catalog apply --config ~/.model-router/model_router.yaml --yes
+```
+
+Apply backs up the existing config and writes a migration log entry. Treat the
+result as a maintenance action, not as telemetry-driven auto-tuning.
 
 ## Advanced Routing Threshold
 

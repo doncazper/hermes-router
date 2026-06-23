@@ -15,6 +15,7 @@ from hermes.plugins.model_router.models import (
     ModelEngine,
     PromptAnalysis,
     PromptFeatures,
+    ProviderPolicy,
     RouterConfig,
     RouterAvailabilityReport,
     RoutingAlternative,
@@ -23,6 +24,7 @@ from hermes.plugins.model_router.models import (
     RoutingRequirements,
     SafetyConfig,
 )
+from hermes.plugins.model_router.profiles import RoutingProfile, profile_constraints
 from hermes.plugins.model_router.scorer import _merged_weights, score_prompt
 
 FAIL_CLOSED_ENGINE = "human_confirm"
@@ -40,6 +42,7 @@ LATENCY_TIER_ORDER = {
     "high": 3,
     "manual": 4,
 }
+LOCAL_PROVIDERS = ("local", "human")
 _FAST_CONFIRMATION_PREFIXES = (
     "delete",
     "remove",
@@ -141,6 +144,29 @@ _FAST_PUNCTUATION_STRIP = ".,!?;:"
 # ``ambiguous`` regex so the fast path routes such prompts upward like ``route``.
 _FAST_AMBIGUOUS_WORDS = frozenset(
     {"handle", "help", "fix", "manage", "do", "this", "that", "it"}
+)
+_FAST_SAFE_PROFILE_SENSITIVE_WORDS = frozenset(
+    {
+        "bank",
+        "contract",
+        "diagnosis",
+        "doctor",
+        "eviction",
+        "finance",
+        "financial",
+        "health",
+        "insurance",
+        "legal",
+        "loan",
+        "lawsuit",
+        "medical",
+        "mortgage",
+        "passport",
+        "prescription",
+        "tax",
+        "taxes",
+        "visa",
+    }
 )
 _FAST_CODING_MARKERS = (
     " code ",
@@ -346,18 +372,6 @@ _CONFIRM_ALL = (
     | _CONFIRM_PURCHASE
     | _CONFIRM_HIGH_IMPACT
 )
-_FAST_TARGET_REQUIREMENTS = {
-    "simple": RoutingRequirements(),
-    "balanced": RoutingRequirements(),
-    "reasoning": RoutingRequirements(),
-    "coding": RoutingRequirements(needs_tools=True),
-    "research": RoutingRequirements(needs_tools=True),
-    "vision": RoutingRequirements(needs_tools=True),
-    "image_generation": RoutingRequirements(needs_tools=True),
-    "confirmation": RoutingRequirements(),
-}
-
-
 class ModelRouter:
     """Initialized, reusable model router for the runtime hot path."""
 
@@ -387,6 +401,7 @@ class ModelRouter:
             name: (
                 engine.enabled,
                 engine.fallback,
+                engine.provider,
                 engine.supports_tools,
                 engine.modalities,
                 engine.cost_tier,
@@ -454,6 +469,11 @@ class ModelRouter:
                 analysis.features,
                 self.config.safety,
             )
+            or _requires_profile_confirmation(
+                analysis,
+                self.config.safety,
+                routing_hints.profile,
+            )
         )
 
         if routing_hints.force_engine and not (
@@ -465,7 +485,11 @@ class ModelRouter:
                 required_modalities,
                 self.config.safety,
             )
-            requirements = _derive_requirements(routing_hints, classified_target)
+            requirements = _derive_requirements(
+                routing_hints,
+                classified_target,
+                self.config.provider_policy,
+            )
             return _route_forced_engine(
                 analysis,
                 self.config,
@@ -479,9 +503,16 @@ class ModelRouter:
         if routing_hints.force_engine:
             target = "confirmation"
             target_reason = (
-                f"force_engine ignored for high-risk request: "
+                f"force_engine ignored for request requiring confirmation: "
                 f"{routing_hints.force_engine}"
             )
+        elif _requires_profile_confirmation(
+            analysis,
+            self.config.safety,
+            routing_hints.profile,
+        ):
+            target = "confirmation"
+            target_reason = "routing profile safe requires confirmation"
         else:
             target, target_reason = _target_route(
                 analysis,
@@ -489,7 +520,11 @@ class ModelRouter:
                 self.config.safety,
             )
 
-        requirements = _derive_requirements(routing_hints, target)
+        requirements = _derive_requirements(
+            routing_hints,
+            target,
+            self.config.provider_policy,
+        )
 
         (
             selected,
@@ -517,7 +552,12 @@ class ModelRouter:
         else:
             alternatives = ()
             alternative_rejections = ()
-        reasons = [*analysis.reasons, target_reason]
+        reasons = [
+            *analysis.reasons,
+            *requirements.profile_reasons,
+            *requirements.provider_policy_reasons,
+            target_reason,
+        ]
         if fallback_reason:
             reasons.append(fallback_reason)
 
@@ -547,6 +587,7 @@ class ModelRouter:
             ),
             alternatives=alternatives,
             fallback_used=fallback_used,
+            routing_profile=routing_hints.profile,
         )
 
     def route_fast(
@@ -576,6 +617,13 @@ class ModelRouter:
         except ValueError:
             return FAIL_CLOSED_ENGINE
 
+        if (
+            routing_hints.profile == RoutingProfile.SAFE
+            and target_index != _FAST_CONFIRMATION_INDEX
+            and _fast_safe_profile_requires_confirmation(prompt, target_index)
+        ):
+            return FAIL_CLOSED_ENGINE
+
         required_modalities = tuple(
             attachment
             for attachment in routing_hints.attachments
@@ -584,9 +632,11 @@ class ModelRouter:
         if target != "confirmation" and required_modalities:
             target = "vision"
 
-        max_latency_tier = routing_hints.max_latency_tier
-        if max_latency_tier is None and routing_hints.latency_sensitive:
-            max_latency_tier = "medium"
+        requirements = _derive_requirements(
+            routing_hints,
+            target,
+            self.config.provider_policy,
+        )
 
         if routing_hints.force_engine:
             if (
@@ -598,16 +648,20 @@ class ModelRouter:
                 routing_hints.force_engine,
                 needs_tools=target in _FAST_TOOL_TARGETS or bool(required_modalities),
                 required_modalities=required_modalities,
-                max_cost_tier=routing_hints.max_cost_tier,
-                max_latency_tier=max_latency_tier,
+                max_cost_tier=requirements.max_cost_tier,
+                max_latency_tier=requirements.max_latency_tier,
+                allowed_providers=requirements.allowed_providers,
+                denied_providers=requirements.denied_providers,
             )
 
         return self._resolve_target_fast(
             target,
             needs_tools=target in _FAST_TOOL_TARGETS or bool(required_modalities),
             required_modalities=required_modalities,
-            max_cost_tier=routing_hints.max_cost_tier,
-            max_latency_tier=max_latency_tier,
+            max_cost_tier=requirements.max_cost_tier,
+            max_latency_tier=requirements.max_latency_tier,
+            allowed_providers=requirements.allowed_providers,
+            denied_providers=requirements.denied_providers,
         )
 
     def _compile_fast_target_engines(self) -> tuple[str, ...]:
@@ -615,7 +669,11 @@ class ModelRouter:
             _resolve_enabled_route(
                 target,
                 self.config,
-                _FAST_TARGET_REQUIREMENTS.get(target, RoutingRequirements()),
+                _derive_requirements(
+                    _coerce_hints(None),
+                    target,
+                    self.config.provider_policy,
+                ),
                 self._availability_results,
             )[0]
             for target in _FAST_TARGET_NAMES
@@ -635,6 +693,8 @@ class ModelRouter:
         required_modalities: tuple[str, ...],
         max_cost_tier: str | None,
         max_latency_tier: str | None,
+        allowed_providers: tuple[str, ...],
+        denied_providers: tuple[str, ...],
     ) -> str:
         engine_name = self.config.routing_targets.get(target)
         if engine_name is None:
@@ -645,6 +705,8 @@ class ModelRouter:
             required_modalities=required_modalities,
             max_cost_tier=max_cost_tier,
             max_latency_tier=max_latency_tier,
+            allowed_providers=allowed_providers,
+            denied_providers=denied_providers,
         )
 
     def _resolve_engine_fast(
@@ -655,6 +717,8 @@ class ModelRouter:
         required_modalities: tuple[str, ...],
         max_cost_tier: str | None,
         max_latency_tier: str | None,
+        allowed_providers: tuple[str, ...],
+        denied_providers: tuple[str, ...],
     ) -> str:
         current = engine_name
         for _ in range(self._fast_engine_count + 1):
@@ -664,6 +728,7 @@ class ModelRouter:
             (
                 enabled,
                 fallback,
+                provider,
                 supports_tools,
                 modalities,
                 cost_tier,
@@ -677,6 +742,8 @@ class ModelRouter:
                 and not any(
                     modality not in modalities for modality in required_modalities
                 )
+                and not (allowed_providers and provider not in allowed_providers)
+                and provider not in denied_providers
                 and not _tier_exceeds(cost_tier, max_cost_tier, COST_TIER_ORDER)
                 and not _tier_exceeds(
                     latency_tier,
@@ -888,6 +955,18 @@ def _fast_is_ambiguous(raw_text: str) -> bool:
     return any(token in _FAST_AMBIGUOUS_WORDS for token in tokens)
 
 
+def _fast_safe_profile_requires_confirmation(prompt: str, target_index: int) -> bool:
+    raw_text = (prompt or "").lower()
+    if target_index == _FAST_REASONING_INDEX and _fast_is_ambiguous(raw_text):
+        return True
+    tokens = {
+        token.strip(_FAST_PUNCTUATION_STRIP)
+        for token in raw_text.split()
+        if token.strip(_FAST_PUNCTUATION_STRIP)
+    }
+    return bool(tokens & _FAST_SAFE_PROFILE_SENSITIVE_WORDS)
+
+
 def _fast_starts_with_benign(token: str) -> bool:
     return any(token.startswith(obj) for obj in _FAST_BENIGN_MESSAGE_OBJECTS)
 
@@ -929,8 +1008,24 @@ def _fast_has_confirmation_word(text: str) -> bool:
 
 def _coerce_hints(hints: dict | RoutingHints | None) -> RoutingHints:
     if isinstance(hints, RoutingHints):
-        return hints
-    return RoutingHints.from_dict(hints)
+        return _apply_profile_constraints(hints)
+    return _apply_profile_constraints(RoutingHints.from_dict(hints))
+
+
+def _apply_profile_constraints(hints: RoutingHints) -> RoutingHints:
+    constraints = profile_constraints(hints.profile)
+    return RoutingHints(
+        force_engine=hints.force_engine,
+        profile=hints.profile,
+        latency_sensitive=hints.latency_sensitive or constraints.latency_sensitive,
+        max_cost_tier=hints.max_cost_tier or constraints.max_cost_tier,
+        max_latency_tier=hints.max_latency_tier or constraints.max_latency_tier,
+        attachments=hints.attachments,
+        allowed_providers=hints.allowed_providers or constraints.allowed_providers,
+        denied_providers=hints.denied_providers,
+        local_only=hints.local_only,
+        hosted_allowed=hints.hosted_allowed,
+    )
 
 
 def _required_modalities(hints: RoutingHints) -> tuple[str, ...]:
@@ -942,15 +1037,143 @@ def _required_modalities(hints: RoutingHints) -> tuple[str, ...]:
 def _derive_requirements(
     hints: RoutingHints,
     target: str | None,
+    provider_policy: ProviderPolicy | None = None,
 ) -> RoutingRequirements:
     required_modalities = _required_modalities(hints)
+    constraints = profile_constraints(hints.profile)
+    effective_policy = _effective_provider_policy(provider_policy, target)
+    policy_reasons = _provider_policy_reasons(effective_policy, target)
+    allowed_providers = _combined_provider_allowlist(
+        effective_policy.provider_allowlist,
+        hints.allowed_providers,
+        local_only=(
+            effective_policy.local_only
+            or not effective_policy.hosted_allowed
+            or hints.local_only
+            or hints.hosted_allowed is False
+        ),
+    )
+    denied_providers = _combined_provider_denylist(
+        effective_policy.provider_denylist,
+        hints.denied_providers,
+    )
     return RoutingRequirements(
+        routing_profile=hints.profile,
         needs_tools=target in TOOL_TARGETS or bool(required_modalities),
         required_modalities=required_modalities,
-        max_cost_tier=hints.max_cost_tier,
-        max_latency_tier=hints.max_latency_tier
-        or ("medium" if hints.latency_sensitive else None),
+        max_cost_tier=_stricter_tier(
+            hints.max_cost_tier,
+            effective_policy.max_cost_tier,
+            COST_TIER_ORDER,
+        ),
+        max_latency_tier=_stricter_tier(
+            hints.max_latency_tier or ("medium" if hints.latency_sensitive else None),
+            effective_policy.max_latency_tier,
+            LATENCY_TIER_ORDER,
+        ),
+        allowed_providers=allowed_providers,
+        denied_providers=denied_providers,
+        profile_reasons=constraints.reasons,
+        provider_policy_reasons=policy_reasons,
     )
+
+
+def _effective_provider_policy(
+    provider_policy: ProviderPolicy | None,
+    target: str | None,
+) -> ProviderPolicy:
+    base = provider_policy or ProviderPolicy()
+    if target is None:
+        return base
+    route_policy = base.route_pools.get(target)
+    if route_policy is None:
+        return base
+    return ProviderPolicy(
+        provider_allowlist=_intersect_or_route_allowlist(
+            base.provider_allowlist,
+            route_policy.provider_allowlist,
+        ),
+        provider_denylist=tuple(
+            dict.fromkeys((*base.provider_denylist, *route_policy.provider_denylist))
+        ),
+        local_only=base.local_only or route_policy.local_only,
+        hosted_allowed=base.hosted_allowed and route_policy.hosted_allowed,
+        max_cost_tier=route_policy.max_cost_tier or base.max_cost_tier,
+        max_latency_tier=route_policy.max_latency_tier or base.max_latency_tier,
+        route_pools=base.route_pools,
+    )
+
+
+def _intersect_or_route_allowlist(
+    base: tuple[str, ...],
+    route: tuple[str, ...],
+) -> tuple[str, ...]:
+    if base and route:
+        route_set = set(route)
+        return tuple(provider for provider in base if provider in route_set)
+    return route or base
+
+
+def _combined_provider_allowlist(
+    policy_allowlist: tuple[str, ...],
+    hint_allowlist: tuple[str, ...],
+    *,
+    local_only: bool,
+) -> tuple[str, ...]:
+    allowed = _intersect_or_route_allowlist(policy_allowlist, hint_allowlist)
+    if local_only:
+        allowed = _intersect_or_route_allowlist(allowed, LOCAL_PROVIDERS)
+        if not allowed:
+            allowed = LOCAL_PROVIDERS
+    if allowed and "human" not in allowed:
+        allowed = (*allowed, "human")
+    return tuple(dict.fromkeys(allowed))
+
+
+def _combined_provider_denylist(
+    policy_denylist: tuple[str, ...],
+    hint_denylist: tuple[str, ...],
+) -> tuple[str, ...]:
+    denied = tuple(dict.fromkeys((*policy_denylist, *hint_denylist)))
+    return tuple(provider for provider in denied if provider != "human")
+
+
+def _stricter_tier(
+    hint_tier: str | None,
+    policy_tier: str | None,
+    order: dict[str, int],
+) -> str | None:
+    if hint_tier is None:
+        return policy_tier
+    if policy_tier is None:
+        return hint_tier
+    return hint_tier if order[hint_tier] <= order[policy_tier] else policy_tier
+
+
+def _provider_policy_reasons(
+    policy: ProviderPolicy,
+    target: str | None,
+) -> tuple[str, ...]:
+    reasons: list[str] = []
+    if target and target in policy.route_pools:
+        reasons.append(f"provider policy route pool applied for {target}")
+    if policy.local_only or not policy.hosted_allowed:
+        reasons.append("provider policy local-only excludes hosted providers")
+    if policy.provider_allowlist:
+        reasons.append(
+            "provider policy allowlist: " + ", ".join(policy.provider_allowlist)
+        )
+    if policy.provider_denylist:
+        reasons.append(
+            "provider policy denylist: " + ", ".join(policy.provider_denylist)
+        )
+    if policy.max_cost_tier:
+        reasons.append(f"provider policy max cost tier: {policy.max_cost_tier}")
+    if policy.max_latency_tier:
+        reasons.append(
+            f"provider policy max latency tier: {policy.max_latency_tier}"
+        )
+    return tuple(reasons)
 
 
 def _fast_confirmation_mask(safety: SafetyConfig) -> int:
@@ -1009,6 +1232,22 @@ def _requires_ambiguous_high_impact_confirmation(
     )
 
 
+def _requires_profile_confirmation(
+    analysis: PromptAnalysis,
+    safety: SafetyConfig,
+    profile: RoutingProfile,
+) -> bool:
+    if not safety.require_human_confirmation or profile != RoutingProfile.SAFE:
+        return False
+    features = analysis.features
+    return bool(
+        features.ambiguous
+        or features.sensitive_domain
+        or features.requires_confirmation
+        or analysis.risk_score.value >= 50
+    )
+
+
 def _route_forced_engine(
     analysis: PromptAnalysis,
     router_config: RouterConfig,
@@ -1045,7 +1284,12 @@ def _route_forced_engine(
     else:
         alternatives = ()
         alternative_rejections = ()
-    reasons = [*analysis.reasons, f"forced engine {force_engine}"]
+    reasons = [
+        *analysis.reasons,
+        *requirements.profile_reasons,
+        *requirements.provider_policy_reasons,
+        f"forced engine {force_engine}",
+    ]
     if selected == FAIL_CLOSED_ENGINE and router_config.get_engine(force_engine) is None:
         reasons.append(f"unknown forced engine {force_engine}")
     if fallback_reason:
@@ -1059,6 +1303,11 @@ def _route_forced_engine(
         or _requires_ambiguous_high_impact_confirmation(
             analysis.features,
             router_config.safety,
+        )
+        or _requires_profile_confirmation(
+            analysis,
+            router_config.safety,
+            hints.profile,
         )
     )
     return RoutingDecision(
@@ -1085,6 +1334,7 @@ def _route_forced_engine(
         ),
         alternatives=() if selected == FAIL_CLOSED_ENGINE else alternatives,
         fallback_used=fallback_used,
+        routing_profile=hints.profile,
     )
 
 
@@ -1404,6 +1654,18 @@ def _engine_constraint_reason(
     engine: ModelEngine,
     requirements: RoutingRequirements,
 ) -> str | None:
+    if engine.provider in requirements.denied_providers:
+        return f"provider {engine.provider} denied by provider policy"
+    if (
+        requirements.allowed_providers
+        and engine.provider not in requirements.allowed_providers
+    ):
+        if requirements.routing_profile == RoutingProfile.PRIVATE:
+            return (
+                f"provider {engine.provider} excluded by private routing profile "
+                "(local-only)"
+            )
+        return f"provider {engine.provider} not allowed by provider policy"
     if requirements.needs_tools and not engine.supports_tools:
         return "tools required but engine does not support tools"
     for modality in requirements.required_modalities:
@@ -1460,6 +1722,7 @@ def _fail_closed(
         requirements=requirements,
         rejected_engines=rejected_engines,
         fallback_used=True,
+        routing_profile=requirements.routing_profile,
     )
 
 

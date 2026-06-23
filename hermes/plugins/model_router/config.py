@@ -10,6 +10,7 @@ import yaml
 
 from hermes.plugins.model_router.models import (
     ModelEngine,
+    ProviderPolicy,
     RouterConfig,
     SafetyConfig,
     ScoringConfig,
@@ -130,6 +131,12 @@ def load_router_config(config_path: str | Path | None = None) -> RouterConfig:
         safety = SafetyConfig.from_dict(data.get("safety"))
     except ValueError as exc:
         raise RouterConfigError(f"model router safety config invalid: {exc}") from exc
+    try:
+        provider_policy = ProviderPolicy.from_dict(data.get("provider_policy"))
+    except ValueError as exc:
+        raise RouterConfigError(
+            f"model router provider policy invalid: {exc}"
+        ) from exc
 
     return RouterConfig(
         engines=engines,
@@ -137,6 +144,7 @@ def load_router_config(config_path: str | Path | None = None) -> RouterConfig:
         source_path=source_path,
         scoring=scoring,
         safety=safety,
+        provider_policy=provider_policy,
     )
 
 

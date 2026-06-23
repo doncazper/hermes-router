@@ -112,6 +112,10 @@ def test_settings_home_page_loads_without_chat_surface(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     assert "ModelRouter Settings" in response.text
+    assert "Provider policy" in response.text
+    assert "Backend policy" in response.text
+    assert "Selected code_agent under the balanced profile" in response.text
+    assert "route.coding" in response.text
     assert "No chat surface" in response.text
     assert "chat transcript" not in response.text.lower()
     assert "textarea id=\"chat" not in response.text.lower()
@@ -151,6 +155,14 @@ def test_settings_state_api_includes_models_and_downloads(tmp_path, monkeypatch)
     payload = TestClient(app).get("/api/state").json()
 
     assert payload["config_valid"] is True
+    assert payload["provider_policy"]["available"] is True
+    assert payload["provider_policy"]["version"] == 1
+    assert payload["backend_policy"] == {
+        "version": 1,
+        "backend_allowlist": [],
+        "backend_denylist": [],
+    }
+    assert payload["verifier"]["mode"] == "off"
     assert payload["discovery"]["models"][0]["repo_id"] == "mlx-community/Qwen3-4B-4bit"
     assert payload["download_plan"]["suggestions"]
     assert payload["recommendation"]["local_model_recommendations"]
@@ -211,6 +223,52 @@ def test_save_config_patches_structured_fields_and_validates(tmp_path, monkeypat
     assert config.backends["fast"].model == "new-fast-model"
     assert config.backends["fast"].base_url == "http://127.0.0.1:9999/v1"
     assert config.observability.prompt_capture == "off"
+
+
+def test_save_config_patches_routing_profile(tmp_path, monkeypatch):
+    _init_config(tmp_path)
+    _stub_scan(monkeypatch)
+    app = settings_ui.create_settings_app(config_dir=tmp_path)
+
+    response = TestClient(app).post(
+        "/api/save-config",
+        json={"proxy": {"routing_profile": "private"}},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["proxy"]["routing_profile"] == "private"
+    config = load_proxy_config(tmp_path / "routing_proxy.yaml")
+    assert config.proxy.routing_profile == "private"
+
+
+def test_save_config_patches_backend_policy(tmp_path, monkeypatch):
+    _init_config(tmp_path)
+    _stub_scan(monkeypatch)
+    app = settings_ui.create_settings_app(config_dir=tmp_path)
+
+    response = TestClient(app).post(
+        "/api/save-config",
+        json={
+            "backend_policy": {
+                "backend_allowlist": "fast, balanced",
+                "backend_denylist": ["reasoning"],
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["backend_policy"] == {
+        "version": 1,
+        "backend_allowlist": ["fast", "balanced"],
+        "backend_denylist": ["reasoning"],
+    }
+    config = load_proxy_config(tmp_path / "routing_proxy.yaml")
+    assert config.backend_policy.backend_allowlist == ("fast", "balanced")
+    assert config.backend_policy.backend_denylist == ("reasoning",)
 
 
 def test_doctor_api_returns_structured_report(tmp_path, monkeypatch):

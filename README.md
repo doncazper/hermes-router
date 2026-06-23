@@ -1,12 +1,13 @@
 # ModelRouter
 
-Deterministic, fast, safety-first model routing for custom AI agents.
+ModelRouter is the open switchboard for AI model routing: one local
+OpenAI-compatible endpoint that routes each request to the right model, with
+receipts, safety gates, and full provider control.
 
-ModelRouter gives agents one local OpenAI-compatible endpoint that routes each
-chat request to the right configured model server. Simple work can go to fast
-local models, complex work to stronger reasoning models, fresh research to
-research tools, repo work to code models, and risky actions to human
-confirmation.
+Simple work can go to fast local models, complex work to stronger reasoning
+models, fresh research to research tools, repo work to code-capable backends,
+screenshots to vision/OCR, image requests to image generation, and risky
+actions to human confirmation.
 
 ## Use With Your Agent In 3 Minutes
 
@@ -42,6 +43,15 @@ model-router doctor --config ~/.model-router/routing_proxy.yaml
 curl http://127.0.0.1:8082/health
 ```
 
+The normal onboarding loop is:
+
+1. Choose a routing profile: `fast`, `balanced`, `quality`, `private`, or
+   `safe`.
+2. Choose provider policy: local-only, hosted-allowed, allowlists, denylists,
+   or per-route pools.
+3. Inspect receipts with `model-router decide --explain` or proxy telemetry
+   before changing routing rules.
+
 Prefer a small local settings screen instead of editing YAML first:
 
 ```bash
@@ -76,8 +86,10 @@ can start and stop only those configured local model-server processes.
 | Need | ModelRouter provides |
 | --- | --- |
 | Fast hot-path routing | `ModelRouter.route_fast(prompt)` returns an engine string |
-| Diagnostic decisions | `ModelRouter.route(prompt)` returns scores, flags, reasons, and alternatives |
-| CLI tooling | `decide`, `validate-config`, `dispatch-plan`, and `setup` commands |
+| Productized receipts | `ModelRouter.route(prompt)` returns summary, reason codes, policy/fallback/safety explanations, and audit fields |
+| Plain-language profiles | `fast`, `balanced`, `quality`, `private`, and `safe` compile to routing constraints |
+| Provider policy controls | Versioned allowlists, denylists, local-only mode, and backend pools |
+| CLI tooling | `decide`, `workflow-benchmark`, `validate-config`, `dispatch-plan`, and `setup` commands |
 | Local/API flexibility | YAML routing targets for local models, hosted APIs, vision, image generation, and custom adapters |
 | Safety boundaries | High-risk or invalid requests fail closed to `human_confirm` |
 | Setup help | Safe local scans, config recommendations, and opt-in Hugging Face download plans |
@@ -88,7 +100,12 @@ can start and stop only those configured local model-server processes.
 - Fast initialized hot path: `router.route_fast(prompt)` returns only the
   selected engine.
 - Rich receipt path: `router.route(prompt)` returns scores, reasons, rejected
-  engines, alternatives, requirements, and safety flags.
+  engines, alternatives, requirements, reason codes, and concise explanations.
+- Routing profiles for low-latency, balanced, quality, private, and safer
+  routing defaults.
+- Versioned provider/backend policy controls for local-only operation,
+  allowlists, denylists, tier caps, and receipt-visible rejections.
+- Offline workflow benchmarks for release-friendly routing correctness reports.
 - YAML-driven engine catalog; model names are not hardcoded throughout the
   router.
 - OpenAI-compatible proxy for agents that only know how to call a local AI
@@ -161,6 +178,12 @@ JSON receipt:
 model-router decide --json "fix the repo and run tests"
 ```
 
+Readable explanation:
+
+```bash
+model-router decide --explain "fix the repo and run tests"
+```
+
 Expected default routing examples:
 
 | Prompt | Selected engine |
@@ -173,6 +196,157 @@ Expected default routing examples:
 | `extract text from this screenshot` | `multimodal_vision` |
 | `generate an image of a router dashboard` | `image_generation` |
 | `drop the production database` | `human_confirm` |
+
+## Routing Profiles
+
+Profiles are plain-language routing modes that compile into routing hints and
+policy constraints. They are separate from engine names, so advanced users can
+still point routes or `--force-engine` at exact configured engines.
+
+| Profile | Behavior |
+| --- | --- |
+| `fast` | Prefer low latency and low-cost backends. |
+| `balanced` | Current default deterministic behavior. |
+| `quality` | Allow stronger configured reasoning and hosted fallbacks. |
+| `private` | Local-only provider policy; hosted API providers are rejected and shown in receipts. |
+| `safe` | Stricter confirmation behavior for ambiguous or sensitive requests. |
+
+Use a profile from the CLI:
+
+```bash
+model-router decide --profile private --json "research this"
+model-router dispatch-plan --profile safe "handle my taxes"
+```
+
+Set the proxy default profile in `~/.model-router/routing_proxy.yaml`:
+
+```yaml
+proxy:
+  host: 127.0.0.1
+  port: 8082
+  routing_profile: balanced
+```
+
+The settings UI also exposes the default proxy profile. Profiles never bypass
+`human_confirm`, and `private` does not silently enable or call hosted providers.
+
+## Provider And Backend Policies
+
+Provider policy is a versioned router constraint layer that applies after the
+selected profile and before engine fallback resolution. It lets you set global
+provider rules once, then optionally narrow them per semantic route.
+
+```yaml
+provider_policy:
+  version: 1
+  provider_allowlist: []
+  provider_denylist: []
+  local_only: false
+  hosted_allowed: true
+  max_cost_tier: null
+  max_latency_tier: null
+  route_pools:
+    simple:
+      local_only: true
+    balanced:
+      local_only: true
+    reasoning:
+      hosted_allowed: true
+```
+
+- `provider_allowlist` and `provider_denylist` constrain engine providers such
+  as `local`, `openai`, `anthropic`, or `human`.
+- `local_only: true` and `hosted_allowed: false` compile to local/human-only
+  routing. `human_confirm` stays reachable even under restrictive policies.
+- `max_cost_tier` and `max_latency_tier` reuse the existing engine tier values.
+- Caller hints may narrow provider policy, but they cannot loosen configured
+  allowlists, denylists, local-only mode, or max tier caps.
+- Per-route `route_pools` apply to targets such as `simple`, `balanced`,
+  `reasoning`, `coding`, `research`, `vision`, `image_generation`, and
+  `confirmation`.
+- Receipts include policy reasons and rejected engines so denied providers are
+  visible instead of silently skipped.
+
+Proxy backend policy is separate because backend names exist only in the local
+OpenAI-compatible proxy config:
+
+```yaml
+backend_policy:
+  version: 1
+  backend_allowlist: []
+  backend_denylist: []
+```
+
+Backend policy is enforced before forwarding and on explicit fallback chains.
+If a selected engine maps to a denied backend, the proxy returns
+`backend_policy_rejected` without calling upstream.
+
+## Explicit Verification Boundary
+
+The optional proxy verifier is disabled by default and stays outside
+`route_fast(...)`. When enabled, it runs only after the proxy has routed and
+forwarded a non-streaming request:
+
+```text
+route -> forward to selected backend -> optional verifier -> response
+```
+
+```yaml
+verifier:
+  version: 1
+  mode: "off"                 # off, receipt-only, sampled, always-for-risky-output
+  backend: null               # required for sampled or always-for-risky-output
+  sample_rate: 0.0
+  route_codes: []
+  timeout_seconds: 10
+  failure_behavior: log_only  # log_only or fail_closed
+  include_response_preview: false
+  max_response_preview_chars: 500
+```
+
+`receipt-only` logs whether a request qualifies without calling another
+backend. `sampled` verifies a deterministic percentage of low-risk
+non-confirmation requests. `always-for-risky-output` verifies configured route
+codes but still never bypasses `human_confirm`. Streaming requests are marked
+`skipped_streaming`; the proxy does not buffer streams for verification.
+
+## Workflow Benchmarks
+
+Run offline workflow benchmarks when you want release evidence for routing
+correctness and profile behavior:
+
+```bash
+model-router workflow-benchmark
+model-router workflow-benchmark --json --fail-on-mismatch
+```
+
+The benchmark uses checked-in sanitized fixture prompts for simple,
+balanced, coding, research, vision, image generation, safety, private-profile,
+and quality-profile workflows. Reports include expected and selected engines,
+provider, confirmation state, route-change counts, receipt summaries, reason
+codes, and policy/fallback/safety explanations. Reports serialize prompt hashes
+instead of prompt bodies and make no backend, verifier, download, or hosted API
+calls.
+
+## Route Receipts
+
+Receipts are the transparent answer to "why did this go there?" The JSON shape
+keeps the original audit fields and adds deterministic product fields:
+
+- `summary`: concise human-readable route outcome.
+- `reason_codes`: stable lowercase codes such as `route.coding`,
+  `policy.local_only`, `rejection.provider_denied`, or `fallback.used`.
+- `selected_route_explanation`: why the selected engine matched the request.
+- `policy_explanation`: profile/provider constraints that mattered.
+- `rejection_explanation`: rejected engines/providers and the reason.
+- `fallback_explanation`: whether fallback was used or only configured.
+- `safety_explanation`: confirmation or fail-closed explanation.
+- `privacy_explanation`: local-only/hosted-policy context and prompt privacy.
+- `wrong_route_next_action`: how to label the route for dogfooding.
+
+Receipts never include raw prompt text by default. `route_fast(...)` remains the
+string-only production hot path; use `route(...)`, `model-router decide --json`,
+or `model-router decide --explain` when you need receipt detail.
 
 ## Python API
 
@@ -239,6 +413,7 @@ Pass routing hints:
 
 ```bash
 model-router decide \
+  --profile private \
   --attachment image \
   --force-engine multimodal_vision \
   --max-cost-tier medium \
@@ -266,6 +441,29 @@ models, tools, shell commands, provider calls, or external actions. They skip
 ranked alternatives by default for speed; pass `--include-alternatives` when a
 full receipt is useful.
 
+Run offline workflow correctness benchmarks:
+
+```bash
+model-router workflow-benchmark
+model-router workflow-benchmark --json --fail-on-mismatch
+```
+
+This command exercises sanitized route fixtures and emits prompt hashes, not
+prompt bodies. It does not call providers or local model servers.
+
+Inspect packaged catalog updates without changing local policy:
+
+```bash
+model-router catalog status
+model-router catalog diff
+model-router catalog apply --yes
+```
+
+`catalog status` and `catalog diff` are read-only and perform no remote checks.
+`catalog apply` writes the packaged router catalog only after explicit
+confirmation, backs up an existing local config first, and appends a JSONL
+migration entry.
+
 ## Local Routing Proxy
 
 Most agents can talk to an OpenAI-compatible local endpoint. Install the optional
@@ -290,6 +488,9 @@ outgoing backend model, and forwards to an OpenAI-compatible upstream such as
 LM Studio, llama.cpp server, LocalAI, or a frontier gateway. `human_confirm`
 returns HTTP `409` and is never forwarded. Tools are preserved by default and
 can be stripped per backend for small local models.
+
+The configured `proxy.routing_profile` is applied to every routed proxy request
+and is reported in `/health` plus the `X-ModelRouter-Profile` response header.
 
 Managed local runtimes are opt-in per backend. A backend can declare an argv-only
 `runtime.command`, readiness URL, idle timeout, shutdown timeout, and log path.
@@ -640,6 +841,21 @@ revisiting optional advanced routing.
   "requires_image_generation": false,
   "config_valid": true,
   "availability_valid": true,
+  "summary": "Selected code_agent under the balanced profile; no confirmation required; fallback available: reasoning_local.",
+  "reason_codes": [
+    "profile.balanced",
+    "route.coding",
+    "requirement.tools",
+    "requirement.code_execution",
+    "fallback.configured",
+    "safety.no_confirmation_required"
+  ],
+  "selected_route_explanation": "Selected code_agent for coding or repository work.",
+  "policy_explanation": "Profile: routing profile balanced uses default deterministic routing.",
+  "fallback_explanation": "No fallback was used; reasoning_local remains the configured fallback.",
+  "safety_explanation": "No human confirmation is required by the current safety policy.",
+  "privacy_explanation": "No raw prompt text is stored in this receipt; provider use follows the configured catalog and policy.",
+  "wrong_route_next_action": "If this route was wrong, label the proxy request id with `model-router feedback <request_id> balanced_local`.",
   "reasons": [
     "coding or repository intent",
     "tool use likely",
@@ -804,6 +1020,31 @@ stores prompt bodies, request bodies, API keys, or secrets. Benchmark results
 can improve future recommendation ranking, but they only propose choices; they
 never mutate config or routing policy automatically.
 
+## Catalog Update Workflow
+
+Model and preset recommendations come from packaged catalogs. Use the catalog
+workflow to see what the installed package would change before accepting it:
+
+```bash
+model-router catalog status \
+  --config ~/.model-router/model_router.yaml
+
+model-router catalog diff \
+  --config ~/.model-router/model_router.yaml
+
+model-router catalog apply \
+  --config ~/.model-router/model_router.yaml \
+  --yes
+```
+
+The workflow is packaged-only today: it does not fetch remote catalogs or
+silently change routing policy. `status` reports the packaged model catalog
+version, local config hash, migration log path, and local overrides. `diff`
+previews packaged router catalog changes. `apply` requires confirmation, backs
+up an existing local config before writing, and records the action in
+`catalog-migrations.jsonl`. The settings UI shows catalog status but does not
+apply updates.
+
 Run the wizard:
 
 ```bash
@@ -884,9 +1125,10 @@ For non-interactive scripts, add `--yes`.
   and external-action prompts require confirmation by default.
 - Confirmation escape hatches must be explicit in `safety.confirmation_overrides`;
   the router does not learn approvals or silently relax safety rules.
-- `force_engine` cannot bypass human confirmation.
+- `force_engine` cannot bypass human confirmation or provider/backend policy.
 - Missing or invalid config routes to `human_confirm`.
-- Unavailable or incompatible engines are skipped through configured fallbacks.
+- Unavailable, incompatible, or policy-denied engines are skipped through
+  configured fallbacks without escaping denied providers/backends.
 - Receipts omit raw prompt text.
 
 ## Performance

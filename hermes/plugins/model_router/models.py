@@ -5,6 +5,11 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from hermes.plugins.model_router.profiles import (
+    RoutingProfile,
+    coerce_routing_profile,
+)
+
 
 def _as_jsonable(value: Any) -> Any:
     if hasattr(value, "to_dict"):
@@ -633,10 +638,15 @@ class PromptSignal:
 @dataclass(frozen=True)
 class RoutingHints:
     force_engine: str | None = None
+    profile: RoutingProfile = RoutingProfile.BALANCED
     latency_sensitive: bool = False
     max_cost_tier: str | None = None
     max_latency_tier: str | None = None
     attachments: tuple[str, ...] = field(default_factory=tuple)
+    allowed_providers: tuple[str, ...] = field(default_factory=tuple)
+    denied_providers: tuple[str, ...] = field(default_factory=tuple)
+    local_only: bool = False
+    hosted_allowed: bool | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "RoutingHints":
@@ -662,24 +672,48 @@ class RoutingHints:
 
         return cls(
             force_engine=force_engine,
+            profile=coerce_routing_profile(data.get("profile")),
             latency_sensitive=_hint_bool(data, "latency_sensitive"),
             max_cost_tier=_hint_tier(data, "max_cost_tier", VALID_COST_TIERS),
             max_latency_tier=_hint_tier(data, "max_latency_tier", VALID_LATENCY_TIERS),
             attachments=tuple(attachments),
+            allowed_providers=_hint_string_tuple(
+                data,
+                "provider_allowlist",
+                fallback_key="allowed_providers",
+            ),
+            denied_providers=_hint_string_tuple(data, "provider_denylist"),
+            local_only=_hint_bool(data, "local_only"),
+            hosted_allowed=_hint_optional_bool(data, "hosted_allowed"),
         )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "force_engine": self.force_engine,
+            "profile": self.profile.value,
             "latency_sensitive": self.latency_sensitive,
             "max_cost_tier": self.max_cost_tier,
             "max_latency_tier": self.max_latency_tier,
             "attachments": list(self.attachments),
+            "allowed_providers": list(self.allowed_providers),
+            "provider_allowlist": list(self.allowed_providers),
+            "provider_denylist": list(self.denied_providers),
+            "local_only": self.local_only,
+            "hosted_allowed": self.hosted_allowed,
         }
 
 
 def _hint_bool(data: dict[str, Any], key: str) -> bool:
     value = data.get(key, False)
+    if not isinstance(value, bool):
+        raise ValueError(f"routing hint {key} must be a bool")
+    return value
+
+
+def _hint_optional_bool(data: dict[str, Any], key: str) -> bool | None:
+    value = data.get(key)
+    if value is None:
+        return None
     if not isinstance(value, bool):
         raise ValueError(f"routing hint {key} must be a bool")
     return value
@@ -698,19 +732,194 @@ def _hint_tier(
     return value
 
 
+def _hint_string_tuple(
+    data: dict[str, Any],
+    key: str,
+    *,
+    fallback_key: str | None = None,
+) -> tuple[str, ...]:
+    value = data.get(key, data.get(fallback_key, []) if fallback_key else [])
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not all(
+        isinstance(item, str) and item.strip() for item in value
+    ):
+        raise ValueError(f"routing hint {key} must be a list of strings")
+    return tuple(dict.fromkeys(item.strip() for item in value))
+
+
+@dataclass(frozen=True)
+class ProviderPolicy:
+    version: int = 1
+    provider_allowlist: tuple[str, ...] = field(default_factory=tuple)
+    provider_denylist: tuple[str, ...] = field(default_factory=tuple)
+    local_only: bool = False
+    hosted_allowed: bool = True
+    max_cost_tier: str | None = None
+    max_latency_tier: str | None = None
+    route_pools: dict[str, "ProviderPolicy"] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(
+        cls,
+        data: dict[str, Any] | None,
+        *,
+        context: str = "provider_policy",
+        allow_route_pools: bool = True,
+    ) -> "ProviderPolicy":
+        if data is None:
+            return cls()
+        if not isinstance(data, dict):
+            raise ValueError(f"{context} must be a mapping")
+
+        allowed = {
+            "version",
+            "provider_allowlist",
+            "provider_denylist",
+            "local_only",
+            "hosted_allowed",
+            "max_cost_tier",
+            "max_latency_tier",
+            "route_pools",
+        }
+        if not allow_route_pools:
+            allowed.remove("route_pools")
+        unknown = sorted(set(data) - allowed)
+        if unknown:
+            raise ValueError(f"{context} unknown keys: " + ", ".join(unknown))
+
+        route_pools: dict[str, ProviderPolicy] = {}
+        raw_pools = data.get("route_pools", {})
+        if raw_pools is None:
+            raw_pools = {}
+        if not isinstance(raw_pools, dict):
+            raise ValueError(f"{context} route_pools must be a mapping")
+        for route, raw_policy in raw_pools.items():
+            if not isinstance(route, str) or not route.strip():
+                raise ValueError(f"{context} route_pools keys must be strings")
+            route_pools[route.strip()] = cls.from_dict(
+                raw_policy,
+                context=f"{context}.route_pools.{route}",
+                allow_route_pools=False,
+            )
+
+        return cls(
+            version=_policy_version(data, context),
+            provider_allowlist=_policy_string_tuple(
+                data,
+                "provider_allowlist",
+                context=context,
+            ),
+            provider_denylist=_policy_string_tuple(
+                data,
+                "provider_denylist",
+                context=context,
+            ),
+            local_only=_policy_bool(data, "local_only", False, context),
+            hosted_allowed=_policy_bool(data, "hosted_allowed", True, context),
+            max_cost_tier=_policy_tier(
+                data,
+                "max_cost_tier",
+                VALID_COST_TIERS,
+                context,
+            ),
+            max_latency_tier=_policy_tier(
+                data,
+                "max_latency_tier",
+                VALID_LATENCY_TIERS,
+                context,
+            ),
+            route_pools=route_pools,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "provider_allowlist": list(self.provider_allowlist),
+            "provider_denylist": list(self.provider_denylist),
+            "local_only": self.local_only,
+            "hosted_allowed": self.hosted_allowed,
+            "max_cost_tier": self.max_cost_tier,
+            "max_latency_tier": self.max_latency_tier,
+            "route_pools": {
+                route: policy.to_dict()
+                for route, policy in sorted(self.route_pools.items())
+            },
+        }
+
+
+def _policy_version(data: dict[str, Any], context: str) -> int:
+    value = data.get("version", 1)
+    if isinstance(value, bool) or value != 1:
+        raise ValueError(f"{context} version must be 1")
+    return 1
+
+
+def _policy_string_tuple(
+    data: dict[str, Any],
+    key: str,
+    *,
+    context: str,
+) -> tuple[str, ...]:
+    value = data.get(key, [])
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not all(
+        isinstance(item, str) and item.strip() for item in value
+    ):
+        raise ValueError(f"{context} {key} must be a list of strings")
+    return tuple(dict.fromkeys(item.strip() for item in value))
+
+
+def _policy_bool(
+    data: dict[str, Any],
+    key: str,
+    default: bool,
+    context: str,
+) -> bool:
+    value = data.get(key, default)
+    if not isinstance(value, bool):
+        raise ValueError(f"{context} {key} must be a bool")
+    return value
+
+
+def _policy_tier(
+    data: dict[str, Any],
+    key: str,
+    valid: tuple[str, ...],
+    context: str,
+) -> str | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or value not in valid:
+        raise ValueError(f"{context} {key} must be one of: {', '.join(valid)}")
+    return value
+
+
 @dataclass(frozen=True)
 class RoutingRequirements:
+    routing_profile: RoutingProfile = RoutingProfile.BALANCED
     needs_tools: bool = False
     required_modalities: tuple[str, ...] = field(default_factory=tuple)
     max_cost_tier: str | None = None
     max_latency_tier: str | None = None
+    allowed_providers: tuple[str, ...] = field(default_factory=tuple)
+    denied_providers: tuple[str, ...] = field(default_factory=tuple)
+    profile_reasons: tuple[str, ...] = field(default_factory=tuple)
+    provider_policy_reasons: tuple[str, ...] = field(default_factory=tuple)
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "routing_profile": self.routing_profile.value,
             "needs_tools": self.needs_tools,
             "required_modalities": list(self.required_modalities),
             "max_cost_tier": self.max_cost_tier,
             "max_latency_tier": self.max_latency_tier,
+            "allowed_providers": list(self.allowed_providers),
+            "provider_denylist": list(self.denied_providers),
+            "profile_reasons": list(self.profile_reasons),
+            "provider_policy_reasons": list(self.provider_policy_reasons),
         }
 
 
@@ -843,10 +1052,12 @@ class RoutingDecision:
     rejected_engines: tuple[EngineRejection, ...] = field(default_factory=tuple)
     alternatives: tuple[RoutingAlternative, ...] = field(default_factory=tuple)
     fallback_used: bool = False
+    routing_profile: RoutingProfile = RoutingProfile.BALANCED
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "selected_engine": self.selected_engine,
+            "routing_profile": self.routing_profile.value,
             "fallback_engine": self.fallback_engine,
             "complexity_score": self.complexity_score,
             "risk_score": self.risk_score,
@@ -876,6 +1087,7 @@ class RoutingDecision:
 @dataclass(frozen=True)
 class RoutingReceipt:
     selected_engine: str
+    routing_profile: RoutingProfile
     complexity_score: int
     risk_score: int
     confidence_score: int
@@ -894,10 +1106,20 @@ class RoutingReceipt:
     rejected_engines: tuple[EngineRejection, ...] = field(default_factory=tuple)
     alternatives: tuple[RoutingAlternative, ...] = field(default_factory=tuple)
     fallback_used: bool = False
+    summary: str = ""
+    reason_codes: tuple[str, ...] = field(default_factory=tuple)
+    selected_route_explanation: str = ""
+    policy_explanation: str = ""
+    rejection_explanation: str = ""
+    fallback_explanation: str = ""
+    safety_explanation: str = ""
+    privacy_explanation: str = ""
+    wrong_route_next_action: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "selected_engine": self.selected_engine,
+            "routing_profile": self.routing_profile.value,
             "complexity_score": self.complexity_score,
             "risk_score": self.risk_score,
             "confidence_score": self.confidence_score,
@@ -920,6 +1142,15 @@ class RoutingReceipt:
                 alternative.to_dict() for alternative in self.alternatives
             ],
             "fallback_used": self.fallback_used,
+            "summary": self.summary,
+            "reason_codes": list(self.reason_codes),
+            "selected_route_explanation": self.selected_route_explanation,
+            "policy_explanation": self.policy_explanation,
+            "rejection_explanation": self.rejection_explanation,
+            "fallback_explanation": self.fallback_explanation,
+            "safety_explanation": self.safety_explanation,
+            "privacy_explanation": self.privacy_explanation,
+            "wrong_route_next_action": self.wrong_route_next_action,
         }
 
 
@@ -930,6 +1161,7 @@ class RouterConfig:
     source_path: str | None = None
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
+    provider_policy: ProviderPolicy = field(default_factory=ProviderPolicy)
 
     def get_engine(self, name: str) -> ModelEngine | None:
         return self.engines.get(name)
@@ -946,4 +1178,5 @@ class RouterConfig:
             "source_path": self.source_path,
             "scoring": self.scoring.to_dict(),
             "safety": self.safety.to_dict(),
+            "provider_policy": self.provider_policy.to_dict(),
         }

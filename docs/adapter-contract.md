@@ -44,11 +44,33 @@ history, not a host-app adapter contract. New integrations should import
 OpenAI-compatible proxy endpoint. Host-specific plugin manifests should live in
 the embedding application, not in this legacy namespace.
 
+Routing profiles and provider policies are input constraints on the router
+decision. They do not change adapter execution semantics, start runtimes, call
+providers, or bypass confirmation gates. Proxy backend policy is enforced at
+the OpenAI-compatible proxy boundary because backend names are proxy-local
+configuration.
+
+The optional verifier is also proxy/runtime behavior. It runs after forwarding
+when explicitly configured, never inside `route_fast(...)`, and never bypasses
+`human_confirm`.
+
+Offline workflow benchmarks are router diagnostics, not adapter execution. They
+route sanitized fixture prompts, compare expected engines, and emit prompt
+hashes and receipt explanations without calling providers, starting runtimes,
+or invoking verifiers.
+
+Catalog updates are also configuration maintenance, not execution. The
+packaged-only workflow can preview and apply router catalog defaults after
+confirmation, with backup and migration logging, but it does not download
+models, enable hosted providers, start runtimes, or dispatch adapters.
+
 ## Runtime Principles
 
 - Load the YAML catalog once through `ModelRouter`.
 - Route prompts in memory.
 - Load or start a model runtime only if a future caller explicitly dispatches.
+- Enforce provider policy before dispatch and preserve backend policy in proxy
+  forwarding/fallback code.
 - Keep at most one heavy local model active by default.
 - Allow a tiny fast local model to stay warm only when the user opts in.
 - Prefer hosted/API or agent adapters when local memory is constrained.

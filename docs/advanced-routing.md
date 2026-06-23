@@ -29,6 +29,14 @@ classifier now would add product and test surface without evidence of improved
 accuracy. Deterministic routing remains the default and only production routing
 path.
 
+Routing profiles are not advanced routing classifiers. They compile
+plain-language user modes into deterministic hint/config constraints and keep
+the same safety gates and `route_fast(...)` latency guard.
+
+Provider/backend policies are also deterministic constraints: they narrow the
+allowed providers or proxy backends before fallback resolution and forwarding.
+They do not score prompts, call a model, or add a second routing pass.
+
 ## Revisit Criteria
 
 Reopen optional advanced routing only when all of these are true:

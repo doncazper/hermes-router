@@ -43,6 +43,7 @@ class RoutingEvent:
     request_id: str
     route_api: str
     selected_engine: str
+    routing_profile: str | None
     status: str
     route_latency_ms: float
     diagnostic_latency_ms: float | None
@@ -65,6 +66,19 @@ class RoutingEvent:
     features: dict[str, Any] | None = None
     reasons: tuple[str, ...] = ()
     requirements: dict[str, Any] | None = None
+    receipt_summary: str | None = None
+    reason_codes: tuple[str, ...] = ()
+    policy_explanation: str | None = None
+    fallback_explanation: str | None = None
+    safety_explanation: str | None = None
+    privacy_explanation: str | None = None
+    wrong_route_next_action: str | None = None
+    verification_mode: str | None = None
+    verification_status: str | None = None
+    verification_backend: str | None = None
+    verification_latency_ms: float | None = None
+    verification_status_code: int | None = None
+    verification_error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -197,14 +211,21 @@ def build_routing_event(
     status_code: int | None = None,
     decision: RoutingDecision | None = None,
     prompt_capture: str = PROMPT_CAPTURE_REDACTED,
+    verification: dict[str, Any] | None = None,
 ) -> RoutingEvent:
     prompt_data = prompt_fields(prompt, capture=prompt_capture)
+    receipt = None
+    if decision is not None:
+        from hermes.plugins.model_router.receipts import decision_to_receipt
+
+        receipt = decision_to_receipt(decision)
     return RoutingEvent(
         event_type="routing_event",
         timestamp=now_iso(),
         request_id=request_id,
         route_api=route_api,
         selected_engine=selected_engine,
+        routing_profile=decision.routing_profile.value if decision else None,
         status=status,
         route_latency_ms=round(route_latency_ms, 4),
         diagnostic_latency_ms=(
@@ -228,8 +249,46 @@ def build_routing_event(
         features=decision.features.to_dict() if decision else None,
         reasons=decision.reasons if decision else (),
         requirements=decision.requirements.to_dict() if decision else None,
+        receipt_summary=receipt.summary if receipt else None,
+        reason_codes=receipt.reason_codes if receipt else (),
+        policy_explanation=receipt.policy_explanation if receipt else None,
+        fallback_explanation=receipt.fallback_explanation if receipt else None,
+        safety_explanation=receipt.safety_explanation if receipt else None,
+        privacy_explanation=receipt.privacy_explanation if receipt else None,
+        wrong_route_next_action=receipt.wrong_route_next_action if receipt else None,
+        verification_mode=_verification_string(verification, "mode"),
+        verification_status=_verification_string(verification, "status"),
+        verification_backend=_verification_string(verification, "backend"),
+        verification_latency_ms=_verification_float(verification, "latency_ms"),
+        verification_status_code=_verification_int(verification, "status_code"),
+        verification_error=_verification_string(verification, "error"),
         **prompt_data,
     )
+
+
+def _verification_string(data: dict[str, Any] | None, key: str) -> str | None:
+    if not data:
+        return None
+    value = data.get(key)
+    return value if isinstance(value, str) and value else None
+
+
+def _verification_float(data: dict[str, Any] | None, key: str) -> float | None:
+    if not data:
+        return None
+    value = data.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return round(float(value), 4)
+
+
+def _verification_int(data: dict[str, Any] | None, key: str) -> int | None:
+    if not data:
+        return None
+    value = data.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
 
 
 def build_feedback(

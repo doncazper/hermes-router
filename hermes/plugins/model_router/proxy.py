@@ -5,6 +5,7 @@ import asyncio
 from collections import Counter
 from contextlib import suppress
 from dataclasses import dataclass, field
+import hashlib
 from importlib.metadata import PackageNotFoundError, version
 import json
 import logging
@@ -28,7 +29,9 @@ from hermes.plugins.model_router.routing_log import (
     DEFAULT_FEEDBACK_PATH,
     RoutingLogWriter,
     build_routing_event,
+    redact_text,
 )
+from hermes.plugins.model_router.receipts import decision_to_receipt
 
 
 LOG = logging.getLogger("model-router-proxy")
@@ -81,10 +84,12 @@ class ProxySessionStats:
         if status == "stream_interrupted":
             self.interruption_count += 1
         if status in {
+            "backend_policy_rejected",
             "routing_backend_missing",
             "runtime_start_failed",
             "upstream_api_unsupported",
             "upstream_request_failed",
+            "verification_failed",
         }:
             self.error_count += 1
 
@@ -138,9 +143,10 @@ def create_app(config: RoutingProxyConfig):
                 timeout=backend.timeout_seconds,
             )
         LOG.info(
-            "routing proxy ready host=%s port=%s backends=%s",
+            "routing proxy ready host=%s port=%s profile=%s backends=%s",
             config.proxy.host,
             config.proxy.port,
+            config.proxy.routing_profile,
             ",".join(sorted(config.backends)),
         )
         if runtime_manager.has_managed_backends:
@@ -205,17 +211,26 @@ def create_app(config: RoutingProxyConfig):
                         "type": "invalid_request_error",
                     }
                 },
-            )
+        )
 
         prompt = prompt_from_body(body)
+        route_hints = {"profile": config.proxy.routing_profile}
         route_started = time.perf_counter()
-        engine = router.route_fast(prompt) if prompt else FAIL_CLOSED_ENGINE
+        engine = (
+            router.route_fast(prompt, hints=route_hints)
+            if prompt
+            else FAIL_CLOSED_ENGINE
+        )
         route_latency_ms = (time.perf_counter() - route_started) * 1000
         diagnostic_decision = None
         diagnostic_latency_ms = None
         if event_writer is not None:
             diagnostic_started = time.perf_counter()
-            diagnostic_decision = router.route(prompt, include_alternatives=False)
+            diagnostic_decision = router.route(
+                prompt,
+                hints=route_hints,
+                include_alternatives=False,
+            )
             diagnostic_latency_ms = (time.perf_counter() - diagnostic_started) * 1000
         if engine == FAIL_CLOSED_ENGINE:
             _write_proxy_event(
@@ -238,11 +253,47 @@ def create_app(config: RoutingProxyConfig):
                     request_id=request_id,
                     engine=engine,
                     fallback_used=False,
+                    profile=config.proxy.routing_profile,
                 ),
                 content={
                     "error": {
                         "message": "Human confirmation is required before dispatch.",
                         "type": "human_confirmation_required",
+                    },
+                    "selected_engine": engine,
+                },
+            )
+
+        backend_name = config.engine_backends.get(engine)
+        backend_policy_reason = config.backend_policy_rejection_reason(backend_name)
+        if backend_policy_reason is not None:
+            _write_proxy_event(
+                event_writer,
+                request_id=request_id,
+                prompt=prompt,
+                selected_engine=engine,
+                status="backend_policy_rejected",
+                route_latency_ms=route_latency_ms,
+                diagnostic_latency_ms=diagnostic_latency_ms,
+                total_latency_ms=(time.perf_counter() - started) * 1000,
+                config=config,
+                decision=diagnostic_decision,
+                backend=backend_name,
+                status_code=502,
+                stats=session_stats,
+            )
+            return JSONResponse(
+                status_code=502,
+                headers=_route_headers(
+                    request_id=request_id,
+                    engine=engine,
+                    fallback_used=False,
+                    profile=config.proxy.routing_profile,
+                ),
+                content={
+                    "error": {
+                        "message": backend_policy_reason,
+                        "type": "backend_policy_rejected",
                     },
                     "selected_engine": engine,
                 },
@@ -270,6 +321,7 @@ def create_app(config: RoutingProxyConfig):
                     request_id=request_id,
                     engine=engine,
                     fallback_used=False,
+                    profile=config.proxy.routing_profile,
                 ),
                 content={
                     "error": {
@@ -321,6 +373,7 @@ def create_app(config: RoutingProxyConfig):
                         engine=engine,
                         backend=backend.name,
                         fallback_used=False,
+                        profile=config.proxy.routing_profile,
                     ),
                     content={
                         "error": {
@@ -354,6 +407,7 @@ def create_app(config: RoutingProxyConfig):
                         engine=engine,
                         backend=backend.name,
                         fallback_used=False,
+                        profile=config.proxy.routing_profile,
                     ),
                     content={
                         "error": {
@@ -387,6 +441,7 @@ def create_app(config: RoutingProxyConfig):
                         engine=engine,
                         backend=backend.name,
                         fallback_used=False,
+                        profile=config.proxy.routing_profile,
                     ),
                     content={
                         "error": {
@@ -413,6 +468,7 @@ def create_app(config: RoutingProxyConfig):
                     diagnostic_decision,
                     session_stats,
                     runtime_manager,
+                    _streaming_verification_result(config, diagnostic_decision),
                 ),
                 status_code=upstream_response.status_code,
                 media_type=upstream_response.headers.get(
@@ -424,6 +480,7 @@ def create_app(config: RoutingProxyConfig):
                     engine=engine,
                     backend=used_backend.name,
                     fallback_used=fallback_used,
+                    profile=config.proxy.routing_profile,
                 ),
             )
 
@@ -462,6 +519,7 @@ def create_app(config: RoutingProxyConfig):
                     engine=engine,
                     backend=backend.name,
                     fallback_used=False,
+                    profile=config.proxy.routing_profile,
                 ),
                 content={
                     "error": {
@@ -495,6 +553,7 @@ def create_app(config: RoutingProxyConfig):
                     engine=engine,
                     backend=backend.name,
                     fallback_used=False,
+                    profile=config.proxy.routing_profile,
                 ),
                 content={
                     "error": {
@@ -528,6 +587,7 @@ def create_app(config: RoutingProxyConfig):
                     engine=engine,
                     backend=backend.name,
                     fallback_used=False,
+                    profile=config.proxy.routing_profile,
                 ),
                 content={
                     "error": {
@@ -538,7 +598,58 @@ def create_app(config: RoutingProxyConfig):
                 },
             )
         upstream_latency_ms = (time.perf_counter() - upstream_started) * 1000
+        verification = await _verify_response_if_configured(
+            config,
+            clients,
+            runtime_manager,
+            request_id=request_id,
+            selected_engine=engine,
+            decision=diagnostic_decision,
+            upstream_response=response,
+        )
         elapsed_ms = (time.perf_counter() - started) * 1000
+        if (
+            verification
+            and verification.get("status") in {"failed", "error"}
+            and config.verifier.failure_behavior == "fail_closed"
+        ):
+            _write_proxy_event(
+                event_writer,
+                request_id=request_id,
+                prompt=prompt,
+                selected_engine=engine,
+                status="verification_failed",
+                route_latency_ms=route_latency_ms,
+                diagnostic_latency_ms=diagnostic_latency_ms,
+                upstream_latency_ms=upstream_latency_ms,
+                total_latency_ms=elapsed_ms,
+                config=config,
+                decision=diagnostic_decision,
+                backend=used_backend.name,
+                backend_model=used_backend.model,
+                fallback_used=fallback_used,
+                status_code=502,
+                stats=session_stats,
+                verification=verification,
+            )
+            runtime_manager.touch(used_backend.name)
+            return JSONResponse(
+                status_code=502,
+                headers=_route_headers(
+                    request_id=request_id,
+                    engine=engine,
+                    backend=used_backend.name,
+                    fallback_used=fallback_used,
+                    profile=config.proxy.routing_profile,
+                ),
+                content={
+                    "error": {
+                        "message": "Verifier rejected or failed the routed response.",
+                        "type": "verification_failed",
+                    },
+                    "selected_engine": engine,
+                },
+            )
         _write_proxy_event(
             event_writer,
             request_id=request_id,
@@ -556,6 +667,7 @@ def create_app(config: RoutingProxyConfig):
             fallback_used=fallback_used,
             status_code=response.status_code,
             stats=session_stats,
+            verification=verification,
         )
         runtime_manager.touch(used_backend.name)
         LOG.info(
@@ -576,6 +688,7 @@ def create_app(config: RoutingProxyConfig):
                 engine=engine,
                 backend=used_backend.name,
                 fallback_used=fallback_used,
+                profile=config.proxy.routing_profile,
             ),
         )
 
@@ -643,6 +756,9 @@ def create_app(config: RoutingProxyConfig):
             "backends": sorted(config.backends),
             "backend_health": backend_health,
             "engine_backends": dict(sorted(config.engine_backends.items())),
+            "routing_profile": config.proxy.routing_profile,
+            "backend_policy": config.backend_policy.to_dict(),
+            "verifier": config.verifier.to_dict(),
             "observability": {
                 "enabled": config.observability.enabled,
                 "prompt_capture": config.observability.prompt_capture,
@@ -690,11 +806,13 @@ def _route_headers(
     engine: str,
     backend: str | None = None,
     fallback_used: bool | None = None,
+    profile: str = "balanced",
     route_api: str = "route_fast",
 ) -> dict[str, str]:
     headers = {
         "X-ModelRouter-Request-ID": _safe_header_value(request_id),
         "X-ModelRouter-Engine": _safe_header_value(engine),
+        "X-ModelRouter-Profile": _safe_header_value(profile),
         "X-ModelRouter-Route-API": _safe_header_value(route_api),
         # Kept for compatibility with the earlier proxy header names.
         "X-Request-Id": _safe_header_value(request_id),
@@ -856,6 +974,158 @@ def _payload_for_backend(body: dict[str, Any], backend: ProxyBackendConfig) -> b
     return json.dumps(payload, separators=(",", ":")).encode("utf-8")
 
 
+def _streaming_verification_result(
+    config: RoutingProxyConfig,
+    decision: Any,
+) -> dict[str, Any] | None:
+    if config.verifier.mode == "off":
+        return None
+    base = _verification_base(config, decision)
+    if base is None:
+        return None
+    return {**base, "status": "skipped_streaming"}
+
+
+async def _verify_response_if_configured(
+    config: RoutingProxyConfig,
+    clients: dict[str, Any],
+    runtime_manager: ManagedRuntimeManager,
+    *,
+    request_id: str,
+    selected_engine: str,
+    decision: Any,
+    upstream_response: Any,
+) -> dict[str, Any] | None:
+    base = _verification_base(config, decision)
+    if base is None:
+        return None
+    if upstream_response.status_code >= 500:
+        return {**base, "status": "skipped_upstream_status"}
+    if decision is None:
+        return {**base, "status": "skipped_no_diagnostic_receipt"}
+    if decision.requires_confirmation or selected_engine == FAIL_CLOSED_ENGINE:
+        return {**base, "status": "skipped_human_confirm"}
+    route_codes = set(base.get("route_codes", ()))
+    configured_route_codes = set(config.verifier.route_codes)
+    if configured_route_codes and route_codes.isdisjoint(configured_route_codes):
+        return {**base, "status": "skipped_route"}
+    if config.verifier.mode == "receipt-only":
+        return {**base, "status": "qualified"}
+    if config.verifier.mode == "sampled":
+        if decision.risk_score >= 50:
+            return {**base, "status": "skipped_risk"}
+        if not _verification_sample_selected(request_id, config.verifier.sample_rate):
+            return {**base, "status": "skipped_sample"}
+
+    backend_name = config.verifier.backend
+    backend_policy_reason = config.backend_policy_rejection_reason(backend_name)
+    if backend_policy_reason is not None:
+        return {**base, "status": "skipped_backend_policy", "error": backend_policy_reason}
+    backend = config.backends.get(str(backend_name))
+    if backend is None:
+        return {**base, "status": "error", "error": "verifier backend missing"}
+
+    started = time.perf_counter()
+    try:
+        _ensure_backend_supports_upstream_path(backend, "/chat/completions")
+        await runtime_manager.ensure_running(backend)
+        runtime_manager.begin_request(backend.name)
+        try:
+            response = await clients[backend.name].post(
+                "/chat/completions",
+                content=_verifier_payload(
+                    config,
+                    backend,
+                    selected_engine=selected_engine,
+                    decision=decision,
+                    upstream_response=upstream_response,
+                ),
+                timeout=config.verifier.timeout_seconds,
+            )
+        finally:
+            runtime_manager.end_request(backend.name)
+    except Exception as exc:
+        return {
+            **base,
+            "status": "error",
+            "backend": backend.name,
+            "latency_ms": (time.perf_counter() - started) * 1000,
+            "error": exc.__class__.__name__,
+        }
+
+    status = "passed" if response.status_code < 500 else "failed"
+    return {
+        **base,
+        "status": status,
+        "backend": backend.name,
+        "latency_ms": (time.perf_counter() - started) * 1000,
+        "status_code": int(response.status_code),
+    }
+
+
+def _verification_base(
+    config: RoutingProxyConfig,
+    decision: Any,
+) -> dict[str, Any] | None:
+    if config.verifier.mode == "off":
+        return None
+    reason_codes: tuple[str, ...] = ()
+    if decision is not None:
+        reason_codes = decision_to_receipt(decision).reason_codes
+    return {
+        "mode": config.verifier.mode,
+        "status": "pending",
+        "backend": config.verifier.backend,
+        "route_codes": reason_codes,
+    }
+
+
+def _verification_sample_selected(request_id: str, sample_rate: float) -> bool:
+    if sample_rate >= 1:
+        return True
+    digest = hashlib.sha256(request_id.encode("utf-8")).digest()
+    bucket = int.from_bytes(digest[:8], "big") / float(2**64 - 1)
+    return bucket < sample_rate
+
+
+def _verifier_payload(
+    config: RoutingProxyConfig,
+    backend: ProxyBackendConfig,
+    *,
+    selected_engine: str,
+    decision: Any,
+    upstream_response: Any,
+) -> bytes:
+    receipt = decision_to_receipt(decision)
+    response_preview = ""
+    if config.verifier.include_response_preview:
+        response_preview = redact_text(
+            (upstream_response.text or "")[: config.verifier.max_response_preview_chars]
+        )
+    user_content = config.verifier.prompt_template.format(
+        selected_engine=selected_engine,
+        receipt_summary=receipt.summary,
+        reason_codes=", ".join(receipt.reason_codes),
+        policy_explanation=receipt.policy_explanation,
+        fallback_explanation=receipt.fallback_explanation,
+        safety_explanation=receipt.safety_explanation,
+        privacy_explanation=receipt.privacy_explanation,
+        response_preview=response_preview,
+    )
+    payload = {
+        "model": backend.model,
+        "stream": False,
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a configured ModelRouter verifier.",
+            },
+            {"role": "user", "content": user_content},
+        ],
+    }
+    return json.dumps(payload, separators=(",", ":")).encode("utf-8")
+
+
 def _ensure_backend_supports_upstream_path(
     backend: ProxyBackendConfig,
     upstream_path: str,
@@ -963,6 +1233,7 @@ async def _stream_response_bytes(
     decision: Any,
     session_stats: ProxySessionStats | None = None,
     runtime_manager: ManagedRuntimeManager | None = None,
+    verification: dict[str, Any] | None = None,
 ):
     status = "forwarded"
     exc_info: tuple[type[BaseException] | None, BaseException | None, Any] = (
@@ -1008,6 +1279,7 @@ async def _stream_response_bytes(
             fallback_used=fallback_used,
             status_code=response.status_code,
             stats=session_stats,
+            verification=verification,
         )
         if runtime_manager is not None:
             runtime_manager.end_request(backend.name)
@@ -1041,6 +1313,7 @@ def _write_proxy_event(
     fallback_used: bool = False,
     status_code: int | None = None,
     stats: ProxySessionStats | None = None,
+    verification: dict[str, Any] | None = None,
 ) -> None:
     if stats is not None:
         stats.record(
@@ -1070,6 +1343,7 @@ def _write_proxy_event(
             status_code=status_code,
             decision=decision,
             prompt_capture=config.observability.prompt_capture,
+            verification=verification,
         )
     )
 

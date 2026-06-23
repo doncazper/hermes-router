@@ -117,6 +117,9 @@ def test_routing_event_schema_is_json_safe(tmp_path):
     assert rows[0]["selected_engine"] == "code_agent"
     assert rows[0]["complexity_score"] == decision.complexity_score
     assert rows[0]["features"]["coding_intent"] is True
+    assert rows[0]["receipt_summary"].startswith("Selected code_agent")
+    assert "route.coding" in rows[0]["reason_codes"]
+    assert rows[0]["wrong_route_next_action"].startswith("If this route was wrong")
     assert json.dumps(rows[0])
 
 

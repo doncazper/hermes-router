@@ -1,6 +1,7 @@
 proxy:
   host: 127.0.0.1
   port: 8082
+  routing_profile: balanced
   model_ids:
     - model-router
 
@@ -15,6 +16,22 @@ observability:
 
 health:
   backend_timeout_seconds: 1.0
+
+backend_policy:
+  version: 1
+  backend_allowlist: []
+  backend_denylist: []
+
+verifier:
+  version: 1
+  mode: "off"
+  backend: null
+  sample_rate: 0.0
+  route_codes: []
+  timeout_seconds: 10
+  failure_behavior: log_only
+  include_response_preview: false
+  max_response_preview_chars: 500
 
 backends:
   fast:

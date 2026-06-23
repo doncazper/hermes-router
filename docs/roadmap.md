@@ -425,24 +425,41 @@ Next:
 Goal: absorb the best product lessons from hosted model orchestration while
 staying in ModelRouter's lane: open, auditable, local-first routing and proxying.
 
-Status: planned in `docs/open-switchboard-plan.md`.
+Status: Tracks 1-7 implemented: routing profiles, provider/backend policy
+controls, productized receipts, explicit verification boundary, workflow
+benchmarks, catalog update workflow, and product language/onboarding polish.
 
 Tracks:
 
 - Routing profiles that expose `fast`, `balanced`, `quality`, `private`, and
-  `safe` modes without making users start from engine names.
+  `safe` modes without making users start from engine names. Done for CLI,
+  proxy defaults, settings defaults, receipts, and private local-only
+  constraints.
 - Provider pools and policy controls for allowlists, denylists, local-only
-  mode, hosted-allowed mode, max cost tier, and max latency tier.
+  mode, hosted-allowed mode, max cost tier, max latency tier, per-route pools,
+  proxy backend allowlists/denylists, and receipt-visible rejections. Done for
+  YAML config, CLI hints, proxy forwarding, settings visibility, health output,
+  fallback constraints, and tests.
 - Productized receipts with human-readable summaries, reason codes, rejected
-  providers, fallback explanations, and wrong-route next steps.
+  providers, fallback explanations, and wrong-route next steps. Done for JSON
+  receipts, CLI `decide --explain`, proxy telemetry fields, settings receipt
+  copy, and tests.
 - Explicit optional verification outside `route_fast(...)`, disabled by
-  default and observable through telemetry.
+  default and observable through telemetry. Done for versioned proxy verifier
+  config, receipt-only/sampled/always-for-risky-output modes, log-only or
+  fail-closed behavior, streaming skip metadata, and tests.
 - Workflow benchmarks that measure routing correctness, profile behavior,
-  safety gates, and route changes alongside the existing latency guard.
-- Catalog update commands that preview, diff, and apply model/preset updates
-  only after confirmation.
+  safety gates, and route changes alongside the existing latency guard. Done
+  for the offline `model-router workflow-benchmark` command, sanitized
+  fixtures, readable/JSON reports, prompt-hash-only output, and tests.
+- Catalog update commands that preview, diff, and apply packaged router catalog
+  updates only after confirmation. Done for `model-router catalog
+  status|diff|apply`, no-network defaults, backups, migration logs, settings
+  status visibility, and tests.
 - Product language and onboarding that position ModelRouter as the open
-  switchboard for AI model routing, not a hidden multi-agent system.
+  switchboard for AI model routing, not a hidden multi-agent system. Done for
+  the README promise, first-run profile/provider/receipt loop, and production
+  boundary language.
 
 Done when:
 

@@ -1,8 +1,13 @@
 # Production Readiness
 
-ModelRouter's production surface is intentionally small: initialize
-`ModelRouter` once, keep it in memory, and call `route_fast(prompt)` for live
-traffic.
+ModelRouter is the open switchboard for AI model routing: one local
+OpenAI-compatible endpoint that routes each request to the right model, with
+receipts, safety gates, and full provider control.
+
+Its production surface is intentionally small: initialize `ModelRouter` once,
+keep it in memory, and call `route_fast(prompt)` for live traffic. The local
+proxy, optional verifier, workflow benchmarks, catalog maintenance, and future
+adapters sit outside that hot path.
 
 ## API Contract
 
@@ -20,6 +25,126 @@ traffic.
 receipts, explanations, audit logs, or ranked alternatives should use
 `route(...)`, usually with `include_alternatives=False` unless alternatives are
 needed.
+
+## Routing Profiles
+
+Routing profiles are a thin constraint layer over the existing hint and
+requirements model:
+
+- `fast`: low-latency, low-cost preference.
+- `balanced`: default deterministic routing.
+- `quality`: stronger configured fallbacks are allowed.
+- `private`: local-only provider policy; hosted API providers are rejected and
+  listed in receipts.
+- `safe`: stricter confirmation for ambiguous or sensitive requests.
+
+Profiles do not add planner-worker behavior, classifier calls, downloads,
+benchmarks, verifier calls, or automatic hosted-provider enablement. They also
+do not bypass `human_confirm`; forced engines remain subject to confirmation
+and profile constraints.
+
+`route_fast(prompt)` without hints stays on the precompiled default hot path.
+When a caller supplies profile hints, those constraints are applied inside the
+existing fast fallback resolver. The local proxy passes its
+`proxy.routing_profile` as a hint for each request and logs the diagnostic
+receipt when observability is enabled.
+
+## Provider And Backend Policies
+
+Provider policy is versioned in `model_router.yaml` under `provider_policy`.
+It reuses the existing provider names, cost tiers, latency tiers, route targets,
+and fallback chains:
+
+```yaml
+provider_policy:
+  version: 1
+  provider_allowlist: []
+  provider_denylist: []
+  local_only: false
+  hosted_allowed: true
+  max_cost_tier: null
+  max_latency_tier: null
+  route_pools:
+    simple:
+      local_only: true
+```
+
+The router compiles provider policy into `RoutingRequirements` alongside
+profile hints. `human_confirm` remains allowed even under restrictive
+allowlists/denylists, and fallback resolution rejects denied providers instead
+of jumping around the policy. `route_fast(...)` honors configured provider
+policy through its precompiled target engines and per-request hint path without
+adding classifier calls or runtime behavior.
+Caller hints can narrow provider policy, but they cannot loosen configured
+allowlists, denylists, local-only mode, or max tier caps.
+
+Proxy backend policy is versioned in `routing_proxy.yaml` under
+`backend_policy`:
+
+```yaml
+backend_policy:
+  version: 1
+  backend_allowlist: []
+  backend_denylist: []
+```
+
+Backend policy is enforced only in proxy space, because backend names are proxy
+configuration details. The proxy rejects denied selected backends before any
+upstream request, filters denied fallback backends, reports
+`backend_policy_rejected`, and exposes the redacted policy state in health and
+settings diagnostics.
+
+## Productized Receipts
+
+`route(...)` and `model-router decide --json` preserve the original receipt
+fields and add deterministic product fields for normal operator review:
+
+- `summary`
+- `reason_codes`
+- `selected_route_explanation`
+- `policy_explanation`
+- `rejection_explanation`
+- `fallback_explanation`
+- `safety_explanation`
+- `privacy_explanation`
+- `wrong_route_next_action`
+
+Reason codes are additive and stable enough for tests, dashboards, and
+release-note comparisons. Existing reason strings remain present for
+compatibility. Use `model-router decide --explain` for a concise human-readable
+view, and use JSON receipts for scripts.
+
+Receipts are diagnostic artifacts, not the production hot path.
+`route_fast(...)` still returns only an engine string and does not build
+receipts, call classifiers, start runtimes, log prompts, or perform provider
+calls.
+
+## Explicit Verification Boundary
+
+Verification is optional proxy/runtime behavior and is disabled by default:
+
+```yaml
+verifier:
+  version: 1
+  mode: "off"
+  backend: null
+  sample_rate: 0.0
+  route_codes: []
+  timeout_seconds: 10
+  failure_behavior: log_only
+  include_response_preview: false
+  max_response_preview_chars: 500
+```
+
+Supported modes are `off`, `receipt-only`, `sampled`, and
+`always-for-risky-output`. The verifier runs after the selected backend returns
+a non-streaming response. It never runs for `human_confirm`, never changes
+router scoring, and never participates in `route_fast(...)`.
+
+Verifier telemetry includes mode, status, backend, status code, latency, and a
+short error class when applicable. Streaming requests are marked
+`skipped_streaming` instead of being buffered. Failures are log-only unless
+`failure_behavior: fail_closed` is explicitly configured.
 
 ## SLOs
 
@@ -59,6 +184,39 @@ python scripts/check_route_fast_latency.py \
 The script exits non-zero when either budget is exceeded. CI runs it after lint
 and tests.
 
+## Workflow Benchmarks
+
+Run the offline correctness suite before release notes or routing-threshold
+changes:
+
+```bash
+model-router workflow-benchmark --json --fail-on-mismatch
+```
+
+This benchmark uses sanitized fixture prompts for simple, balanced, coding,
+research, vision, image generation, safety, private-profile, and
+quality-profile workflows. It measures route correctness, profile behavior,
+confirmation behavior, route changes, and diagnostic receipt fields. It does
+not call providers, local model servers, optional verifiers, downloads,
+benchmarks, or hosted APIs. Reports serialize prompt hashes rather than prompt
+bodies.
+
+## Catalog Update Workflow
+
+Catalog maintenance is explicit and packaged-only by default:
+
+```bash
+model-router catalog status --config ~/.model-router/model_router.yaml
+model-router catalog diff --config ~/.model-router/model_router.yaml
+model-router catalog apply --config ~/.model-router/model_router.yaml --yes
+```
+
+`status` and `diff` never write and perform no remote checks. `apply` requires
+confirmation, backs up an existing local config before writing packaged
+defaults, and appends a JSONL entry to `catalog-migrations.jsonl`. The workflow
+does not download models, enable hosted providers, change provider policy
+silently, or mutate proxy backend policy.
+
 ## Observability
 
 The router does not perform built-in hot-path logging. This avoids adding
@@ -87,11 +245,11 @@ are hidden unless `--include-notes` is passed. See
 The proxy adds route-identification headers to routed chat and Responses API
 responses so operators can label a bad route while it is fresh:
 `X-ModelRouter-Request-ID`, `X-ModelRouter-Engine`,
-`X-ModelRouter-Backend`, `X-ModelRouter-Fallback`, and
-`X-ModelRouter-Route-API`. These headers are metadata-only and must not include
-raw prompts, request bodies, API keys, or secrets. On shutdown, the proxy prints
-a best-effort session summary with route counts and the telemetry summary
-command for follow-up review.
+`X-ModelRouter-Profile`, `X-ModelRouter-Backend`,
+`X-ModelRouter-Fallback`, and `X-ModelRouter-Route-API`. These headers are
+metadata-only and must not include raw prompts, request bodies, API keys, or
+secrets. On shutdown, the proxy prints a best-effort session summary with route
+counts and the telemetry summary command for follow-up review.
 
 Optional classifier-based routing is not part of the production path. The
 Milestone 7 audit found no labeled replay mismatches that justify it. Revisit
@@ -198,6 +356,10 @@ Production readiness is guarded by:
 
 - CI on pushes and pull requests.
 - A benchmark regression check for initialized `route_fast(...)`.
+- Offline workflow benchmarks for common route outcomes, profile behavior,
+  human confirmation, and route-change evidence.
+- Catalog status/diff/apply tests that cover no-network defaults, confirmation
+  requirements, backups, migration logs, and no-op behavior.
 - API contract tests that keep `route_fast` as the string-only production API
   and `route` as the diagnostic/audit API.
 - Adversarial and fuzz tests for deterministic behavior and fail-closed handling

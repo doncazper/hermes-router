@@ -25,9 +25,11 @@ from hermes.plugins.model_router.proxy import (
 )
 from hermes.plugins.model_router.proxy_config import (
     ProxyBackendConfig,
+    ProxyBackendPolicyConfig,
     ProxyObservabilityConfig,
     ProxyRuntimeConfig,
     ProxyServerConfig,
+    ProxyVerifierConfig,
     RoutingProxyConfig,
 )
 
@@ -70,13 +72,14 @@ class _FakeAsyncClient:
     async def aclose(self) -> None:
         return None
 
-    async def post(self, path: str, *, content: bytes):
+    async def post(self, path: str, *, content: bytes, timeout: float | None = None):
         self.requests.append(
             {
                 "backend": self.backend_name,
                 "path": path,
                 "headers": self.headers,
                 "body": json.loads(content.decode("utf-8")),
+                "timeout": timeout,
             }
         )
         response = self._next_response()
@@ -169,10 +172,13 @@ def _config(
     fallback: bool = True,
     log_path: Path | None = None,
     fast_runtime: ProxyRuntimeConfig | None = None,
+    routing_profile: str = "balanced",
+    backend_policy: ProxyBackendPolicyConfig | None = None,
+    verifier: ProxyVerifierConfig | None = None,
 ) -> RoutingProxyConfig:
     fallback_backends = {"fast": ("deep",)} if fallback else {}
     return RoutingProxyConfig(
-        proxy=ProxyServerConfig(api_key=api_key),
+        proxy=ProxyServerConfig(api_key=api_key, routing_profile=routing_profile),
         router_config=None,
         source_path="test.yaml",
         backends={
@@ -204,6 +210,8 @@ def _config(
             enabled=log_path is not None,
             log_path=str(log_path or "~/.model-router/routing-events.jsonl"),
         ),
+        backend_policy=backend_policy or ProxyBackendPolicyConfig(),
+        verifier=verifier or ProxyVerifierConfig(),
     )
 
 
@@ -423,9 +431,11 @@ def _assert_route_headers(
     engine: str,
     backend: str | None = None,
     fallback: str = "false",
+    profile: str = "balanced",
 ) -> None:
     assert response.headers["x-modelrouter-request-id"]
     assert response.headers["x-modelrouter-engine"] == engine
+    assert response.headers["x-modelrouter-profile"] == profile
     assert response.headers["x-modelrouter-route-api"] == "route_fast"
     assert response.headers["x-modelrouter-fallback"] == fallback
     assert response.headers["x-request-id"] == response.headers[
@@ -467,6 +477,27 @@ def test_proxy_routes_to_backend_and_overrides_model(monkeypatch):
     assert response.headers["x-routed-engine"] == "fast_local"
     assert response.headers["x-routed-backend"] == "fast"
     assert _FakeAsyncClient.requests[0]["body"]["model"] == "fast-model"
+
+
+def test_proxy_applies_configured_routing_profile(monkeypatch):
+    with _client(monkeypatch, _config(routing_profile="private")) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "client-visible-model",
+                "messages": [{"role": "user", "content": "rewrite this text"}],
+            },
+        )
+        health = client.get("/health")
+
+    assert response.status_code == 200
+    _assert_route_headers(
+        response,
+        engine="fast_local",
+        backend="fast",
+        profile="private",
+    )
+    assert health.json()["routing_profile"] == "private"
 
 
 def test_proxy_starts_managed_runtime_on_first_routed_request(monkeypatch, tmp_path):
@@ -711,6 +742,80 @@ def test_proxy_uses_explicit_fallback_chain_on_upstream_5xx(monkeypatch):
         "fast",
         "deep",
     ]
+
+
+def test_proxy_backend_denylist_blocks_forwarding(monkeypatch, tmp_path):
+    log_path = tmp_path / "routing-events.jsonl"
+    with _client(
+        monkeypatch,
+        _config(
+            log_path=log_path,
+            backend_policy=ProxyBackendPolicyConfig(backend_denylist=("fast",)),
+        ),
+    ) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "model-router",
+                "messages": [{"role": "user", "content": "rewrite this text"}],
+            },
+        )
+
+    row = json.loads(log_path.read_text(encoding="utf-8").strip())
+    assert response.status_code == 502
+    assert response.json()["error"]["type"] == "backend_policy_rejected"
+    assert "backend fast denied by backend policy" in response.json()["error"]["message"]
+    _assert_route_headers(response, engine="fast_local")
+    assert row["status"] == "backend_policy_rejected"
+    assert row["backend"] == "fast"
+    assert row["receipt_summary"].startswith("Selected fast_local")
+    assert "route.simple" in row["reason_codes"]
+    assert _FakeAsyncClient.requests == []
+
+
+def test_proxy_backend_allowlist_blocks_non_allowed_backend(monkeypatch):
+    with _client(
+        monkeypatch,
+        _config(
+            backend_policy=ProxyBackendPolicyConfig(backend_allowlist=("deep",)),
+        ),
+    ) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "model-router",
+                "messages": [{"role": "user", "content": "rewrite this text"}],
+            },
+        )
+
+    assert response.status_code == 502
+    assert response.json()["error"]["type"] == "backend_policy_rejected"
+    assert "backend fast not allowed by backend policy" in response.json()["error"][
+        "message"
+    ]
+    assert _FakeAsyncClient.requests == []
+
+
+def test_proxy_fallback_chain_does_not_escape_denied_backend(monkeypatch):
+    with _client(
+        monkeypatch,
+        _config(
+            backend_policy=ProxyBackendPolicyConfig(backend_denylist=("deep",)),
+        ),
+    ) as client:
+        _FakeAsyncClient.responses = {"fast": [_response(503)]}
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "model-router",
+                "messages": [{"role": "user", "content": "rewrite this text"}],
+            },
+        )
+
+    assert response.status_code == 503
+    assert response.headers["x-routed-backend"] == "fast"
+    _assert_route_headers(response, engine="fast_local", backend="fast")
+    assert [request["backend"] for request in _FakeAsyncClient.requests] == ["fast"]
 
 
 def test_proxy_does_not_fallback_when_chain_absent(monkeypatch):
@@ -1001,6 +1106,7 @@ def test_proxy_models_and_health_do_not_expose_secrets(monkeypatch):
     assert payload["status"] == "ok"
     assert payload["backend_health"]["deep"]["reachable"] is True
     assert payload["observability"]["enabled"] is False
+    assert payload["verifier"]["mode"] == "off"
 
 
 def test_proxy_health_reports_unreachable_backend(monkeypatch):
@@ -1080,6 +1186,157 @@ def test_proxy_writes_privacy_safe_routing_event(monkeypatch, tmp_path):
     assert "secret123" not in route_headers
     assert "private_tool" not in route_headers
     assert "api_key" not in route_headers
+
+
+def test_proxy_verifier_default_is_disabled(monkeypatch, tmp_path):
+    log_path = tmp_path / "routing-events.jsonl"
+    with _client(monkeypatch, _config(log_path=log_path)) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "model-router",
+                "messages": [{"role": "user", "content": "rewrite this text"}],
+            },
+        )
+
+    row = json.loads(log_path.read_text(encoding="utf-8").strip())
+    assert response.status_code == 200
+    assert "verification_status" not in row
+    assert [request["backend"] for request in _FakeAsyncClient.requests] == ["fast"]
+
+
+def test_proxy_verifier_receipt_only_logs_qualification(monkeypatch, tmp_path):
+    log_path = tmp_path / "routing-events.jsonl"
+    with _client(
+        monkeypatch,
+        _config(
+            log_path=log_path,
+            verifier=ProxyVerifierConfig(mode="receipt-only"),
+        ),
+    ) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "model-router",
+                "messages": [{"role": "user", "content": "rewrite this text"}],
+            },
+        )
+
+    row = json.loads(log_path.read_text(encoding="utf-8").strip())
+    assert response.status_code == 200
+    assert row["verification_mode"] == "receipt-only"
+    assert row["verification_status"] == "qualified"
+    assert [request["backend"] for request in _FakeAsyncClient.requests] == ["fast"]
+
+
+def test_proxy_verifier_sampled_calls_configured_backend(monkeypatch, tmp_path):
+    log_path = tmp_path / "routing-events.jsonl"
+    with _client(
+        monkeypatch,
+        _config(
+            log_path=log_path,
+            verifier=ProxyVerifierConfig(
+                mode="sampled",
+                backend="deep",
+                sample_rate=1.0,
+            ),
+        ),
+    ) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "model-router",
+                "messages": [
+                    {"role": "user", "content": "rewrite this token=secret-value"}
+                ],
+            },
+        )
+
+    row = json.loads(log_path.read_text(encoding="utf-8").strip())
+    verifier_body = _FakeAsyncClient.requests[1]["body"]
+    serialized_verifier_body = json.dumps(verifier_body)
+    assert response.status_code == 200
+    assert row["verification_mode"] == "sampled"
+    assert row["verification_status"] == "passed"
+    assert row["verification_backend"] == "deep"
+    assert row["verification_status_code"] == 200
+    assert [request["backend"] for request in _FakeAsyncClient.requests] == [
+        "fast",
+        "deep",
+    ]
+    assert "receipt" in serialized_verifier_body.lower()
+    assert "secret-value" not in serialized_verifier_body
+    assert "messages" not in json.dumps(row)
+
+
+def test_proxy_verifier_fail_closed_has_clear_proxy_behavior(monkeypatch, tmp_path):
+    log_path = tmp_path / "routing-events.jsonl"
+    with _client(
+        monkeypatch,
+        _config(
+            log_path=log_path,
+            verifier=ProxyVerifierConfig(
+                mode="sampled",
+                backend="deep",
+                sample_rate=1.0,
+                failure_behavior="fail_closed",
+            ),
+        ),
+    ) as client:
+        _FakeAsyncClient.responses = {
+            "fast": [_response(200)],
+            "deep": [_response(503)],
+        }
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "model-router",
+                "messages": [{"role": "user", "content": "rewrite this text"}],
+            },
+        )
+
+    row = json.loads(log_path.read_text(encoding="utf-8").strip())
+    assert response.status_code == 502
+    assert response.json()["error"]["type"] == "verification_failed"
+    assert row["status"] == "verification_failed"
+    assert row["verification_status"] == "failed"
+    assert row["verification_backend"] == "deep"
+    assert [request["backend"] for request in _FakeAsyncClient.requests] == [
+        "fast",
+        "deep",
+    ]
+
+
+def test_proxy_verifier_streaming_logs_skipped_without_buffering(monkeypatch, tmp_path):
+    log_path = tmp_path / "routing-events.jsonl"
+    with _client(
+        monkeypatch,
+        _config(
+            log_path=log_path,
+            verifier=ProxyVerifierConfig(
+                mode="sampled",
+                backend="deep",
+                sample_rate=1.0,
+            ),
+        ),
+    ) as client:
+        _FakeAsyncClient.responses = {"fast": [_stream_response(b"data: chunk\n\n")]}
+        with client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={
+                "model": "model-router",
+                "stream": True,
+                "messages": [{"role": "user", "content": "rewrite this text"}],
+            },
+        ) as response:
+            body = response.read()
+
+    row = json.loads(log_path.read_text(encoding="utf-8").strip())
+    assert response.status_code == 200
+    assert body == b"data: chunk\n\n"
+    assert row["verification_status"] == "skipped_streaming"
+    assert [request["backend"] for request in _FakeAsyncClient.requests] == ["fast"]
 
 
 def test_proxy_logs_human_confirm_without_upstream_call(monkeypatch, tmp_path):

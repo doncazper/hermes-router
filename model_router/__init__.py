@@ -6,9 +6,16 @@ backward compatibility. New integrations should import from ``model_router``.
 
 from hermes.plugins.model_router import (
     ModelRouter,
+    RoutingProfile,
     build_dispatch_plan,
     route_prompt,
     score_prompt,
 )
 
-__all__ = ["ModelRouter", "build_dispatch_plan", "route_prompt", "score_prompt"]
+__all__ = [
+    "ModelRouter",
+    "RoutingProfile",
+    "build_dispatch_plan",
+    "route_prompt",
+    "score_prompt",
+]

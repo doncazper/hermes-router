@@ -30,6 +30,11 @@ orchestration systems without giving up ModelRouter's core promises:
 
 ## Track 1: Routing Profiles
 
+Status: Track 1 base implementation is in place for CLI hints, proxy defaults,
+settings UI defaults, receipts, and local-only private routing. Per-request
+proxy metadata remains deferred until there is a clear trust boundary and
+configuration model for client-supplied profile changes.
+
 Goal: give users plain-language modes before engine names.
 
 Ship named profiles that compile down to existing hints and config constraints:
@@ -53,12 +58,18 @@ Done when:
 
 - `model-router decide --profile private "research this"` produces an auditable
   decision that excludes hosted backends.
-- The proxy can set a default profile and optionally accept per-request profile
-  metadata without trusting arbitrary client input by default.
+- The proxy can set a default profile without trusting arbitrary client input by
+  default.
 - The settings UI lets users pick a default profile without editing YAML.
 - `route_fast(...)` latency guard remains green.
 
 ## Track 2: Provider Pools And Policy Controls
+
+Status: Track 2 base implementation is in place. Router provider policy is
+versioned in `model_router.yaml`; proxy backend policy is versioned in
+`routing_proxy.yaml`; CLI hints, receipts, fallback resolution, proxy forwarding,
+health/settings visibility, and tests cover the constraint path. Richer policy
+editing in the settings UI can build on this foundation.
 
 Goal: make provider control a first-class product surface.
 
@@ -75,19 +86,27 @@ Implementation notes:
 
 - Reuse existing provider, cost tier, latency tier, availability, and fallback
   concepts before adding new abstractions.
-- Keep provider policy versioned in YAML and visible in the settings UI.
-- Make rejected providers visible in receipts.
-- Ensure fallback resolution never jumps into a denied provider.
+- Keep provider and backend policy versioned in YAML and visible in the
+  settings UI.
+- Make rejected providers/backends visible in receipts, diagnostics, health, or
+  proxy error responses depending on where the policy applies.
+- Ensure fallback resolution never jumps into a denied provider or backend.
 
 Done when:
 
 - A user can configure "never use hosted APIs" once and see that policy honored
-  in CLI, proxy, and settings.
+  in CLI, proxy diagnostics, settings, and receipts.
 - Receipts explain provider-policy rejections.
 - Tests cover fallback chains, unavailable backends, forced engines, and
   high-risk prompts under restrictive pools.
 
 ## Track 3: Productized Receipts
+
+Status: Track 3 base implementation is in place. Receipts now preserve the
+existing JSON fields and add a concise summary, stable reason codes, selected
+route, policy, rejection, fallback, safety, privacy, and wrong-route next-action
+explanations. `model-router decide --explain`, proxy telemetry summaries/codes,
+and the settings receipt panel expose the same privacy-safe product language.
 
 Goal: make transparency a feature, not just diagnostics.
 
@@ -120,6 +139,12 @@ Done when:
   reason codes and summaries.
 
 ## Track 4: Explicit Verification Boundary
+
+Status: Track 4 base implementation is in place. The proxy now has a versioned
+`verifier` config with `off`, `receipt-only`, `sampled`, and
+`always-for-risky-output` modes. Verification is disabled by default, runs only
+after proxy forwarding, skips streaming instead of buffering, logs privacy-safe
+metadata, and can either log-only or fail closed when explicitly configured.
 
 Goal: offer reliability checks without hidden orchestration.
 
@@ -160,6 +185,13 @@ Done when:
 
 Goal: measure practical routing outcomes, not only router speed.
 
+Status: implemented for offline workflow correctness benchmarks. The
+`model-router workflow-benchmark` command exercises sanitized fixtures for
+simple, balanced, coding, research, vision, image generation, safety,
+private-profile, and quality-profile routes; emits readable or JSON reports;
+serializes prompt hashes instead of prompt bodies; and performs no backend,
+verifier, download, or hosted API calls.
+
 Add benchmark suites for common workflows:
 
 - Simple rewrite routes to fast local.
@@ -192,6 +224,14 @@ Done when:
 Goal: make model and preset updates feel maintained without silently changing
 users' routing policy.
 
+Status: implemented for packaged catalog maintenance. The
+`model-router catalog status|diff|apply` commands check packaged metadata,
+preview local config changes, and apply packaged router catalog defaults only
+after confirmation. Apply backs up an existing config, records a JSONL
+migration entry, performs no remote checks, and does not download models or
+change hosted/provider policy silently. The settings UI state and dashboard
+surface catalog status.
+
 Add a catalog workflow for:
 
 - Checking the installed catalog version.
@@ -217,6 +257,12 @@ Done when:
 ## Track 7: Product Language And Onboarding
 
 Goal: make the product promise obvious.
+
+Status: implemented for docs and onboarding language. The README opens with the
+open-switchboard promise, the first-run flow explains profile/provider/receipt
+steps, and production docs preserve the boundary between routing, proxy
+forwarding, optional verification, workflow benchmarks, catalog maintenance,
+and future adapter execution.
 
 Adopt this message in docs and release copy:
 

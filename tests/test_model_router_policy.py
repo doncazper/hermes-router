@@ -59,6 +59,7 @@ def _config_path(
     overrides: dict[str, dict] | None = None,
     *,
     safety: dict | None = None,
+    provider_policy: dict | None = None,
 ) -> Path:
     fallbacks = {
         "intent_router": "fast_local",
@@ -96,6 +97,8 @@ def _config_path(
     }
     if safety is not None:
         data["safety"] = safety
+    if provider_policy is not None:
+        data["provider_policy"] = provider_policy
     path.write_text(yaml.safe_dump(data), encoding="utf-8")
     return path
 
@@ -328,6 +331,390 @@ def test_force_engine_hint_cannot_bypass_confirmation(tmp_path):
     assert decision.selected_engine == "human_confirm"
     assert decision.requires_confirmation is True
     assert any("force_engine ignored" in reason for reason in decision.reasons)
+
+
+def test_routing_profiles_do_not_bypass_human_confirm(tmp_path):
+    path = _config_path(tmp_path)
+
+    for profile in ("fast", "balanced", "quality", "private", "safe"):
+        decision = route_prompt(
+            "delete all my emails",
+            config_path=path,
+            hints={"profile": profile, "force_engine": "fast_local"},
+        )
+
+        assert decision.routing_profile == profile
+        assert decision.selected_engine == "human_confirm"
+        assert decision.requires_confirmation is True
+
+
+def test_private_profile_excludes_hosted_provider_and_explains_receipt(tmp_path):
+    path = _config_path(
+        tmp_path,
+        {
+            "hosted_reasoning": {
+                "provider": "openai",
+                "model": "hosted-reasoning",
+                "adapter": "openai",
+                "strengths": ["reasoning"],
+                "enabled": True,
+                "fallback": "reasoning_local",
+                "cost_tier": "paid",
+                "latency_tier": "medium",
+            }
+        },
+    )
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data["routing_targets"]["reasoning"] = "hosted_reasoning"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    decision = route_prompt(
+        (
+            "Design a multi-step architecture plan with data flow, edge cases, "
+            "testing strategy, and rollout notes."
+        ),
+        config_path=path,
+        hints={"profile": "private"},
+    )
+
+    assert decision.routing_profile == "private"
+    assert decision.selected_engine == "reasoning_local"
+    assert decision.requirements.allowed_providers == ("local", "human")
+    assert any(
+        rejection.engine == "hosted_reasoning"
+        and "private routing profile" in rejection.reason
+        and "local-only" in rejection.reason
+        for rejection in decision.rejected_engines
+    )
+    assert any("local-only provider policy" in reason for reason in decision.reasons)
+
+
+def test_provider_allowlist_excludes_non_allowed_provider(tmp_path):
+    path = _config_path(
+        tmp_path,
+        {
+            "hosted_reasoning": {
+                "provider": "openai",
+                "model": "hosted-reasoning",
+                "adapter": "openai",
+                "strengths": ["reasoning"],
+                "enabled": True,
+                "fallback": "reasoning_local",
+            }
+        },
+        provider_policy={"version": 1, "provider_allowlist": ["local"]},
+    )
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data["routing_targets"]["reasoning"] = "hosted_reasoning"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    decision = route_prompt(
+        (
+            "Design a multi-step architecture plan with data flow, edge cases, "
+            "testing strategy, and rollout notes."
+        ),
+        config_path=path,
+    )
+
+    assert decision.selected_engine == "reasoning_local"
+    assert decision.requirements.allowed_providers == ("local", "human")
+    assert any("provider policy allowlist: local" in reason for reason in decision.reasons)
+    assert any(
+        rejection.engine == "hosted_reasoning"
+        and rejection.reason == "provider openai not allowed by provider policy"
+        for rejection in decision.rejected_engines
+    )
+
+
+def test_provider_denylist_excludes_denied_provider(tmp_path):
+    path = _config_path(
+        tmp_path,
+        {
+            "hosted_reasoning": {
+                "provider": "openai",
+                "model": "hosted-reasoning",
+                "adapter": "openai",
+                "strengths": ["reasoning"],
+                "enabled": True,
+                "fallback": "reasoning_local",
+            }
+        },
+        provider_policy={"version": 1, "provider_denylist": ["openai"]},
+    )
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data["routing_targets"]["reasoning"] = "hosted_reasoning"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    decision = route_prompt(
+        (
+            "Design a multi-step architecture plan with data flow, edge cases, "
+            "testing strategy, and rollout notes."
+        ),
+        config_path=path,
+    )
+
+    assert decision.selected_engine == "reasoning_local"
+    assert decision.requirements.denied_providers == ("openai",)
+    assert any("provider policy denylist: openai" in reason for reason in decision.reasons)
+    assert any(
+        rejection.engine == "hosted_reasoning"
+        and rejection.reason == "provider openai denied by provider policy"
+        for rejection in decision.rejected_engines
+    )
+
+
+def test_provider_max_tier_policy_cannot_be_loosened_by_hints(tmp_path):
+    path = _config_path(
+        tmp_path,
+        {
+            "reasoning_local": {
+                "cost_tier": "high",
+                "fallback": "balanced_local",
+            },
+            "balanced_local": {
+                "cost_tier": "low",
+            },
+        },
+        provider_policy={"version": 1, "max_cost_tier": "low"},
+    )
+
+    decision = route_prompt(
+        (
+            "Design a multi-step architecture plan with data flow, edge cases, "
+            "testing strategy, and rollout notes."
+        ),
+        config_path=path,
+        hints={"max_cost_tier": "high"},
+    )
+
+    assert decision.selected_engine == "balanced_local"
+    assert decision.requirements.max_cost_tier == "low"
+    assert any("provider policy max cost tier: low" in reason for reason in decision.reasons)
+    assert any(
+        rejection.engine == "reasoning_local"
+        and rejection.reason == "cost_tier high exceeds low"
+        for rejection in decision.rejected_engines
+    )
+
+
+def test_provider_route_pools_apply_per_route_constraints(tmp_path):
+    path = _config_path(
+        tmp_path,
+        {
+            "hosted_fast": {
+                "provider": "openai",
+                "model": "hosted-fast",
+                "adapter": "openai",
+                "strengths": ["rewrite"],
+                "enabled": True,
+                "fallback": "fast_local",
+            },
+            "hosted_reasoning": {
+                "provider": "openai",
+                "model": "hosted-reasoning",
+                "adapter": "openai",
+                "strengths": ["reasoning"],
+                "enabled": True,
+                "fallback": "reasoning_local",
+            },
+        },
+        provider_policy={
+            "version": 1,
+            "route_pools": {
+                "simple": {"local_only": True},
+                "reasoning": {"hosted_allowed": True},
+            },
+        },
+    )
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data["routing_targets"]["simple"] = "hosted_fast"
+    data["routing_targets"]["reasoning"] = "hosted_reasoning"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    simple = route_prompt("rewrite this text", config_path=path)
+    reasoning = route_prompt(
+        (
+            "Design a multi-step architecture plan with data flow, edge cases, "
+            "testing strategy, and rollout notes."
+        ),
+        config_path=path,
+    )
+
+    assert simple.selected_engine == "fast_local"
+    assert simple.requirements.allowed_providers == ("local", "human")
+    assert any("route pool applied for simple" in reason for reason in simple.reasons)
+    assert reasoning.selected_engine == "hosted_reasoning"
+    assert any(
+        "route pool applied for reasoning" in reason for reason in reasoning.reasons
+    )
+
+
+def test_provider_fallback_chain_does_not_escape_denied_provider(tmp_path):
+    decision = route_prompt(
+        (
+            "Design a multi-step architecture plan with data flow, edge cases, "
+            "testing strategy, and rollout notes."
+        ),
+        config_path=_config_path(
+            tmp_path,
+            {
+                "reasoning_local": {
+                    "enabled": False,
+                    "fallback": "hosted_reasoning",
+                },
+                "hosted_reasoning": {
+                    "provider": "openai",
+                    "model": "hosted-reasoning",
+                    "adapter": "openai",
+                    "strengths": ["reasoning"],
+                    "enabled": True,
+                    "fallback": "human_confirm",
+                },
+            },
+            provider_policy={"version": 1, "provider_denylist": ["openai"]},
+        ),
+    )
+
+    assert decision.selected_engine == "human_confirm"
+    assert any(
+        rejection.engine == "hosted_reasoning"
+        and rejection.reason == "provider openai denied by provider policy"
+        for rejection in decision.rejected_engines
+    )
+
+
+def test_forced_engine_cannot_bypass_provider_policy(tmp_path):
+    decision = route_prompt(
+        "rewrite this text",
+        config_path=_config_path(
+            tmp_path,
+            {
+                "hosted_reasoning": {
+                    "provider": "openai",
+                    "model": "hosted-reasoning",
+                    "adapter": "openai",
+                    "strengths": ["reasoning"],
+                    "enabled": True,
+                    "fallback": "fast_local",
+                }
+            },
+        ),
+        hints={
+            "force_engine": "hosted_reasoning",
+            "provider_denylist": ["openai"],
+        },
+    )
+
+    assert decision.selected_engine == "fast_local"
+    assert any("forced engine hosted_reasoning" in reason for reason in decision.reasons)
+    assert any(
+        rejection.engine == "hosted_reasoning"
+        and rejection.reason == "provider openai denied by provider policy"
+        for rejection in decision.rejected_engines
+    )
+
+
+def test_human_confirm_remains_reachable_under_restrictive_provider_policy(tmp_path):
+    decision = route_prompt(
+        "delete all my emails",
+        config_path=_config_path(
+            tmp_path,
+            provider_policy={
+                "version": 1,
+                "provider_allowlist": ["openai"],
+                "provider_denylist": ["human"],
+            },
+        ),
+    )
+
+    assert decision.selected_engine == "human_confirm"
+    assert decision.requires_confirmation is True
+    assert "human" in decision.requirements.allowed_providers
+    assert "human" not in decision.requirements.denied_providers
+
+
+def test_fast_profile_applies_cost_and_latency_constraints(tmp_path):
+    decision = route_prompt(
+        (
+            "Design a multi-step architecture plan with data flow, edge cases, "
+            "testing strategy, and rollout notes."
+        ),
+        config_path=_config_path(
+            tmp_path,
+            {
+                "reasoning_local": {
+                    "cost_tier": "paid",
+                    "latency_tier": "high",
+                    "fallback": "balanced_local",
+                },
+                "balanced_local": {
+                    "cost_tier": "low",
+                    "latency_tier": "medium",
+                },
+            },
+        ),
+        hints={"profile": "fast"},
+    )
+
+    assert decision.routing_profile == "fast"
+    assert decision.selected_engine == "balanced_local"
+    assert decision.requirements.max_cost_tier == "low"
+    assert decision.requirements.max_latency_tier == "medium"
+    assert any(
+        rejection.engine == "reasoning_local"
+        and (
+            "cost_tier" in rejection.reason
+            or "latency_tier" in rejection.reason
+        )
+        for rejection in decision.rejected_engines
+    )
+
+
+def test_quality_profile_allows_configured_hosted_backend(tmp_path):
+    path = _config_path(
+        tmp_path,
+        {
+            "hosted_reasoning": {
+                "provider": "openai",
+                "model": "hosted-reasoning",
+                "adapter": "openai",
+                "strengths": ["reasoning"],
+                "enabled": True,
+                "fallback": "reasoning_local",
+                "cost_tier": "paid",
+                "latency_tier": "medium",
+            }
+        },
+    )
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data["routing_targets"]["reasoning"] = "hosted_reasoning"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    decision = route_prompt(
+        (
+            "Design a multi-step architecture plan with data flow, edge cases, "
+            "testing strategy, and rollout notes."
+        ),
+        config_path=path,
+        hints={"profile": "quality"},
+    )
+
+    assert decision.routing_profile == "quality"
+    assert decision.selected_engine == "hosted_reasoning"
+    assert decision.requirements.allowed_providers == ()
+
+
+def test_safe_profile_confirms_ambiguous_sensitive_prompt(tmp_path):
+    decision = route_prompt(
+        "Handle my taxes.",
+        config_path=_config_path(tmp_path),
+        hints={"profile": "safe"},
+    )
+
+    assert decision.routing_profile == "safe"
+    assert decision.selected_engine == "human_confirm"
+    assert decision.requires_confirmation is True
+    assert any("profile safe" in reason for reason in decision.reasons)
 
 
 def test_unknown_force_engine_fails_closed(tmp_path):

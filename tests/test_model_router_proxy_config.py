@@ -58,12 +58,114 @@ def test_load_proxy_config_accepts_valid_yaml(tmp_path, monkeypatch):
 
     assert config.proxy.host == "127.0.0.1"
     assert config.proxy.port == 8082
+    assert config.proxy.routing_profile == "balanced"
     assert config.proxy.resolved_api_key == "proxy-secret"
     assert config.backends["fast"].strip_tools is True
     assert config.backends["deep"].resolved_api_key == "deep-secret"
     assert config.observability.enabled is False
     assert config.backend_for_engine("fast_local") == config.backends["fast"]
     assert config.fallback_chain_for_backend("fast") == (config.backends["deep"],)
+    assert config.backend_policy.to_dict() == {
+        "version": 1,
+        "backend_allowlist": [],
+        "backend_denylist": [],
+    }
+    assert config.verifier.mode == "off"
+
+
+def test_load_proxy_config_accepts_routing_profile(tmp_path, monkeypatch):
+    monkeypatch.setenv("MODEL_ROUTER_PROXY_API_KEY", "proxy-secret")
+    monkeypatch.setenv("DEEP_API_KEY", "deep-secret")
+    data = _valid_config()
+    data["proxy"]["routing_profile"] = "private"
+
+    config = load_proxy_config(_write_config(tmp_path, data))
+
+    assert config.proxy.routing_profile == "private"
+
+
+def test_load_proxy_config_accepts_backend_policy(tmp_path, monkeypatch):
+    monkeypatch.setenv("MODEL_ROUTER_PROXY_API_KEY", "proxy-secret")
+    monkeypatch.setenv("DEEP_API_KEY", "deep-secret")
+    data = _valid_config()
+    data["backend_policy"] = {
+        "version": 1,
+        "backend_allowlist": ["fast"],
+        "backend_denylist": ["deep"],
+    }
+
+    config = load_proxy_config(_write_config(tmp_path, data))
+
+    assert config.backend_policy.backend_allowlist == ("fast",)
+    assert config.backend_policy.backend_denylist == ("deep",)
+    assert config.backend_for_engine("fast_local") == config.backends["fast"]
+    assert config.backend_for_engine("reasoning_local") is None
+    assert config.fallback_chain_for_backend("fast") == ()
+
+
+def test_load_proxy_config_accepts_verifier_block(tmp_path, monkeypatch):
+    monkeypatch.setenv("MODEL_ROUTER_PROXY_API_KEY", "proxy-secret")
+    monkeypatch.setenv("DEEP_API_KEY", "deep-secret")
+    data = _valid_config()
+    data["verifier"] = {
+        "version": 1,
+        "mode": "sampled",
+        "backend": "deep",
+        "sample_rate": 0.25,
+        "route_codes": ["route.coding"],
+        "timeout_seconds": 3,
+        "failure_behavior": "fail_closed",
+        "prompt_template": "Verify {selected_engine}: {receipt_summary}",
+        "include_response_preview": True,
+        "max_response_preview_chars": 120,
+    }
+
+    config = load_proxy_config(_write_config(tmp_path, data))
+
+    assert config.verifier.mode == "sampled"
+    assert config.verifier.backend == "deep"
+    assert config.verifier.sample_rate == 0.25
+    assert config.verifier.route_codes == ("route.coding",)
+    assert config.verifier.failure_behavior == "fail_closed"
+    assert config.verifier.include_response_preview is True
+
+
+def test_load_proxy_config_rejects_invalid_verifier_block(tmp_path, monkeypatch):
+    monkeypatch.setenv("MODEL_ROUTER_PROXY_API_KEY", "proxy-secret")
+    monkeypatch.setenv("DEEP_API_KEY", "deep-secret")
+    data = _valid_config()
+    data["verifier"] = {"mode": "sampled", "backend": "missing", "sample_rate": 1.0}
+
+    with pytest.raises(ProxyConfigError, match="undefined backend"):
+        load_proxy_config(_write_config(tmp_path, data))
+
+    data["verifier"] = {"mode": "sampled", "backend": "deep", "sample_rate": 0.0}
+    with pytest.raises(ProxyConfigError, match="sample_rate"):
+        load_proxy_config(_write_config(tmp_path, data))
+
+
+def test_load_proxy_config_rejects_invalid_backend_policy(tmp_path, monkeypatch):
+    monkeypatch.setenv("MODEL_ROUTER_PROXY_API_KEY", "proxy-secret")
+    monkeypatch.setenv("DEEP_API_KEY", "deep-secret")
+    data = _valid_config()
+    data["backend_policy"] = {"backend_allowlist": ["missing"]}
+
+    with pytest.raises(ProxyConfigError, match="undefined backend"):
+        load_proxy_config(_write_config(tmp_path, data))
+
+    data["backend_policy"] = {"version": 2}
+    with pytest.raises(ProxyConfigError, match="version"):
+        load_proxy_config(_write_config(tmp_path, data))
+
+
+def test_load_proxy_config_rejects_invalid_routing_profile(tmp_path, monkeypatch):
+    monkeypatch.setenv("MODEL_ROUTER_PROXY_API_KEY", "proxy-secret")
+    monkeypatch.setenv("DEEP_API_KEY", "deep-secret")
+    data = _valid_config()
+    data["proxy"]["routing_profile"] = "mystery"
+
+    with pytest.raises(ProxyConfigError, match="routing profile"):
+        load_proxy_config(_write_config(tmp_path, data))
 
 
 def test_load_proxy_config_uses_packaged_example_outside_repo_cwd(
