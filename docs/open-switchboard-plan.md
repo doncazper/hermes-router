@@ -1,0 +1,287 @@
+# Open Switchboard Robustness Plan
+
+## Positioning
+
+ModelRouter should not become a hidden multi-agent orchestrator. Its stronger
+lane is the open switchboard: one local OpenAI-compatible endpoint, transparent
+routing, explicit safety gates, user-owned providers, and replayable evidence
+for every routing change.
+
+The goal of this plan is to take the best product lessons from hosted
+orchestration systems without giving up ModelRouter's core promises:
+
+- Deterministic default routing.
+- Local-first operation.
+- User-owned model and provider policy.
+- Receipts and telemetry instead of black-box decisions.
+- Optional execution features outside `route_fast(...)`.
+- Human confirmation for high-risk actions.
+
+## Non-Goals
+
+- Do not add hidden planner-worker-synthesizer behavior to the default proxy.
+- Do not add LLM classification to the production path without the replay gates
+  in `docs/advanced-routing.md`.
+- Do not silently enable hosted providers, downloads, benchmarks, or verifier
+  calls.
+- Do not make the settings UI a chat app or agent surface.
+- Do not weaken `human_confirm` defaults for destructive, sending, purchasing,
+  deployment, or ambiguous high-impact requests.
+
+## Track 1: Routing Profiles
+
+Goal: give users plain-language modes before engine names.
+
+Ship named profiles that compile down to existing hints and config constraints:
+
+- `fast`: prefer low latency and local/free backends.
+- `balanced`: current default behavior.
+- `quality`: allow stronger reasoning and hosted fallbacks when configured.
+- `private`: local-only, no hosted API backends.
+- `safe`: strict confirmation and conservative fallback behavior.
+
+Implementation notes:
+
+- Add a profile model separate from engine categories.
+- Make profiles usable from CLI, proxy config, and settings UI.
+- Keep direct engine names available for advanced users.
+- Compile profiles into `RoutingHints` or proxy-side constraints so the router
+  core remains small.
+- Add tests proving profiles do not bypass `human_confirm`.
+
+Done when:
+
+- `model-router decide --profile private "research this"` produces an auditable
+  decision that excludes hosted backends.
+- The proxy can set a default profile and optionally accept per-request profile
+  metadata without trusting arbitrary client input by default.
+- The settings UI lets users pick a default profile without editing YAML.
+- `route_fast(...)` latency guard remains green.
+
+## Track 2: Provider Pools And Policy Controls
+
+Goal: make provider control a first-class product surface.
+
+Add policy controls for:
+
+- Provider allowlists and denylists.
+- Backend allowlists and denylists.
+- Local-only and hosted-allowed modes.
+- Max cost tier and max latency tier presets.
+- Optional per-route provider pools, such as local-only for simple work and
+  hosted-allowed for reasoning.
+
+Implementation notes:
+
+- Reuse existing provider, cost tier, latency tier, availability, and fallback
+  concepts before adding new abstractions.
+- Keep provider policy versioned in YAML and visible in the settings UI.
+- Make rejected providers visible in receipts.
+- Ensure fallback resolution never jumps into a denied provider.
+
+Done when:
+
+- A user can configure "never use hosted APIs" once and see that policy honored
+  in CLI, proxy, and settings.
+- Receipts explain provider-policy rejections.
+- Tests cover fallback chains, unavailable backends, forced engines, and
+  high-risk prompts under restrictive pools.
+
+## Track 3: Productized Receipts
+
+Goal: make transparency a feature, not just diagnostics.
+
+Improve route receipts so a normal user can understand:
+
+- Why this route was selected.
+- Which engines were rejected and why.
+- Which policy constraints mattered.
+- Which fallback was used.
+- Whether the request needs tools, freshness, vision, image generation, or
+  confirmation.
+- What to change when the route was wrong.
+
+Implementation notes:
+
+- Add a concise human-readable receipt summary alongside the current JSON-safe
+  fields.
+- Add stable reason codes while preserving existing reason strings for
+  compatibility.
+- Add a `model-router explain` or `model-router decide --explain` view optimized
+  for humans.
+- Surface the same explanation in settings UI telemetry detail.
+- Keep raw prompt handling privacy-safe.
+
+Done when:
+
+- A route can be explained without reading source code or raw JSON.
+- Wrong-route feedback can be started from a receipt/request id.
+- Existing receipt serialization tests still pass, with focused tests for new
+  reason codes and summaries.
+
+## Track 4: Explicit Verification Boundary
+
+Goal: offer reliability checks without hidden orchestration.
+
+Add an optional verifier boundary that is explicit, observable, and disabled by
+default:
+
+```text
+route -> forward to selected backend -> optional verifier -> final response
+```
+
+Possible verifier modes:
+
+- `off`: default.
+- `receipt-only`: record whether the request would qualify for verification.
+- `sampled`: verify a configured percentage of low-risk requests.
+- `always-for-risky-output`: verify selected route classes, but never bypass
+  human confirmation for risky actions.
+
+Implementation notes:
+
+- Keep verifier configuration outside router scoring.
+- Treat verifier calls as proxy/runtime behavior, not `route_fast(...)` work.
+- Make verifier backend, prompt template, latency budget, and failure behavior
+  explicit in config.
+- Log verifier metadata without raw prompts unless full prompt capture is
+  deliberately enabled.
+- Never let a verifier perform external actions.
+
+Done when:
+
+- Operators can opt into verification and see verifier route ids, backend,
+  latency, and outcome in telemetry.
+- Verification failures have clear proxy behavior.
+- Tests cover disabled default, sampled behavior with deterministic test hooks,
+  streaming compatibility, and privacy-safe logs.
+
+## Track 5: Workflow Benchmarks
+
+Goal: measure practical routing outcomes, not only router speed.
+
+Add benchmark suites for common workflows:
+
+- Simple rewrite routes to fast local.
+- Ordinary summary routes to balanced local.
+- Repo/test work routes to code.
+- Current-information requests route to research.
+- Image/screenshot requests route to vision.
+- Image generation requests route to image generation.
+- Risky external actions route to `human_confirm`.
+- Private profile excludes hosted APIs.
+- Quality profile can use stronger configured backends.
+
+Implementation notes:
+
+- Keep the existing microsecond latency guard as a hard contract.
+- Add a correctness benchmark based on sanitized prompts and expected engines.
+- Add profile-specific benchmark fixtures.
+- Add a readable benchmark report that can be pasted into releases.
+- Keep any live backend benchmark opt-in and synthetic.
+
+Done when:
+
+- CI can run offline routing correctness benchmarks.
+- Release notes can report route correctness, route changes, and latency.
+- Replay logs and benchmark fixtures share enough shape to promote real
+  wrong-route clusters into tests.
+
+## Track 6: Catalog Update Workflow
+
+Goal: make model and preset updates feel maintained without silently changing
+users' routing policy.
+
+Add a catalog workflow for:
+
+- Checking the installed catalog version.
+- Listing newer packaged or remote catalog versions.
+- Previewing model, preset, route, and recommendation changes.
+- Applying updates only after confirmation.
+- Recording what changed in local config comments or a separate migration log.
+
+Implementation notes:
+
+- Start with packaged catalog metadata before remote update delivery.
+- Treat remote fetching as a separate, explicit feature with clear provenance.
+- Never overwrite user-edited local configs without backup and diff.
+- Keep setup recommendations and runtime benchmarks advisory.
+
+Done when:
+
+- `model-router catalog status` explains current catalog and local overrides.
+- `model-router catalog diff` shows candidate changes without applying them.
+- The settings UI can show available catalog updates and require confirmation.
+- Tests cover config preservation, backups, and no-network default behavior.
+
+## Track 7: Product Language And Onboarding
+
+Goal: make the product promise obvious.
+
+Adopt this message in docs and release copy:
+
+```text
+ModelRouter is the open switchboard for AI model routing: one local
+OpenAI-compatible endpoint that routes each request to the right model, with
+receipts, safety gates, and full provider control.
+```
+
+Implementation notes:
+
+- Keep the README proxy-first.
+- Explain profiles before engine internals.
+- Put receipts and provider control near the top-level value proposition.
+- Avoid claiming ModelRouter is a general multi-agent system.
+- Show how ModelRouter can route to local models, hosted APIs, code agents, web
+  research, vision, image generation, and future custom backends.
+
+Done when:
+
+- A new user can explain the product in one sentence.
+- Setup docs show "choose a profile, choose providers, inspect receipts" as the
+  normal path.
+- The docs preserve the distinction between routing, proxy forwarding, optional
+  verification, and future adapter execution.
+
+## Suggested Implementation Order
+
+1. Routing profiles.
+2. Provider pools and policy controls.
+3. Productized receipts.
+4. Workflow benchmarks.
+5. Catalog update workflow.
+6. Explicit verification boundary.
+7. Product language and onboarding polish throughout the docs.
+
+This order keeps user-facing clarity and safety policy ahead of more complex
+runtime behavior. Verification comes after receipts and benchmarks so there is
+evidence for where it helps.
+
+## Global Acceptance Gates
+
+- `python -m ruff check .`
+- `python -m pytest`
+- `python scripts/check_route_fast_latency.py --json`
+- New tests for every profile, provider-policy, receipt, benchmark, catalog, and
+  verification behavior.
+- No new default network calls.
+- No raw prompt logging unless existing explicit prompt-capture controls are
+  enabled.
+- No regression that allows high-risk requests to bypass `human_confirm`.
+
+## Ready-To-Paste Coordination Prompt
+
+```text
+Please implement the next unfinished track in docs/open-switchboard-plan.md.
+
+Keep ModelRouter in its open-switchboard lane: deterministic default routing,
+transparent receipts, local-first provider control, and optional execution
+features outside route_fast.
+
+For the selected track:
+- Read the relevant existing code and docs before editing.
+- Keep changes narrowly scoped and compatible with existing config where possible.
+- Add focused tests and docs.
+- Run ruff, pytest, and route_fast latency checks.
+- Report any migration risks, safety implications, and follow-up tracks.
+```

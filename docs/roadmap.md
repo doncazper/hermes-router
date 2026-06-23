@@ -419,3 +419,55 @@ Next:
   `model-router telemetry review` queue.
 - Continue Milestone 11's benchmark/scoring work before auto-tuning
   recommendations.
+
+## Milestone 13: Open Switchboard Robustness
+
+Goal: absorb the best product lessons from hosted model orchestration while
+staying in ModelRouter's lane: open, auditable, local-first routing and proxying.
+
+Status: planned in `docs/open-switchboard-plan.md`.
+
+Tracks:
+
+- Routing profiles that expose `fast`, `balanced`, `quality`, `private`, and
+  `safe` modes without making users start from engine names.
+- Provider pools and policy controls for allowlists, denylists, local-only
+  mode, hosted-allowed mode, max cost tier, and max latency tier.
+- Productized receipts with human-readable summaries, reason codes, rejected
+  providers, fallback explanations, and wrong-route next steps.
+- Explicit optional verification outside `route_fast(...)`, disabled by
+  default and observable through telemetry.
+- Workflow benchmarks that measure routing correctness, profile behavior,
+  safety gates, and route changes alongside the existing latency guard.
+- Catalog update commands that preview, diff, and apply model/preset updates
+  only after confirmation.
+- Product language and onboarding that position ModelRouter as the open
+  switchboard for AI model routing, not a hidden multi-agent system.
+
+Done when:
+
+- Users can pick a plain-language profile, constrain providers, route through
+  the proxy, inspect a useful receipt, and label wrong routes without reading
+  YAML first.
+- CI covers profile behavior, provider-policy fallback, receipt summaries,
+  workflow benchmarks, catalog preservation, and optional verification defaults.
+- The implementation keeps default routing deterministic, preserves
+  `human_confirm` safety, adds no default network calls, and keeps
+  `route_fast(...)` within the documented latency guard.
+
+Prompt:
+
+```text
+Please implement Milestone 13 from docs/open-switchboard-plan.md.
+
+Start with the next unfinished track, keep the router in its open-switchboard
+lane, and avoid hidden multi-agent orchestration. Preserve deterministic default
+routing, provider transparency, privacy-safe telemetry, and human-confirm safety.
+
+For each track:
+- Read the related code and docs first.
+- Add focused tests and docs.
+- Keep optional runtime behavior outside route_fast.
+- Run ruff, pytest, and scripts/check_route_fast_latency.py --json.
+- End with a short recommendation for the next track.
+```

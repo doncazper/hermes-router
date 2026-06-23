@@ -1018,6 +1018,7 @@ integration point.
 - [Model router details](docs/model-router.md)
 - [Production readiness](docs/production-readiness.md)
 - [Host adapter contract](docs/adapter-contract.md)
+- [Open switchboard robustness plan](docs/open-switchboard-plan.md)
 - [Roadmap](docs/roadmap.md)
 - [Contributing](CONTRIBUTING.md)
 
