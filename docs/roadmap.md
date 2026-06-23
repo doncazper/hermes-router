@@ -488,3 +488,27 @@ For each track:
 - Run ruff, pytest, and scripts/check_route_fast_latency.py --json.
 - End with a short recommendation for the next track.
 ```
+
+## Next Planned Work After Milestone 13
+
+Goal: turn the open switchboard foundation into a tighter daily-use loop.
+
+Recommended tasks:
+
+- Real proxy dogfood: run LM Studio, Ollama, llama.cpp, and MLX-LM setups
+  through `/v1/chat/completions`, `/v1/responses`, streaming, fallback,
+  `human_confirm`, backend policy rejection, and optional verifier modes.
+- Settings UI follow-through: add explicit catalog diff/apply controls with
+  confirmation, show workflow benchmark status, and keep all write actions
+  local and user-confirmed.
+- Telemetry review queue: build the deferred `model-router telemetry review`
+  flow for labeling wrong routes without exposing notes or prompt bodies by
+  default.
+- Receipt calibration: dogfood the wrong-route next actions and promote stable
+  clusters into workflow benchmark fixtures or replay tests.
+- Release hardening: prepare a small release with changelog, benchmark output,
+  route-fast latency output, catalog workflow notes, and upgrade guidance.
+
+Do not add hidden orchestration, default hosted-provider calls, automatic
+downloads, runtime auto-start, verifier calls, or prompt logging while doing
+this work. Keep `route_fast(...)` deterministic and keep safety gates explicit.
