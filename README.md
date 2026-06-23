@@ -64,6 +64,12 @@ presets, scan models, edit backend model ids/ports/runtime commands, toggle
 observability, run doctor, start/stop/restart the proxy, inspect telemetry, and
 label wrong routes.
 
+The current product north star is documented in
+[Product north star](docs/product-north-star.md): ModelRouter should feel like a
+local proxy control center with routing maps, runtime status, receipts, safety
+gates, telemetry, and feedback labeling, while remaining explicitly not a chat
+UI or agent workspace.
+
 If you are testing from a local checkout or setting up managed runtimes, install
 prerequisites into the active Python environment:
 
@@ -1258,6 +1264,7 @@ integration point.
 ## Documentation
 
 - [Model router details](docs/model-router.md)
+- [Product north star](docs/product-north-star.md)
 - [Production readiness](docs/production-readiness.md)
 - [Host adapter contract](docs/adapter-contract.md)
 - [Open switchboard robustness plan](docs/open-switchboard-plan.md)
@@ -1298,4 +1305,5 @@ integration point.
 - Use labeled real-world routing logs as release-blocking regression checks.
 - Document security/privacy expectations for logs, proxy auth, process commands,
   and local network exposure.
-- Decide whether to ship a web UI or keep the product CLI/proxy-first.
+- Keep the local admin UI aligned with the product north star: a proxy control
+  center, not chat, not an agent workspace, and not a prompt transcript product.

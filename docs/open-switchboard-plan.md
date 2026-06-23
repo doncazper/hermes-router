@@ -17,6 +17,12 @@ orchestration systems without giving up ModelRouter's core promises:
 - Optional execution features outside `route_fast(...)`.
 - Human confirmation for high-risk actions.
 
+The canonical local UI direction is captured in
+`docs/product-north-star.md`. Future settings work should move toward that
+local proxy control-center shape: route map, runtime status, receipts, safety
+gates, telemetry, and feedback labeling, without adding chat, agent behavior, or
+silent config changes.
+
 ## Non-Goals
 
 - Do not add hidden planner-worker-synthesizer behavior to the default proxy.

@@ -310,6 +310,12 @@ run confirmed local backend benchmarks, and write feedback labels. It is not a
 chat UI, does not submit user prompts, and does not display literal API keys or
 raw prompt text.
 
+The product north star in `docs/product-north-star.md` defines the intended UI
+shape: a local proxy control center for routing policy, runtime status, route
+receipts, safety gates, telemetry, and feedback labeling. It is directional
+product truth, not a guarantee that every pictured control is implemented in the
+current release.
+
 Setup recommendations treat RAM as a fit/load gate, then use CPU architecture,
 CPU core count, Apple Silicon/Metal, CUDA/ROCm hints, runtime format, model
 size, quantization, and optional benchmark results for usability scoring. Run

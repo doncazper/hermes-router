@@ -10,6 +10,16 @@ This milestone does not execute prompts, call model providers, perform web
 research, run code, send messages, delete files, purchase anything, or dispatch
 to an agent. It only decides.
 
+## Product Truth
+
+ModelRouter's current product north star is a local proxy control center, not a
+chat UI or agent workspace. The admin surface should make routing policy,
+runtime status, safety gates, route receipts, telemetry, model/runtime controls,
+and wrong-route feedback visible while preserving privacy-safe defaults.
+
+See `docs/product-north-star.md` for the canonical north-star screenshot and
+the implemented/in-progress/future split.
+
 ## Architecture
 
 The router is implemented under `hermes/plugins/model_router/`. This is a

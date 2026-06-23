@@ -388,6 +388,12 @@ Next:
 Goal: make ModelRouter easier to configure and dogfood visually while keeping
 it a proxy/router, not a chat app or agent.
 
+Product north star: `docs/product-north-star.md` is the canonical UI direction.
+Future settings work should move toward the screenshot's local proxy control
+center: status, modes, route map, provider/runtime controls, receipts, safety
+gates, telemetry, and feedback labeling. The screenshot is directional product
+truth, not a claim that every visible feature is implemented today.
+
 Status: implemented. `model-router settings` starts a localhost-only FastAPI
 admin UI, defaulting to `127.0.0.1:8099`, with server-rendered pages and
 minimal JavaScript. The UI can scan local models, show recommended downloads,
@@ -417,8 +423,8 @@ Next:
   runtime command builders for MLX-LM and llama.cpp.
 - If telemetry labeling still feels manual, add the deferred interactive
   `model-router telemetry review` queue.
-- Continue Milestone 11's benchmark/scoring work before auto-tuning
-  recommendations.
+- Continue toward the product north star with richer route-map, runtime-status,
+  receipt, and telemetry controls before considering broader UI surfaces.
 
 ## Milestone 13: Open Switchboard Robustness
 
