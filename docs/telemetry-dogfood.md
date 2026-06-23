@@ -104,6 +104,21 @@ model-router telemetry feedback \
 Add `--include-notes` only when the output target is safe for any private
 context you put in feedback notes.
 
+Review unlabeled route events as a local triage queue:
+
+```bash
+model-router telemetry review \
+  --events ~/.model-router/logs/routing-events.jsonl \
+  --feedback ~/.model-router/routing-feedback.jsonl
+```
+
+The review queue lists request ids, selected engine, status, backend, routing
+profile, receipt summaries, reason codes, replayability, and a suggested
+`model-router feedback` command. It omits raw prompts, prompt previews, request
+bodies, feedback notes, API keys, and secrets by default. Private/no-prompt
+events can still appear as non-replayable metadata rows so operators can label
+them by request id.
+
 ## Label Wrong Routes
 
 When a route is wrong, copy `X-ModelRouter-Request-ID` from the proxy response,
@@ -136,10 +151,6 @@ event coverage and skipped-private counts. If a private event needs replay,
 reproduce the case intentionally with `prompt_capture: full`, or create a
 sanitized fixture prompt that preserves the routing behavior without private
 content.
-
-An interactive `model-router telemetry review` queue is deferred until
-dogfooding shows that response headers, telemetry summaries, and shutdown
-session summaries are still too clunky.
 
 ## Promote Regressions
 

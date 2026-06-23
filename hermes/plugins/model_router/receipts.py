@@ -284,9 +284,9 @@ def _privacy_explanation(decision: RoutingDecision) -> str:
 
 
 def _wrong_route_next_action(decision: RoutingDecision) -> str:
-    expected = "code_agent" if decision.selected_engine != "code_agent" else "balanced_local"
     return (
-        "If this route was wrong, label the proxy request id with "
-        f"`model-router feedback <request_id> {expected}` or rerun "
+        "If this route was wrong, review the local event with "
+        "`model-router telemetry review`, then label the proxy request id with "
+        "`model-router feedback <request_id> <expected_engine>` or rerun "
         "`model-router decide --explain` with adjusted profile/provider policy."
     )

@@ -23,7 +23,11 @@ import webbrowser
 
 import yaml
 
-from hermes.plugins.model_router.catalog_update import catalog_status
+from hermes.plugins.model_router.catalog_update import (
+    apply_catalog_update,
+    catalog_diff,
+    catalog_status,
+)
 from hermes.plugins.model_router.config import RouterConfigError, load_router_config
 from hermes.plugins.model_router.product import (
     DEFAULT_CONFIG_DIR,
@@ -336,6 +340,31 @@ def create_settings_app(
             runner=benchmark_runner,
         )
         return JSONResponse({"ok": result.ok, "result": result.to_dict()})
+
+    @app.post("/api/catalog/diff")
+    async def api_catalog_diff() -> JSONResponse:
+        diff = catalog_diff(paths["model_router_config"])
+        return JSONResponse({"ok": True, "diff": diff.to_dict()})
+
+    @app.post("/api/catalog/apply")
+    async def api_catalog_apply(request: Request) -> JSONResponse:
+        payload = await _request_payload(request)
+        if not _payload_bool(payload, "confirm", default=False):
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "Catalog apply requires confirm=true.",
+                },
+                status_code=400,
+            )
+        result = apply_catalog_update(paths["model_router_config"], confirmed=True)
+        return JSONResponse(
+            {
+                "ok": result.ok,
+                "result": result.to_dict(),
+                "catalog": catalog_status(paths["model_router_config"]).to_dict(),
+            }
+        )
 
     @app.post("/api/feedback")
     async def api_feedback(request: Request) -> JSONResponse:
@@ -936,22 +965,12 @@ def render_dashboard_page(state: Mapping[str, Any]) -> str:
     """Render the polished local-control dashboard draft."""
 
     config_error = state.get("config_error")
-    telemetry = state["telemetry"]
     proxy = state["proxy"]
     observability = state["observability"]
     endpoint = escape(str(proxy.get("endpoint") or "http://127.0.0.1:8082/v1"))
     profile_value = str(proxy.get("routing_profile") or "balanced")
     profile_label = _profile_label(profile_value)
     telemetry_state = "On" if observability.get("enabled") else "Off"
-    health_label = (
-        "System healthy · checks passing"
-        if state.get("config_valid")
-        else "System needs attention · config check failed"
-    )
-    health_class = "ok" if state.get("config_valid") else "danger"
-    telemetry_events = escape(str(telemetry.get("events", 0)))
-    telemetry_feedback = escape(str(telemetry.get("feedback_labels", 0)))
-    latency_guard = "2.1 us"
     health_checks = _dashboard_health_checks(state)
     return f"""<!doctype html>
 <html lang="en">
@@ -968,13 +987,13 @@ def render_dashboard_page(state: Mapping[str, Any]) -> str:
         <span class="red"></span><span class="yellow"></span><span class="green"></span>
       </div>
       <nav class="side-nav">
-        {_sidebar_item("Overview", "active", "dashboard")}
-        {_sidebar_item("Routing", "", "routing-map")}
+        {_sidebar_item("llama.cpp", "active", "runtimes")}
+        {_sidebar_item("Ollama", "", "providers")}
         {_sidebar_item("Runtimes", "", "runtimes")}
-        {_sidebar_item("Providers", "", "providers")}
-        {_sidebar_item("Safety", "", "safety")}
-        {_sidebar_item("Telemetry", "", "telemetry")}
-        {_sidebar_item("Settings", "", "settings")}
+        {_sidebar_item("Risky", "", "safety")}
+        {_sidebar_item("Research", "", "routing-map")}
+        {_sidebar_item("CloseAI", "", "providers")}
+        {_sidebar_item("Codings", "", "routing-map")}
       </nav>
       <p class="sidebar-note">No chat surface. Local infrastructure only.</p>
     </aside>
@@ -1011,27 +1030,15 @@ def render_dashboard_page(state: Mapping[str, Any]) -> str:
       {_config_notice(config_error)}
 
       <section class="health-strip" aria-label="System health">
-        <details>
-          <summary>
-            <span class="health-title {health_class}">
-              <i class="dot {'green-dot' if health_class == 'ok' else 'red-dot'}"></i>
-              {escape(health_label)}
-            </span>
-            <span class="health-meta">
-              {telemetry_events} events · {telemetry_feedback} labels · latency guard {latency_guard}
-            </span>
-          </summary>
-          <div class="check-grid">{health_checks}</div>
-        </details>
+        <div class="check-grid">
+          {health_checks}
+        </div>
       </section>
 
       <div class="dashboard-grid">
         <div class="primary-column">
           <section class="panel flow-panel" aria-labelledby="flow-title">
-            <div class="panel-title">
-              <h2 id="flow-title">Route Flow</h2>
-              <span class="muted">One request, one transparent route decision.</span>
-            </div>
+            <h2 id="flow-title" class="sr-only">Route Flow</h2>
             {_route_flow()}
             <div class="profile-row">
               <div class="segmented" role="tablist" aria-label="Routing profile">
@@ -1041,9 +1048,6 @@ def render_dashboard_page(state: Mapping[str, Any]) -> str:
                 {_profile_button("Private", profile_value == "private")}
                 {_profile_button("Safe", profile_value == "safe")}
               </div>
-              <button class="text-button profile-save" type="button" onclick="saveProfile()">
-                Save profile {_icon("check")}
-              </button>
               <p class="profile-help">
                 <strong>Fast</strong> = lowest latency, local-first;
                 <strong>Balanced</strong> = default everyday routing;
@@ -1084,6 +1088,7 @@ def render_dashboard_page(state: Mapping[str, Any]) -> str:
         <aside class="inspector-column" aria-label="Inspectors">
           {_route_receipt_panel()}
           {_safety_panel()}
+          {_catalog_panel(state)}
         </aside>
       </div>
     </main>
@@ -1129,11 +1134,11 @@ def _dashboard_css() -> str:
 html { scroll-behavior: smooth; }
 body {
   margin: 0;
-  min-width: 1140px;
+  min-width: 1180px;
   background: var(--bg);
   color: var(--text);
-  font-size: 13px;
-  line-height: 1.38;
+  font-size: 12px;
+  line-height: 1.32;
   letter-spacing: 0;
 }
 button, input, select, textarea { font: inherit; letter-spacing: 0; }
@@ -1150,20 +1155,31 @@ button {
 button:hover { border-color: #c4cedb; background: #f9fbfd; }
 a { color: var(--accent); text-decoration: none; }
 h1, h2, h3, p { margin: 0; }
-h1 { font-size: 25px; line-height: 1.1; font-weight: 750; }
-h2 { font-size: 16px; line-height: 1.2; font-weight: 730; }
+h1 { font-size: 22px; line-height: 1.08; font-weight: 760; }
+h2 { font-size: 15px; line-height: 1.18; font-weight: 730; }
 h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 .app-shell {
   min-height: 100vh;
   display: grid;
-  grid-template-columns: 214px minmax(900px, 1fr);
+  grid-template-columns: 170px minmax(1010px, 1fr);
 }
 .sidebar {
   background: linear-gradient(90deg, #f8fafc 0%, #f5f7fa 100%);
   border-right: 1px solid var(--line);
-  padding: 18px 12px;
+  padding: 18px 10px;
 }
-.traffic-lights { display: flex; gap: 8px; margin: 4px 0 32px 10px; }
+.traffic-lights { display: flex; gap: 8px; margin: 2px 0 30px 10px; }
 .traffic-lights span {
   width: 13px;
   height: 13px;
@@ -1178,14 +1194,14 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 9px;
   color: #30415b;
   text-align: left;
   border: 0;
   background: transparent;
   border-radius: 7px;
-  min-height: 38px;
-  padding: 8px 10px;
+  min-height: 37px;
+  padding: 8px 9px;
 }
 .side-link.active, .side-link:hover {
   background: #eaf2ff;
@@ -1198,20 +1214,20 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
 }
 .workspace { min-width: 0; padding-bottom: 32px; }
 .topbar {
-  min-height: 78px;
+  min-height: 62px;
   background: rgba(255, 255, 255, .86);
   backdrop-filter: blur(18px);
   border-bottom: 1px solid var(--line);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 22px 12px 24px;
+  padding: 9px 18px 8px 18px;
   position: sticky;
   top: 0;
   z-index: 10;
 }
 .brand { display: flex; align-items: center; gap: 13px; }
-.brand p { margin-top: 8px; color: #34435a; }
+.brand p { margin-top: 5px; color: #34435a; }
 .brand-mark {
   width: 31px;
   height: 31px;
@@ -1230,13 +1246,13 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
 .top-status {
   display: flex;
   align-items: center;
-  gap: 18px;
+  gap: 16px;
   color: #26344b;
   white-space: nowrap;
 }
 .top-status > span:not(:last-of-type) {
   border-right: 1px solid var(--line);
-  padding-right: 18px;
+  padding-right: 16px;
 }
 .accent { color: var(--accent-strong); }
 .dot {
@@ -1263,51 +1279,36 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
   display: inline-grid;
   place-items: center;
 }
-.health-strip { padding: 10px 22px 0 24px; }
-.health-strip details {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  box-shadow: var(--tiny-shadow);
-}
-.health-strip summary {
-  list-style: none;
-  cursor: pointer;
-  min-height: 38px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  padding: 8px 12px;
-}
-.health-strip summary::-webkit-details-marker { display: none; }
+.health-strip { padding: 10px 14px 0 14px; }
 .health-title { font-weight: 720; }
 .health-title.ok { color: #1f6b35; }
 .health-title.danger { color: var(--red); }
 .health-meta { color: var(--muted); }
 .check-grid {
-  border-top: 1px solid var(--line-soft);
-  padding: 9px 12px 12px;
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
 }
 .check-item {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   border: 1px solid var(--line-soft);
   border-radius: 6px;
-  min-height: 30px;
-  padding: 6px 8px;
+  min-height: 24px;
+  padding: 4px 8px;
   color: #2d3b52;
-  background: #fbfcfe;
+  background: #fff;
+  box-shadow: var(--tiny-shadow);
+  font-size: 11px;
+  font-weight: 690;
 }
 .dashboard-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(330px, 360px);
-  gap: 16px;
-  padding: 16px 14px 0 16px;
+  gap: 12px;
+  padding: 12px 12px 0 12px;
 }
 .primary-column, .inspector-column { min-width: 0; }
 .panel {
@@ -1315,12 +1316,12 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
   border: 1px solid var(--line);
   border-radius: var(--radius);
   box-shadow: var(--tiny-shadow);
-  margin-bottom: 14px;
+  margin-bottom: 12px;
   overflow: hidden;
 }
 .panel-title {
-  min-height: 46px;
-  padding: 13px 14px;
+  min-height: 38px;
+  padding: 9px 14px;
   border-bottom: 1px solid var(--line-soft);
   display: flex;
   align-items: center;
@@ -1328,8 +1329,7 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
   gap: 12px;
 }
 .muted { color: var(--muted); }
-.flow-panel { padding: 0 10px 12px; }
-.flow-panel .panel-title { border-bottom: 0; padding-left: 4px; padding-right: 4px; }
+.flow-panel { padding: 8px 12px; }
 .flow {
   display: grid;
   grid-template-columns: minmax(115px, 1fr) 34px minmax(160px, 1.35fr) 34px
@@ -1338,19 +1338,19 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
   gap: 4px;
 }
 .flow-node {
-  min-height: 66px;
+  min-height: 50px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: #fff;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px;
+  gap: 10px;
+  padding: 8px 10px;
   box-shadow: 0 4px 12px rgba(15, 23, 42, .04);
 }
 .flow-icon {
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   display: grid;
   place-items: center;
   border-radius: 7px;
@@ -1363,14 +1363,14 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
   color: var(--accent);
   background: #eef5ff;
 }
-.flow-kicker { font-size: 11px; color: var(--muted); margin-top: 3px; }
+.flow-kicker { font-size: 10.5px; color: var(--muted); margin-top: 2px; }
 .flow-arrow { color: #9aa5b5; display: grid; place-items: center; }
 .profile-row {
   display: grid;
-  grid-template-columns: minmax(360px, 48%) max-content 1fr;
-  gap: 12px;
+  grid-template-columns: minmax(380px, 44%) 1fr;
+  gap: 14px;
   align-items: center;
-  margin-top: 14px;
+  margin-top: 8px;
 }
 .segmented {
   display: grid;
@@ -1379,7 +1379,7 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
   border-radius: 7px;
   background: #fff;
   overflow: hidden;
-  height: 40px;
+  height: 32px;
 }
 .segment {
   border: 0;
@@ -1387,7 +1387,7 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
   border-radius: 0;
   background: transparent;
   color: #1f2937;
-  min-height: 38px;
+  min-height: 30px;
 }
 .segment:last-child { border-right: 0; }
 .segment.active {
@@ -1396,17 +1396,25 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .22);
 }
 .profile-help { color: #2f3d53; font-size: 12px; }
-.profile-save { white-space: nowrap; }
 .data-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .data-table th, .data-table td {
   border-bottom: 1px solid var(--line-soft);
-  padding: 9px 10px;
+  padding: 5px 8px;
   text-align: left;
   vertical-align: middle;
+  line-height: 1.12;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: clip;
+}
+.data-table td:first-child,
+.data-table td:nth-child(3),
+.data-table td:nth-child(4) {
+  white-space: normal;
 }
 .data-table th {
   color: #5f6e83;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 720;
   background: #fbfcfe;
 }
@@ -1418,8 +1426,8 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
   min-width: 0;
 }
 .row-icon {
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   display: inline-grid;
   place-items: center;
   color: #41516a;
@@ -1430,16 +1438,21 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
   border-bottom-color: #d5e8ff;
 }
 .selected-row td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
-.code { color: #24415f; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.code {
+  color: #24415f;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
+}
 .linkish { color: var(--accent-strong); font-weight: 680; }
 .pill {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  min-height: 21px;
-  padding: 3px 7px;
+  min-height: 18px;
+  padding: 2px 6px;
   border-radius: 5px;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 690;
   white-space: nowrap;
 }
@@ -1450,44 +1463,48 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
 .pill.gray { background: #eef2f7; color: #536174; }
 .runtime-grid {
   display: grid;
-  grid-template-columns: 310px 1fr;
-  min-height: 224px;
+  grid-template-columns: 290px 1fr;
+  min-height: 210px;
 }
 .provider-list {
   border-right: 1px solid var(--line);
   background: #fbfcfe;
-  padding: 8px;
+  padding: 7px;
 }
 .provider-row {
   display: grid;
-  grid-template-columns: 24px 1fr auto;
-  gap: 8px;
+  grid-template-columns: 20px 82px 78px 1fr;
+  gap: 7px;
   align-items: center;
   border-radius: 6px;
-  padding: 7px 8px;
+  min-height: 27px;
+  padding: 4px 7px;
   color: #26344b;
 }
 .provider-row.active { background: #eaf3ff; color: var(--accent-strong); }
+.provider-row strong { white-space: nowrap; }
 .provider-status {
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 11px;
+  font-size: 10px;
   color: var(--muted);
+  white-space: nowrap;
 }
+.provider-row .muted { font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .runtime-detail {
-  padding: 18px 20px 14px;
+  padding: 14px 18px 12px;
   display: grid;
   grid-template-columns: 1fr 1fr;
-  column-gap: 30px;
-  row-gap: 12px;
+  column-gap: 24px;
+  row-gap: 9px;
 }
 .detail-field label {
   display: block;
   color: #59687d;
   font-size: 11px;
   font-weight: 720;
-  margin-bottom: 5px;
+  margin-bottom: 4px;
 }
 .detail-field span { color: #172033; }
 .detail-wide { grid-column: 1 / -1; }
@@ -1501,6 +1518,20 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
 .action-group { display: flex; gap: 10px; }
 .button-blue { color: var(--accent-strong); }
 .button-red { color: #d92d37; }
+.danger-text { color: var(--red); }
+.catalog-output {
+  max-height: 180px;
+  overflow: auto;
+  margin: 12px 18px 18px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+  color: #34435a;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+}
 .inspector-card {
   background: var(--surface);
   border: 1px solid var(--line);
@@ -1595,7 +1626,7 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
   position: fixed;
   right: 28px;
   bottom: 24px;
-  width: 360px;
+  width: 286px;
   background: rgba(255, 255, 255, .96);
   border: 1px solid #cfd7e3;
   border-radius: 8px;
@@ -1604,44 +1635,46 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
   overflow: hidden;
 }
 .mini-header {
-  height: 38px;
+  height: 34px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 10px 0 12px;
+  padding: 0 8px 0 10px;
   border-bottom: 1px solid var(--line-soft);
 }
 .mini-title { display: flex; align-items: center; gap: 8px; font-weight: 760; }
-.mini-body { padding: 9px 10px 10px; }
+.mini-title .traffic-lights { margin: 0; }
+.mini-body { padding: 8px 9px 9px; }
 .mini-chips, .mini-bottom {
   display: flex;
-  flex-wrap: wrap;
   gap: 6px;
 }
+.mini-chips { flex-wrap: nowrap; }
 .mini-chip {
-  min-height: 22px;
+  min-height: 20px;
   border: 1px solid var(--line);
   border-radius: 5px;
-  padding: 3px 7px;
+  padding: 3px 6px;
   background: #fbfcfe;
-  font-size: 10.5px;
+  font-size: 8.5px;
+  white-space: nowrap;
 }
 .mini-flow {
   display: grid;
-  grid-template-columns: 54px 16px 72px 16px 64px 16px 62px;
+  grid-template-columns: 46px 10px 62px 10px 54px 10px 54px;
   align-items: center;
   gap: 2px;
-  margin: 10px 0;
+  margin: 8px 0;
   color: #526178;
 }
 .mini-box {
   border: 1px solid var(--line);
   border-radius: 5px;
-  min-height: 26px;
+  min-height: 24px;
   display: grid;
   place-items: center;
   background: #fff;
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 700;
   color: #24344c;
 }
@@ -1649,8 +1682,8 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
 .mini-summary {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 5px 14px;
-  font-size: 10.5px;
+  gap: 4px 10px;
+  font-size: 9.5px;
 }
 .mini-summary div {
   min-width: 0;
@@ -1665,37 +1698,41 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
   white-space: nowrap;
 }
 .mini-summary strong { text-align: right; }
+.mini-summary span,
+.mini-summary strong {
+  white-space: nowrap;
+}
 .mini-recent {
-  margin-top: 10px;
+  margin-top: 8px;
   border-top: 1px solid var(--line-soft);
-  padding-top: 7px;
+  padding-top: 6px;
 }
 .mini-recent-row {
   display: grid;
-  grid-template-columns: 42px 1fr 70px 44px;
-  gap: 8px;
+  grid-template-columns: 34px 1fr 54px 36px;
+  gap: 6px;
   align-items: center;
-  min-height: 21px;
-  font-size: 11px;
+  min-height: 18px;
+  font-size: 9px;
 }
 .mini-actions {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
-  gap: 6px;
-  margin-top: 10px;
+  gap: 5px;
+  margin-top: 8px;
 }
 .mini-actions button {
-  min-height: 40px;
-  padding: 4px;
+  min-height: 34px;
+  padding: 3px;
   display: grid;
   place-items: center;
-  gap: 3px;
+  gap: 2px;
   color: #2d3b52;
-  font-size: 10px;
+  font-size: 9px;
 }
 .mini-bottom {
   border-top: 1px solid var(--line-soft);
-  padding: 7px 9px;
+  padding: 6px 8px;
   background: #fbfcfe;
   flex-wrap: nowrap;
 }
@@ -1739,6 +1776,21 @@ async function saveProfile() {
   const profile = active ? active.dataset.profileValue : 'balanced';
   await postAction('/api/save-config', {proxy: {routing_profile: profile}});
 }
+async function showCatalogDiff() {
+  const output = document.getElementById('catalog-output');
+  if (output) output.textContent = 'Loading catalog diff...';
+  const data = await postAction('/api/catalog/diff');
+  if (output) output.textContent = JSON.stringify(data.diff || data, null, 2);
+}
+async function applyCatalogUpdate() {
+  if (!window.confirm('Apply packaged catalog defaults to the local config? A backup and migration log entry will be written when changes apply.')) {
+    return;
+  }
+  const output = document.getElementById('catalog-output');
+  if (output) output.textContent = 'Applying catalog update...';
+  const data = await postAction('/api/catalog/apply', {confirm: true});
+  if (output) output.textContent = JSON.stringify(data.result || data, null, 2);
+}
 function jumpTo(id) {
   const target = document.getElementById(id) || document.getElementById('dashboard');
   target.scrollIntoView({behavior: 'smooth', block: 'start'});
@@ -1772,30 +1824,13 @@ document.querySelectorAll('[data-feedback]').forEach((button) => {
 
 def _dashboard_health_checks(state: Mapping[str, Any]) -> str:
     proxy_process = state.get("proxy_process", {})
-    observability = state.get("observability", {})
-    verifier = state.get("verifier", {})
-    catalog = state.get("catalog", {})
-    verifier_mode = str(verifier.get("mode") or "off")
-    catalog_label = (
-        "Catalog packaged"
-        if catalog.get("local_matches_packaged")
-        else "Catalog customized"
-        if catalog.get("local_exists")
-        else "Catalog missing"
-    )
     checks = (
         ("Proxy running", str(proxy_process.get("state")) == "running"),
         ("Config valid", bool(state.get("config_valid"))),
-        (catalog_label, bool(catalog.get("local_exists"))),
         ("llama.cpp connected", True),
         ("LM Studio available", True),
         ("Ollama available", True),
         ("Human confirm enabled", True),
-        ("Telemetry on", bool(observability.get("enabled"))),
-        ("Route receipts enabled", True),
-        (f"Verifier {verifier_mode}", True),
-        ("Prompt capture safe", observability.get("prompt_capture") != "full"),
-        ("No hosted default", True),
     )
     return "\n".join(
         f'<span class="check-item"><i class="dot {"green-dot" if ok else "yellow-dot"}"></i>'
@@ -1821,6 +1856,12 @@ def _nav_icon(label: str) -> str:
         "Safety": "shield",
         "Telemetry": "pulse",
         "Settings": "gear",
+        "llama.cpp": "code",
+        "Ollama": "shield",
+        "Risky": "pulse",
+        "Research": "server",
+        "CloseAI": "providers",
+        "Codings": "code",
     }
     return _icon(names.get(label, "overview"))
 
@@ -1867,7 +1908,7 @@ def _routing_map_table() -> str:
         (
             "Simple",
             "fast_local",
-            "Fast local rewrite, extraction, formatting",
+            "llama.cpp / Qwen fast local",
             "llama.cpp",
             "Very Low",
             "$ Low",
@@ -1879,7 +1920,7 @@ def _routing_map_table() -> str:
         (
             "Balanced",
             "balanced_local",
-            "General summary and everyday assistant work",
+            "LM Studio / Ollama general model",
             "LM Studio / Ollama",
             "Low",
             "$ Low",
@@ -1891,7 +1932,7 @@ def _routing_map_table() -> str:
         (
             "Reasoning",
             "reasoning_local",
-            "Architecture, planning, long-context prompts",
+            "llama.cpp reasoning model or hosted fallback",
             "llama.cpp",
             "Medium",
             "$$ Low",
@@ -1915,7 +1956,7 @@ def _routing_map_table() -> str:
         (
             "Research",
             "web_research",
-            "Web/RAG adapter for current information",
+            "Web/RAG adapter",
             "RAG Adapter",
             "Medium",
             "$ Low",
@@ -1927,7 +1968,7 @@ def _routing_map_table() -> str:
         (
             "Vision",
             "multimodal_vision",
-            "Screenshots, OCR, charts, diagrams",
+            "Vision/OCR model",
             "llama.cpp / Vision",
             "Medium",
             "$$ Low",
@@ -1939,7 +1980,7 @@ def _routing_map_table() -> str:
         (
             "Image generation",
             "image_generation",
-            "Local diffusion image requests",
+            "Local diffusion model",
             "Stable Diffusion",
             "High",
             "$$ Medium",
@@ -1951,7 +1992,7 @@ def _routing_map_table() -> str:
         (
             "Risky actions",
             "human_confirm",
-            "Destructive, sending, purchases, deploys",
+            "Confirmation gate",
             "Safety Gate",
             "Very Low",
             "$ Low",
@@ -1964,15 +2005,15 @@ def _routing_map_table() -> str:
     body = "\n".join(_routing_map_row(row) for row in rows)
     return f"""<table class="data-table">
       <colgroup>
-        <col style="width: 13%">
-        <col style="width: 12%">
-        <col style="width: 24%">
-        <col style="width: 15%">
         <col style="width: 10%">
-        <col style="width: 9%">
-        <col style="width: 10%">
+        <col style="width: 14%">
+        <col style="width: 22%">
+        <col style="width: 14%">
         <col style="width: 8%">
-        <col style="width: 12%">
+        <col style="width: 8%">
+        <col style="width: 9%">
+        <col style="width: 6%">
+        <col style="width: 9%">
       </colgroup>
       <thead>
         <tr>
@@ -2153,17 +2194,10 @@ def _policy_summary_fields(state: Mapping[str, Any]) -> str:
         f"local config {catalog_state}; remote checks off"
     )
     return f"""
-        <div class="detail-field detail-wide">
-          <label>Provider policy</label>
-          <span>{escape(provider_text)}</span>
-        </div>
-        <div class="detail-field detail-wide">
-          <label>Backend policy</label>
-          <span>{escape(backend_text)}</span>
-        </div>
-        <div class="detail-field detail-wide">
-          <label>Catalog</label>
-          <span>{escape(catalog_text)}</span>
+        <div class="sr-only">
+          Provider policy: {escape(provider_text)}
+          Backend policy: {escape(backend_text)}
+          Catalog: {escape(catalog_text)}
         </div>"""
 
 
@@ -2209,7 +2243,6 @@ def _provider_row(
       <span>{_icon(_provider_icon_name(name))}</span>
       <strong>{escape(name)}</strong>
       <span class="provider-status"><i class="dot {dot_class}"></i>{escape(status)}</span>
-      <span></span>
       <span class="muted">{escape(detail)}</span>
     </div>"""
 
@@ -2306,6 +2339,43 @@ def _safety_panel() -> str:
     </section>"""
 
 
+def _catalog_panel(state: Mapping[str, Any]) -> str:
+    catalog = state.get("catalog", {})
+    local_state = (
+        "missing"
+        if not catalog.get("local_exists")
+        else (
+            "matches packaged"
+            if catalog.get("local_matches_packaged")
+            else "customized"
+        )
+    )
+    version = escape(str(catalog.get("packaged_model_catalog_version", "?")))
+    config_path = escape(str(catalog.get("local_config") or ""))
+    log_path = escape(str(catalog.get("migration_log") or ""))
+    overrides = catalog.get("overrides") or []
+    override_text = escape(", ".join(overrides) if overrides else "none")
+    return f"""<section class="inspector-card" id="settings" aria-labelledby="catalog-title">
+      <header>
+        <h2 id="catalog-title">{_icon("server")} Catalog</h2>
+        <span class="muted">packaged only</span>
+      </header>
+      <dl class="receipt-grid">
+        <dt>Model catalog:</dt><dd>v{version}</dd>
+        <dt>Local config:</dt><dd>{escape(local_state)}</dd>
+        <dt>Overrides:</dt><dd>{override_text}</dd>
+        <dt>Config path:</dt><dd class="code">{config_path}</dd>
+        <dt>Migration log:</dt><dd class="code">{log_path}</dd>
+      </dl>
+      <div class="receipt-divider"></div>
+      <div class="runtime-actions">
+        <button type="button" onclick="showCatalogDiff()">{_icon("braces")} Diff</button>
+        <button class="danger-text" type="button" onclick="applyCatalogUpdate()">{_icon("check")} Apply</button>
+      </div>
+      <pre id="catalog-output" class="catalog-output">No catalog action yet.</pre>
+    </section>"""
+
+
 def _recent_requests_table() -> str:
     rows = (
         ("12:42", "code_agent", "llama.cpp", "Forwarded", "812 ms", "green-dot"),
@@ -2382,7 +2452,6 @@ def _mini_popup(
           <h3>Recent</h3>
           <div class="mini-recent-row"><span>12:42</span><span>code_agent</span><span>llama.cpp</span><span><i class="dot green-dot"></i>817 ms</span></div>
           <div class="mini-recent-row"><span>12:44</span><span>human_confirm</span><span>blocked</span><span><i class="dot yellow-dot"></i>1 ms</span></div>
-          <div class="mini-recent-row"><span>12:47</span><span>web_research</span><span>rag-local</span><span><i class="dot green-dot"></i>1.9 s</span></div>
         </div>
         <div class="mini-actions">
           <button type="button" onclick="jumpTo('dashboard')">{_icon("open")}<span>Open Dashboard</span></button>

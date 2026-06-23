@@ -36,6 +36,7 @@ from hermes.plugins.model_router.product import (
     initialize_product_config,
     validate_proxy_config,
 )
+from hermes.plugins.model_router.proxy_dogfood import run_proxy_dogfood
 from hermes.plugins.model_router.proxy_config import ProxyConfigError
 from hermes.plugins.model_router.receipts import decision_to_receipt, receipt_to_json
 from hermes.plugins.model_router.routing_log import (
@@ -60,7 +61,11 @@ from hermes.plugins.model_router.setup_assistant import (
     write_config_from_recommendation,
     write_recommended_config,
 )
-from hermes.plugins.model_router.telemetry import feedback_summary, replay_events
+from hermes.plugins.model_router.telemetry import (
+    feedback_summary,
+    replay_events,
+    review_queue,
+)
 from hermes.plugins.model_router.workflow_benchmark import (
     run_workflow_benchmarks,
     workflow_case_names,
@@ -387,6 +392,48 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
     catalog_apply_parser.add_argument("--json", action="store_true", help="Emit JSON output")
     catalog_apply_parser.set_defaults(func=_cmd_catalog_apply)
 
+    dogfood = subparsers.add_parser(
+        "dogfood",
+        help="Run opt-in local dogfood checks",
+    )
+    dogfood_subparsers = dogfood.add_subparsers(
+        dest="dogfood_command",
+        required=True,
+    )
+    dogfood_proxy = dogfood_subparsers.add_parser(
+        "proxy",
+        help="Plan or run live local proxy dogfood checks",
+    )
+    dogfood_proxy.add_argument(
+        "--config",
+        type=Path,
+        default=Path(DEFAULT_CONFIG_DIR) / "routing_proxy.yaml",
+        help="Path to routing_proxy.yaml",
+    )
+    dogfood_proxy.add_argument(
+        "--endpoint",
+        default=None,
+        help="Proxy endpoint root such as http://127.0.0.1:8082",
+    )
+    dogfood_proxy.add_argument(
+        "--execute",
+        action="store_true",
+        help="Run live local HTTP checks against the proxy",
+    )
+    dogfood_proxy.add_argument(
+        "--require-running",
+        action="store_true",
+        help="Treat an unavailable proxy as a failure instead of a skip",
+    )
+    dogfood_proxy.add_argument(
+        "--timeout",
+        type=float,
+        default=5.0,
+        help="Per-request timeout in seconds",
+    )
+    dogfood_proxy.add_argument("--json", action="store_true", help="Emit JSON output")
+    dogfood_proxy.set_defaults(func=_cmd_dogfood_proxy)
+
     validate = subparsers.add_parser(
         "validate-config",
         help="Validate catalog shape and non-executing availability checks",
@@ -540,6 +587,20 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
     )
     telemetry_feedback.add_argument("--json", action="store_true", help="Emit JSON")
     telemetry_feedback.set_defaults(func=_cmd_telemetry_feedback)
+
+    telemetry_review = telemetry_subparsers.add_parser(
+        "review",
+        help="Show a privacy-safe wrong-route review queue",
+    )
+    _add_telemetry_paths(telemetry_review)
+    telemetry_review.add_argument(
+        "--max-rows",
+        type=_positive_int,
+        default=20,
+        help="Maximum unlabeled events to show",
+    )
+    telemetry_review.add_argument("--json", action="store_true", help="Emit JSON")
+    telemetry_review.set_defaults(func=_cmd_telemetry_review)
 
     setup = subparsers.add_parser(
         "setup",
@@ -885,6 +946,21 @@ def _cmd_catalog_apply(args: argparse.Namespace) -> int:
     return 0 if result.ok else 1
 
 
+def _cmd_dogfood_proxy(args: argparse.Namespace) -> int:
+    report = run_proxy_dogfood(
+        config_path=args.config,
+        endpoint=args.endpoint,
+        execute=args.execute,
+        require_running=args.require_running,
+        timeout_seconds=args.timeout,
+    )
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+    else:
+        _print_dogfood_report(report)
+    return 0 if report.ok else 1
+
+
 def _add_routing_hint_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--config",
@@ -1146,6 +1222,19 @@ def _cmd_telemetry_feedback(args: argparse.Namespace) -> int:
         print(json.dumps(summary, indent=2, sort_keys=True))
     else:
         _print_feedback_summary(summary, include_notes=args.include_notes)
+    return 0
+
+
+def _cmd_telemetry_review(args: argparse.Namespace) -> int:
+    summary = review_queue(
+        events_path=args.events,
+        feedback_path=args.feedback,
+        max_rows=args.max_rows,
+    )
+    if args.json:
+        print(json.dumps(summary, indent=2, sort_keys=True))
+    else:
+        _print_telemetry_review(summary)
     return 0
 
 
@@ -1979,6 +2068,35 @@ def _print_catalog_apply_result(result) -> None:
         print(f"- {note}")
 
 
+def _print_dogfood_report(report) -> None:
+    print("Proxy Dogfood")
+    print(f"Executed: {str(report.executed).lower()}")
+    print(f"OK: {str(report.ok).lower()}")
+    print(f"Endpoint: {report.endpoint}")
+    print(f"Config: {report.config_path}")
+    print(
+        "Summary: "
+        f"{report.passed} passed; {report.failed} failed; "
+        f"{report.skipped} skipped; {report.planned} planned"
+    )
+    print("Checks:")
+    if not report.checks:
+        print("- none")
+    for check in report.checks:
+        suffix = (
+            f" (HTTP {check.status_code})"
+            if check.status_code is not None
+            else ""
+        )
+        print(f"- {check.name}: {check.status}{suffix}")
+        print(f"  {check.detail}")
+    print("Notes:")
+    if not report.notes:
+        print("- none")
+    for note in report.notes:
+        print(f"- {note}")
+
+
 def _print_download_result(result) -> None:
     print(f"Executed: {str(result.executed).lower()}")
     print(f"OK: {str(result.ok).lower()}")
@@ -2094,6 +2212,29 @@ def _print_feedback_summary(summary: dict[str, Any], *, include_notes: bool) -> 
         )
         if include_notes and label.get("notes"):
             print(f"  notes: {label['notes']}")
+    if summary["truncated"]:
+        print("- output truncated; increase --max-rows to show more")
+
+
+def _print_telemetry_review(summary: dict[str, Any]) -> None:
+    print("Telemetry review queue")
+    print(f"Reviewable: {summary['reviewable']}")
+    print(f"Skipped labeled: {summary['skipped_labeled']}")
+    print(f"Skipped private/no-prompt: {summary['skipped_private']}")
+    print(f"Privacy: {summary['privacy']}")
+    print("Items:")
+    if not summary["items"]:
+        print("- none")
+    for item in summary["items"]:
+        reason_codes = ", ".join(item.get("reason_codes") or []) or "none"
+        print(
+            f"- {item['request_id']}: selected={item.get('selected_engine') or 'unknown'} "
+            f"status={item.get('status') or 'unknown'} replayable={str(item.get('replayable')).lower()}"
+        )
+        if item.get("receipt_summary"):
+            print(f"  summary: {item['receipt_summary']}")
+        print(f"  reason codes: {reason_codes}")
+        print(f"  feedback: {item['suggested_feedback_command']}")
     if summary["truncated"]:
         print("- output truncated; increase --max-rows to show more")
 

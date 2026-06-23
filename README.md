@@ -711,6 +711,34 @@ Responses endpoint: /v1/responses
 Use `model-router doctor --config ~/.model-router/routing_proxy.yaml` when a
 backend is unavailable or a model name/endpoint is wrong.
 
+### Real Proxy Dogfood
+
+Plan the local proxy dogfood checklist without contacting the proxy or any
+runtime:
+
+```bash
+model-router dogfood proxy --config ~/.model-router/routing_proxy.yaml
+```
+
+From a source checkout, `python scripts/dogfood_proxy.py --config
+~/.model-router/routing_proxy.yaml` runs the same harness.
+
+Run the live checks only when the proxy and local runtimes are intentionally
+available:
+
+```bash
+model-router dogfood proxy \
+  --config ~/.model-router/routing_proxy.yaml \
+  --execute
+```
+
+The harness covers `/health`, `/v1/models`, `/v1/chat/completions`, streaming
+chat, `/v1/responses` when supported, fallback, backend policy rejection,
+`human_confirm`, and verifier-mode visibility. Live checks are opt-in, use fixed
+sanitized smoke prompts, skip clearly when a runtime or policy setup is not
+available, and do not start providers, download models, enable hosted APIs, or
+turn on verifiers.
+
 Routed proxy responses include privacy-safe identifiers you can copy while
 dogfooding:
 
@@ -764,6 +792,15 @@ model-router telemetry feedback \
   --feedback ~/.model-router/routing-feedback.jsonl
 ```
 
+Review unlabeled wrong-route candidates without printing prompt bodies,
+previews, request bodies, or feedback notes:
+
+```bash
+model-router telemetry review \
+  --events ~/.model-router/logs/routing-events.jsonl \
+  --feedback ~/.model-router/routing-feedback.jsonl
+```
+
 Run strict replay for CI-style checks:
 
 ```bash
@@ -799,10 +836,6 @@ python scripts/replay_routing_log.py \
   --feedback ~/.model-router/routing-feedback.jsonl \
   --json
 ```
-
-An interactive `model-router telemetry review` command is intentionally
-deferred until dogfooding shows that header-based labeling plus shutdown
-summaries are still too clunky.
 
 5. Add the prompt to a small fixture or parametrized test, update deterministic
    scoring/routing rules, rerun replay, and keep the new test with the fix.
@@ -861,7 +894,7 @@ revisiting optional advanced routing.
   "fallback_explanation": "No fallback was used; reasoning_local remains the configured fallback.",
   "safety_explanation": "No human confirmation is required by the current safety policy.",
   "privacy_explanation": "No raw prompt text is stored in this receipt; provider use follows the configured catalog and policy.",
-  "wrong_route_next_action": "If this route was wrong, label the proxy request id with `model-router feedback <request_id> balanced_local`.",
+  "wrong_route_next_action": "If this route was wrong, review the local event with `model-router telemetry review`, then label the proxy request id with `model-router feedback <request_id> <expected_engine>` or rerun `model-router decide --explain` with adjusted profile/provider policy.",
   "reasons": [
     "coding or repository intent",
     "tool use likely",

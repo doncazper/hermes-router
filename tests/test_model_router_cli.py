@@ -306,6 +306,80 @@ def test_telemetry_feedback_cli_hides_notes_by_default(tmp_path):
     assert "notes" not in payload["labels"][0]
 
 
+def test_telemetry_review_cli_hides_prompts_and_notes_by_default(tmp_path):
+    events = tmp_path / "events.jsonl"
+    feedback = tmp_path / "feedback.jsonl"
+    _write_jsonl(
+        events,
+        [
+            {
+                "event_type": "routing_event",
+                "request_id": "already-labeled",
+                "prompt": "token=secret-value fix this bug",
+                "prompt_preview": "token=secret-value fix this bug",
+                "selected_engine": "balanced_local",
+                "status": "forwarded",
+            },
+            {
+                "event_type": "routing_event",
+                "request_id": "needs-review",
+                "prompt": "api_key=secret-value rewrite this",
+                "prompt_preview": "api_key=secret-value rewrite this",
+                "selected_engine": "fast_local",
+                "routing_profile": "balanced",
+                "status": "forwarded",
+                "backend": "fast",
+                "receipt_summary": "Selected fast_local under the balanced profile.",
+                "reason_codes": ["profile.balanced", "route.simple"],
+            },
+            {
+                "event_type": "routing_event",
+                "request_id": "private-no-prompt",
+                "prompt_hash": "abc",
+                "selected_engine": "code_agent",
+                "status": "forwarded",
+            },
+        ],
+    )
+    _write_jsonl(
+        feedback,
+        [
+            {
+                "event_type": "routing_feedback",
+                "request_id": "already-labeled",
+                "expected_engine": "code_agent",
+                "notes": "contains token=secret-value",
+            }
+        ],
+    )
+
+    result = _run_cli(
+        "telemetry",
+        "review",
+        "--events",
+        str(events),
+        "--feedback",
+        str(feedback),
+        "--json",
+    )
+
+    assert result.returncode == 0
+    assert "secret-value" not in result.stdout
+    assert "rewrite this" not in result.stdout
+    assert "contains token" not in result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["reviewable"] == 2
+    assert payload["skipped_labeled"] == 1
+    assert payload["skipped_private"] == 1
+    assert payload["items"][0]["request_id"] == "private-no-prompt"
+    assert payload["items"][0]["replayable"] is False
+    assert payload["items"][1]["request_id"] == "needs-review"
+    assert payload["items"][1]["reason_codes"] == ["profile.balanced", "route.simple"]
+    assert "model-router feedback needs-review" in payload["items"][1][
+        "suggested_feedback_command"
+    ]
+
+
 def test_init_cli_writes_configs(tmp_path):
     result = _run_cli(
         "init",
@@ -389,6 +463,34 @@ def test_validate_proxy_config_cli(tmp_path):
     payload = json.loads(result.stdout)
     assert payload["config_valid"] is True
     assert "fast" in payload["backends"]
+
+
+def test_dogfood_proxy_cli_defaults_to_plan_only(tmp_path):
+    init = _run_cli(
+        "init",
+        "--preset",
+        "lmstudio",
+        "--yes",
+        "--config-dir",
+        str(tmp_path),
+        "--json",
+    )
+    assert init.returncode == 0
+
+    result = _run_cli(
+        "dogfood",
+        "proxy",
+        "--config",
+        str(tmp_path / "routing_proxy.yaml"),
+        "--json",
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["executed"] is False
+    assert payload["ok"] is True
+    assert payload["planned"] >= 8
+    assert "Live dogfood is local and opt-in" in " ".join(payload["notes"])
 
 
 def test_doctor_cli_emits_json_report_for_unreachable_backends(tmp_path):

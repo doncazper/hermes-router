@@ -9,7 +9,7 @@ from time import perf_counter
 from typing import Any
 
 from hermes.plugins.model_router.policy import ModelRouter
-from hermes.plugins.model_router.routing_log import read_jsonl
+from hermes.plugins.model_router.routing_log import DEFAULT_FEEDBACK_PATH, read_jsonl
 
 
 def replay_events(
@@ -188,6 +188,69 @@ def feedback_summary(
     }
 
 
+def review_queue(
+    *,
+    events_path: str | Path,
+    feedback_path: str | Path | None,
+    max_rows: int = 20,
+) -> dict[str, Any]:
+    """Build a privacy-safe wrong-route review queue.
+
+    The queue intentionally omits raw prompts, prompt previews, feedback notes,
+    request bodies, and secrets. It is a local triage view over event metadata.
+    """
+
+    events = _routing_events(read_jsonl(events_path))
+    feedback = (
+        _feedback_records_by_request(read_jsonl(feedback_path))
+        if feedback_path
+        else {}
+    )
+    rows: list[dict[str, Any]] = []
+    skipped_labeled = 0
+    skipped_private = 0
+    for event in reversed(events):
+        request_id = event.get("request_id")
+        if not isinstance(request_id, str) or not request_id:
+            continue
+        if request_id in feedback:
+            skipped_labeled += 1
+            continue
+        replayable = isinstance(event.get("prompt"), str)
+        if not replayable:
+            skipped_private += 1
+        selected_engine = str(event.get("selected_engine") or "")
+        row = {
+            "request_id": request_id,
+            "selected_engine": selected_engine,
+            "status": event.get("status"),
+            "backend": event.get("backend"),
+            "routing_profile": event.get("routing_profile"),
+            "receipt_summary": event.get("receipt_summary"),
+            "reason_codes": _string_list(event.get("reason_codes")),
+            "replayable": replayable,
+            "suggested_feedback_command": (
+                "model-router feedback "
+                f"{request_id} <expected_engine> "
+                f"--output {feedback_path or DEFAULT_FEEDBACK_PATH}"
+            ),
+        }
+        rows.append(row)
+        if len(rows) >= max_rows:
+            break
+    return {
+        "reviewable": len(rows),
+        "items": rows,
+        "truncated": len(rows) >= max_rows,
+        "skipped_labeled": skipped_labeled,
+        "skipped_private": skipped_private,
+        "privacy": (
+            "Prompts, prompt previews, request bodies, feedback notes, and "
+            "secrets are hidden by default."
+        ),
+    }
+
+
 def _feedback_records_by_request(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     feedback: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -223,3 +286,9 @@ def _limit(values: list[str], max_examples: int) -> list[str]:
     if max_examples <= 0:
         return []
     return values[:max_examples]
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str)]
+    return []

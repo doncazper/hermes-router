@@ -139,6 +139,10 @@ def test_receipt_reason_codes_for_common_code_route():
     assert "requirement.code_execution" in receipt.reason_codes
     assert "safety.no_confirmation_required" in receipt.reason_codes
     assert "coding or repository work" in receipt.selected_route_explanation
+    assert "model-router telemetry review" in receipt.wrong_route_next_action
+    assert "model-router feedback <request_id> <expected_engine>" in (
+        receipt.wrong_route_next_action
+    )
 
 
 def test_receipt_explains_human_confirmation():

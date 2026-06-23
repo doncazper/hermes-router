@@ -64,6 +64,12 @@ packaged-only workflow can preview and apply router catalog defaults after
 confirmation, with backup and migration logging, but it does not download
 models, enable hosted providers, start runtimes, or dispatch adapters.
 
+The proxy dogfood harness is runtime smoke testing, not router execution. Its
+default mode is a no-network plan. `model-router dogfood proxy --execute` sends
+fixed sanitized requests only to the configured local proxy, skips unavailable
+runtimes clearly, and does not start providers, download models, enable hosted
+APIs, or turn on verifier calls.
+
 ## Runtime Principles
 
 - Load the YAML catalog once through `ModelRouter`.

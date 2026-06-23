@@ -114,6 +114,9 @@ def test_settings_home_page_loads_without_chat_surface(tmp_path, monkeypatch):
     assert "ModelRouter Settings" in response.text
     assert "Provider policy" in response.text
     assert "Backend policy" in response.text
+    assert "Catalog" in response.text
+    assert "showCatalogDiff" in response.text
+    assert "applyCatalogUpdate" in response.text
     assert "Selected code_agent under the balanced profile" in response.text
     assert "route.coding" in response.text
     assert "No chat surface" in response.text
@@ -386,6 +389,27 @@ def test_benchmark_run_requires_confirmation_and_stores_metrics(tmp_path, monkey
     assert calls == ["fast", "balanced", "reasoning", "code"]
     assert "completed" in text
     assert "Reply with one short sentence" not in text
+
+
+def test_catalog_api_requires_confirmation_before_apply(tmp_path, monkeypatch):
+    _init_config(tmp_path)
+    _stub_scan(monkeypatch)
+    app = settings_ui.create_settings_app(config_dir=tmp_path)
+    client = TestClient(app)
+
+    diff = client.post("/api/catalog/diff")
+    blocked = client.post("/api/catalog/apply", json={})
+    applied = client.post("/api/catalog/apply", json={"confirm": True})
+
+    assert diff.status_code == 200
+    assert diff.json()["ok"] is True
+    assert "diff" in diff.json()
+    assert blocked.status_code == 400
+    assert blocked.json()["error"] == "Catalog apply requires confirm=true."
+    assert applied.status_code == 200
+    assert applied.json()["ok"] is True
+    assert "migration_log" in applied.json()["result"]
+    assert applied.json()["catalog"]["local_config"].endswith("model_router.yaml")
 
 
 def test_feedback_api_writes_cli_compatible_jsonl(tmp_path, monkeypatch):

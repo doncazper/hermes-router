@@ -421,7 +421,7 @@ Next:
 - Dogfood the settings UI during real local model setup.
 - If editing runtime commands as text remains too clunky, add more structured
   runtime command builders for MLX-LM and llama.cpp.
-- If telemetry labeling still feels manual, add the deferred interactive
+- If telemetry labeling still feels manual, dogfood and refine the local
   `model-router telemetry review` queue.
 - Continue toward the product north star with richer route-map, runtime-status,
   receipt, and telemetry controls before considering broader UI surfaces.
@@ -499,6 +499,11 @@ For each track:
 
 Goal: turn the open switchboard foundation into a tighter daily-use loop.
 
+First-pass status: the local proxy dogfood harness, catalog diff/apply controls,
+privacy-safe telemetry review queue, receipt next-action calibration, and
+release-evidence docs are implemented. Live LM Studio, Ollama, llama.cpp, and
+MLX-LM dogfood runs remain manual, opt-in release checks.
+
 Recommended tasks:
 
 - Real proxy dogfood: run LM Studio, Ollama, llama.cpp, and MLX-LM setups
@@ -507,9 +512,8 @@ Recommended tasks:
 - Settings UI follow-through: add explicit catalog diff/apply controls with
   confirmation, show workflow benchmark status, and keep all write actions
   local and user-confirmed.
-- Telemetry review queue: build the deferred `model-router telemetry review`
-  flow for labeling wrong routes without exposing notes or prompt bodies by
-  default.
+- Telemetry review queue: dogfood the `model-router telemetry review` flow for
+  labeling wrong routes without exposing notes or prompt bodies by default.
 - Receipt calibration: dogfood the wrong-route next actions and promote stable
   clusters into workflow benchmark fixtures or replay tests.
 - Release hardening: prepare a small release with changelog, benchmark output,

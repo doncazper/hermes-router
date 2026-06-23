@@ -356,6 +356,31 @@ For `mlx-lm` runtimes, the first supported upstream shape is
 MLX-LM; use an upstream that supports Responses API when clients need that
 endpoint.
 
+## Real Proxy Dogfood
+
+Use the dogfood harness before a release or after changing proxy behavior:
+
+```bash
+model-router dogfood proxy --config ~/.model-router/routing_proxy.yaml
+```
+
+The default command is a plan only. It performs no HTTP requests and does not
+start a proxy, start runtimes, enable hosted providers, download models, or run
+verifiers. When local runtimes are deliberately available, opt into live checks:
+
+```bash
+model-router dogfood proxy \
+  --config ~/.model-router/routing_proxy.yaml \
+  --execute
+```
+
+The live harness covers `/health`, `/v1/models`, `/v1/chat/completions`,
+streaming chat, `/v1/responses` when the configured backend supports it,
+fallback visibility, backend policy rejection, `human_confirm`, and verifier
+mode visibility. Missing runtimes and unsupported endpoints skip clearly unless
+`--require-running` is set. Smoke prompts are fixed and sanitized, and report
+output does not serialize prompt bodies.
+
 ## Regression Coverage
 
 Production readiness is guarded by:
@@ -366,6 +391,8 @@ Production readiness is guarded by:
   human confirmation, and route-change evidence.
 - Catalog status/diff/apply tests that cover no-network defaults, confirmation
   requirements, backups, migration logs, and no-op behavior.
+- Proxy dogfood harness tests that keep live runtime checks opt-in and verify
+  skip/fail behavior without requiring live providers in CI.
 - API contract tests that keep `route_fast` as the string-only production API
   and `route` as the diagnostic/audit API.
 - Adversarial and fuzz tests for deterministic behavior and fail-closed handling
@@ -374,3 +401,16 @@ Production readiness is guarded by:
   cleanup on close, and a live uvicorn/raw-socket client disconnect against a
   controlled ASGI upstream. The live disconnect test verifies upstream stream
   finalization and metadata-only logging with prompt capture disabled.
+
+Release evidence should include:
+
+```bash
+python -m ruff check .
+python -m pytest
+python scripts/check_route_fast_latency.py --json
+model-router workflow-benchmark --json --fail-on-mismatch
+model-router dogfood proxy --config ~/.model-router/routing_proxy.yaml
+```
+
+Run `model-router dogfood proxy --execute` only as a manual local-runtime check
+against the runtimes you intend to support for that release.
