@@ -21,8 +21,10 @@ from hermes.plugins.model_router.config import (
 from hermes.plugins.model_router.model_advisor import (
     HardwareProfile,
     ModelAdvice,
+    ModelScoreBreakdown,
     detect_hardware_profile,
     recommend_catalog_models,
+    score_local_model_option,
 )
 
 DEFAULT_COMMANDS = (
@@ -139,15 +141,37 @@ class DownloadSuggestion:
     adapter: str
     reason: str
     command: tuple[str, ...]
+    score: ModelScoreBreakdown | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "route": self.route,
             "repo_id": self.repo_id,
             "provider": self.provider,
             "adapter": self.adapter,
             "reason": self.reason,
             "command": list(self.command),
+        }
+        if self.score is not None:
+            payload["score"] = self.score.to_dict()
+        return payload
+
+
+@dataclass(frozen=True)
+class LocalModelRecommendation:
+    route: str
+    repo_id: str
+    path: str
+    source: str
+    score: ModelScoreBreakdown
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "route": self.route,
+            "repo_id": self.repo_id,
+            "path": self.path,
+            "source": self.source,
+            "score": self.score.to_dict(),
         }
 
 
@@ -254,6 +278,7 @@ class SetupRecommendation:
     routing_targets: dict[str, str]
     engine_overrides: dict[str, dict[str, Any]]
     download_suggestions: tuple[DownloadSuggestion, ...]
+    local_model_recommendations: tuple[LocalModelRecommendation, ...] = ()
     notes: tuple[str, ...] = field(default_factory=tuple)
     hardware_profile: HardwareProfile | None = None
 
@@ -263,6 +288,10 @@ class SetupRecommendation:
             "engine_overrides": self.engine_overrides,
             "download_suggestions": [
                 suggestion.to_dict() for suggestion in self.download_suggestions
+            ],
+            "local_model_recommendations": [
+                recommendation.to_dict()
+                for recommendation in self.local_model_recommendations
             ],
             "notes": list(self.notes),
         }
@@ -328,12 +357,18 @@ def recommend_setup(
     profile: str = "balanced",
     hardware: HardwareProfile | None = None,
     download_alternatives: int = 2,
+    benchmark_results: Any = None,
 ) -> SetupRecommendation:
     routing_targets = dict(DEFAULT_ROUTING_TARGETS)
     engine_overrides: dict[str, dict[str, Any]] = {}
     notes: list[str] = []
     hardware = hardware or detect_hardware_profile()
     notes.append(_hardware_note(hardware))
+    local_recommendations = _local_model_recommendations(
+        discovery.models,
+        hardware=hardware,
+        benchmark_results=benchmark_results,
+    )
 
     if discovery.commands.get("claude"):
         routing_targets["coding"] = "claude_code"
@@ -369,11 +404,17 @@ def recommend_setup(
         )
         notes.append("ANTHROPIC_API_KEY detected; anthropic_api can be enabled.")
 
-    matched_roles = _local_model_overrides(discovery.models, engine_overrides, notes)
+    matched_roles = _local_model_overrides(
+        discovery.models,
+        engine_overrides,
+        notes,
+        local_recommendations=local_recommendations,
+    )
     download_suggestions = _default_download_suggestions(
         profile,
         hardware,
         limit_per_route=download_alternatives,
+        benchmark_results=benchmark_results,
     )
     for suggestion in download_suggestions:
         if suggestion.route in matched_roles:
@@ -391,6 +432,7 @@ def recommend_setup(
         routing_targets=routing_targets,
         engine_overrides=engine_overrides,
         download_suggestions=download_suggestions,
+        local_model_recommendations=local_recommendations,
         notes=tuple(notes),
         hardware_profile=hardware,
     )
@@ -509,6 +551,7 @@ def plan_model_downloads(
     repo_id: str | None = None,
     adapter: str | None = None,
     alternatives: int = 1,
+    benchmark_results: Any = None,
 ) -> DownloadPlan:
     if repo_id is not None:
         route = _custom_download_route(routes)
@@ -539,6 +582,7 @@ def plan_model_downloads(
         discovery,
         profile=profile,
         download_alternatives=alternatives,
+        benchmark_results=benchmark_results,
     )
     selected_routes = set(routes or ())
     suggestions = tuple(
@@ -1036,19 +1080,80 @@ def _local_model_overrides(
     models: Sequence[DiscoveredModel],
     engine_overrides: dict[str, dict[str, Any]],
     notes: list[str],
+    *,
+    local_recommendations: Sequence[LocalModelRecommendation] = (),
 ) -> set[str]:
     matched_roles: set[str] = set()
+    scored_by_role = _best_local_models_by_role(models, local_recommendations)
+    for role, model in scored_by_role.items():
+        engine_name = ROLE_TO_ENGINE.get(role)
+        if engine_name is None:
+            continue
+        matched_roles.add(role)
+        engine_overrides[engine_name] = _engine_override_for_model(role, model)
+        notes.append(f"Local model {model.repo_id} mapped to {engine_name}.")
+    return matched_roles
+
+
+def _best_local_models_by_role(
+    models: Sequence[DiscoveredModel],
+    local_recommendations: Sequence[LocalModelRecommendation],
+) -> dict[str, DiscoveredModel]:
+    by_key = {
+        (recommendation.route, recommendation.repo_id, recommendation.path): recommendation
+        for recommendation in local_recommendations
+    }
+    candidates: dict[str, list[tuple[int, DiscoveredModel]]] = {}
     for model in models:
         for role in model.roles:
-            if role in matched_roles:
+            recommendation = by_key.get((role, model.repo_id, model.path))
+            score = recommendation.score.overall_score if recommendation else 0
+            candidates.setdefault(role, []).append((score, model))
+    return {
+        role: sorted(items, key=lambda item: item[0], reverse=True)[0][1]
+        for role, items in candidates.items()
+    }
+
+
+def _local_model_recommendations(
+    models: Sequence[DiscoveredModel],
+    *,
+    hardware: HardwareProfile,
+    benchmark_results: Any,
+) -> tuple[LocalModelRecommendation, ...]:
+    recommendations: list[LocalModelRecommendation] = []
+    for model in models:
+        for route in model.roles:
+            if route not in ROLE_TO_ENGINE:
                 continue
-            engine_name = ROLE_TO_ENGINE.get(role)
-            if engine_name is None:
-                continue
-            matched_roles.add(role)
-            engine_overrides[engine_name] = _engine_override_for_model(role, model)
-            notes.append(f"Local model {model.repo_id} mapped to {engine_name}.")
-    return matched_roles
+            score = score_local_model_option(
+                route=route,
+                repo_id=model.repo_id,
+                source=model.source,
+                path=model.path,
+                roles=model.roles,
+                hardware=hardware,
+                benchmark_results=benchmark_results,
+            )
+            recommendations.append(
+                LocalModelRecommendation(
+                    route=route,
+                    repo_id=model.repo_id,
+                    path=model.path,
+                    source=model.source,
+                    score=score,
+                )
+            )
+    return tuple(
+        sorted(
+            recommendations,
+            key=lambda recommendation: (
+                recommendation.route,
+                -recommendation.score.overall_score,
+                recommendation.repo_id,
+            ),
+        )
+    )
 
 
 def _engine_override_for_model(
@@ -1090,6 +1195,7 @@ def _default_download_suggestions(
     hardware: HardwareProfile,
     *,
     limit_per_route: int = 1,
+    benchmark_results: Any = None,
 ) -> tuple[DownloadSuggestion, ...]:
     return tuple(
         _download_suggestion_for_advice(advice)
@@ -1097,6 +1203,7 @@ def _default_download_suggestions(
             profile=profile,
             hardware=hardware,
             limit_per_route=limit_per_route,
+            benchmark_results=benchmark_results,
         )
     )
 
@@ -1119,6 +1226,7 @@ def _download_suggestion_for_advice(advice: ModelAdvice) -> DownloadSuggestion:
             "--local-dir",
             f"models/{advice.route}/{_repo_slug(advice.repo_id)}",
         ),
+        score=advice.score,
     )
 
 
@@ -1139,6 +1247,7 @@ def _with_local_root(
         adapter=suggestion.adapter,
         reason=suggestion.reason,
         command=command,
+        score=suggestion.score,
     )
 
 

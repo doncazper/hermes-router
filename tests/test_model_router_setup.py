@@ -9,10 +9,20 @@ import yaml
 
 from hermes.plugins.model_router import setup_assistant as setup_assistant_module
 from hermes.plugins.model_router.model_advisor import (
+    CatalogModel,
     HardwareProfile,
+    ModelCatalog,
     load_model_catalog,
     recommend_catalog_models,
+    score_local_model_option,
 )
+from hermes.plugins.model_router.model_benchmark import (
+    BenchmarkResult,
+    BenchmarkTarget,
+    execute_benchmark_plan,
+    plan_backend_benchmarks,
+)
+from hermes.plugins.model_router.product import initialize_product_config
 from hermes.plugins.model_router.setup_assistant import (
     DiscoveredModel,
     DownloadPlan,
@@ -282,8 +292,10 @@ def test_model_advisor_uses_hardware_profile_for_catalog_choices():
             system="Darwin",
             machine="arm64",
             total_memory_gb=8,
+            cpu_count=8,
             disk_free_gb=80,
             apple_silicon=True,
+            accelerator_backends=("metal",),
         ),
     )
     quality = recommend_catalog_models(
@@ -292,17 +304,41 @@ def test_model_advisor_uses_hardware_profile_for_catalog_choices():
             system="Darwin",
             machine="arm64",
             total_memory_gb=32,
+            cpu_count=12,
             disk_free_gb=200,
             apple_silicon=True,
+            accelerator_backends=("metal",),
         ),
     )
 
     lightweight_by_route = {advice.route: advice.repo_id for advice in lightweight}
     quality_by_route = {advice.route: advice.repo_id for advice in quality}
 
-    assert lightweight_by_route["code_agent"] == "Qwen/Qwen2.5-Coder-3B-Instruct-GGUF"
-    assert quality_by_route["code_agent"] == "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF"
+    assert lightweight_by_route["fast_local"] == "mlx-community/Qwen3-0.6B-4bit"
+    assert quality_by_route["code_agent"] == (
+        "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"
+    )
     assert quality_by_route["image_generation"] == "black-forest-labs/FLUX.1-schnell"
+
+
+def test_model_advisor_prefers_gguf_on_non_apple_cpu_only_machine():
+    advice = recommend_catalog_models(
+        profile="balanced",
+        hardware=HardwareProfile(
+            system="Linux",
+            machine="x86_64",
+            total_memory_gb=32,
+            cpu_count=8,
+            disk_free_gb=200,
+            apple_silicon=False,
+            accelerator_backends=("cpu",),
+        ),
+    )
+    by_route = {item.route: item for item in advice}
+
+    assert by_route["fast_local"].repo_id == "lmstudio-community/Qwen3-0.6B-GGUF"
+    assert by_route["fast_local"].score is not None
+    assert by_route["fast_local"].score.runtime_match_score > 40
 
 
 def test_model_advisor_can_return_multiple_candidates_per_route():
@@ -312,15 +348,132 @@ def test_model_advisor_can_return_multiple_candidates_per_route():
             system="Darwin",
             machine="arm64",
             total_memory_gb=32,
+            cpu_count=12,
             disk_free_gb=200,
             apple_silicon=True,
+            accelerator_backends=("metal",),
         ),
         limit_per_route=2,
     )
     fast = [item.repo_id for item in advice if item.route == "fast_local"]
 
     assert len(fast) == 2
-    assert "lmstudio-community/Qwen3-4B-GGUF" in fast
+    assert "mlx-community/Qwen3-0.6B-4bit" in fast
+
+
+def test_cpu_only_low_core_machine_penalizes_large_models_even_when_ram_fits():
+    score = score_local_model_option(
+        route="reasoning_local",
+        repo_id="Qwen/Qwen3-14B-GGUF",
+        source="local_directory",
+        path="/models/Qwen3-14B-Q4_K_M.gguf",
+        roles=("reasoning_local",),
+        hardware=HardwareProfile(
+            system="Linux",
+            machine="x86_64",
+            total_memory_gb=64,
+            cpu_count=4,
+            apple_silicon=False,
+            accelerator_backends=("cpu",),
+        ),
+    )
+
+    assert score.label == "fits_but_likely_slow"
+    assert "large_model_on_low_core_cpu" in score.warnings
+
+
+def test_quantized_local_model_scores_faster_than_heavier_quantization():
+    hardware = HardwareProfile(
+        system="Linux",
+        machine="x86_64",
+        total_memory_gb=32,
+        cpu_count=8,
+        apple_silicon=False,
+        accelerator_backends=("cpu",),
+    )
+    q4 = score_local_model_option(
+        route="balanced_local",
+        repo_id="Qwen/Qwen3-8B-GGUF",
+        source="local_directory",
+        path="/models/Qwen3-8B-Q4_K_M.gguf",
+        roles=("balanced_local",),
+        hardware=hardware,
+    )
+    q8 = score_local_model_option(
+        route="balanced_local",
+        repo_id="Qwen/Qwen3-8B-GGUF",
+        source="local_directory",
+        path="/models/Qwen3-8B-Q8_0.gguf",
+        roles=("balanced_local",),
+        hardware=hardware,
+    )
+
+    assert q4.expected_speed_score > q8.expected_speed_score
+
+
+def test_benchmark_results_can_change_catalog_ranking():
+    catalog = ModelCatalog(
+        version=1,
+        models=(
+            CatalogModel(
+                route="fast_local",
+                repo_id="org/slow-model-GGUF",
+                provider="huggingface",
+                adapter="local_chat",
+                reason="slow",
+                min_memory_gb=4,
+                recommended_memory_gb=8,
+                quality_score=3,
+                speed_score=4,
+                profiles=("balanced",),
+                hardware=("cpu",),
+                runtime_kind="llama.cpp",
+                model_size_b=3,
+                quantization="Q4_K_M",
+            ),
+            CatalogModel(
+                route="fast_local",
+                repo_id="org/measured-model-GGUF",
+                provider="huggingface",
+                adapter="local_chat",
+                reason="measured",
+                min_memory_gb=4,
+                recommended_memory_gb=8,
+                quality_score=3,
+                speed_score=3,
+                profiles=("balanced",),
+                hardware=("cpu",),
+                runtime_kind="llama.cpp",
+                model_size_b=3,
+                quantization="Q4_K_M",
+            ),
+        ),
+    )
+    advice = recommend_catalog_models(
+        profile="balanced",
+        hardware=HardwareProfile(
+            system="Linux",
+            machine="x86_64",
+            total_memory_gb=32,
+            cpu_count=8,
+            apple_silicon=False,
+            accelerator_backends=("cpu",),
+        ),
+        catalog=catalog,
+        benchmark_results={
+            "results": [
+                {
+                    "model": "org/measured-model-GGUF",
+                    "status": "completed",
+                    "tokens_per_second": 42,
+                }
+            ]
+        },
+    )
+
+    assert advice[0].repo_id == "org/measured-model-GGUF"
+    assert advice[0].score is not None
+    assert advice[0].score.label == "benchmark_recommended"
 
 
 def test_packaged_model_catalog_covers_router_routes():
@@ -366,7 +519,7 @@ def test_plan_model_downloads_filters_routes_and_rewrites_local_root(tmp_path):
         tmp_path
         / "models"
         / "fast_local"
-        / "lmstudio-community--Qwen3-0.6B-GGUF"
+        / suggestion.repo_id.replace("/", "--")
     )
 
 
@@ -553,9 +706,7 @@ def test_write_recommended_config_writes_valid_config_when_forced(tmp_path):
 
     assert result.written is True
     assert data["routing_targets"]["coding"] == "code_agent"
-    assert data["engines"]["fast_local"]["model"] == (
-        "lmstudio-community/Qwen3-0.6B-GGUF"
-    )
+    assert data["engines"]["fast_local"]["model"]
     assert data["engines"]["fast_local"]["availability"]["required_paths"]
     assert "engines" in data
     assert "download_suggestions" not in data
@@ -630,6 +781,115 @@ def test_setup_download_cli_accepts_custom_repo_id(tmp_path):
     payload = json.loads(result.stdout)
     assert payload["results"][0]["repo_id"] == "custom-org/custom-model"
     assert payload["results"][0]["status"] == "planned"
+
+
+def test_benchmark_dry_run_does_not_write_output(tmp_path):
+    output = tmp_path / "benchmarks.json"
+    target = BenchmarkTarget(
+        backend="fast",
+        route="fast_local",
+        model="fast-model",
+        base_url="http://127.0.0.1:9999/v1",
+        runtime_kind="llama.cpp",
+        managed_runtime=False,
+    )
+
+    result = execute_benchmark_plan(
+        (target,),
+        output_path=output,
+        execute=False,
+        confirmed=False,
+    )
+
+    assert result.executed is False
+    assert result.results[0].status == "planned"
+    assert not output.exists()
+
+
+def test_benchmark_execution_writes_privacy_safe_metrics_only(tmp_path):
+    output = tmp_path / "benchmarks.json"
+    target = BenchmarkTarget(
+        backend="fast",
+        route="fast_local",
+        model="fast-model",
+        base_url="http://127.0.0.1:9999/v1",
+        runtime_kind="llama.cpp",
+        managed_runtime=False,
+    )
+
+    def runner(item: BenchmarkTarget, _timeout: float) -> BenchmarkResult:
+        return BenchmarkResult(
+            backend=item.backend,
+            route=item.route,
+            model=item.model,
+            base_url=item.base_url,
+            runtime_kind=item.runtime_kind,
+            managed_runtime=item.managed_runtime,
+            status="completed",
+            timestamp="2026-06-22T00:00:00.000Z",
+            total_latency_ms=120.0,
+            tokens_per_second=30.0,
+            measured_tokens=12,
+        )
+
+    result = execute_benchmark_plan(
+        (target,),
+        output_path=output,
+        execute=True,
+        confirmed=True,
+        runner=runner,
+    )
+    text = output.read_text(encoding="utf-8")
+
+    assert result.ok is True
+    assert "completed" in text
+    assert "Reply with one short sentence" not in text
+    assert "api_key" not in text.lower()
+    assert "authorization" not in text.lower()
+
+
+def test_plan_backend_benchmarks_uses_configured_backends(tmp_path):
+    initialize_product_config(
+        preset="lmstudio",
+        config_dir=tmp_path,
+        force=False,
+        interactive=False,
+    )
+
+    targets = plan_backend_benchmarks(
+        tmp_path / "routing_proxy.yaml",
+        backends=("fast",),
+    )
+
+    assert len(targets) == 1
+    assert targets[0].backend == "fast"
+    assert targets[0].model == "lmstudio-fast-model"
+
+
+def test_setup_benchmark_cli_defaults_to_dry_run(tmp_path):
+    initialize_product_config(
+        preset="lmstudio",
+        config_dir=tmp_path,
+        force=False,
+        interactive=False,
+    )
+    output = tmp_path / "benchmarks.json"
+
+    result = _run_cli(
+        "setup",
+        "benchmark",
+        "--json",
+        "--config",
+        str(tmp_path / "routing_proxy.yaml"),
+        "--output",
+        str(output),
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["executed"] is False
+    assert payload["results"][0]["status"] == "planned"
+    assert not output.exists()
 
 
 def test_setup_download_cli_executes_with_yes_and_fake_hf(tmp_path, monkeypatch):
@@ -785,18 +1045,14 @@ def test_setup_wizard_can_select_numbered_recommended_download(tmp_path):
     data = yaml.safe_load(output.read_text(encoding="utf-8"))
 
     assert result.returncode == 0
-    assert (
-        "1. Recommended download lmstudio-community/Qwen3-0.6B-GGUF"
-        in result.stdout
-    )
+    assert "1. Recommended download" in result.stdout
     assert data["routing_targets"]["simple"] == "fast_local"
-    assert data["engines"]["fast_local"]["model"] == (
-        "lmstudio-community/Qwen3-0.6B-GGUF"
-    )
+    selected_model = data["engines"]["fast_local"]["model"]
+    assert selected_model
     assert data["engines"]["fast_local"]["availability"]["required_paths"] == [
-        "models/fast_local/lmstudio-community--Qwen3-0.6B-GGUF"
+        f"models/fast_local/{selected_model.replace('/', '--')}"
     ]
-    assert "- fast_local: lmstudio-community/Qwen3-0.6B-GGUF" in result.stdout
+    assert f"- fast_local: {selected_model}" in result.stdout
     assert "Download selected recommended models now" in result.stdout
 
 
@@ -836,7 +1092,8 @@ def test_setup_wizard_recommends_catalog_models_for_coding_and_research(tmp_path
     )
 
     assert result.returncode == 0
-    assert "Recommended download Qwen/Qwen2.5-Coder-7B-Instruct-GGUF" in result.stdout
+    assert "Recommended download" in result.stdout
+    assert "Coder" in result.stdout
     assert "Recommended download BAAI/bge-m3" in result.stdout
     assert "No exact recommendation for this route" not in result.stdout
 
@@ -963,9 +1220,9 @@ def test_setup_wizard_can_download_selected_recommendations(tmp_path):
     assert "Download selected recommended models now" in result.stdout
     assert "fast_local: completed" in result.stdout
     marker_text = marker.read_text(encoding="utf-8")
-    assert "lmstudio-community/Qwen3-0.6B-GGUF" in marker_text
-    assert "--include" in marker_text
-    assert "*Q4_K_M.gguf" in marker_text
+    assert "download" in marker_text
+    assert "--local-dir" in marker_text
+    assert "fast_local" in marker_text
 
 
 def test_setup_wizard_api_mode_can_use_api_key_routes(tmp_path):

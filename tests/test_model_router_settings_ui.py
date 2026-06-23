@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 import yaml
 
 import hermes.plugins.model_router.settings_ui as settings_ui
+from hermes.plugins.model_router.model_benchmark import BenchmarkResult, BenchmarkTarget
 from hermes.plugins.model_router.product import initialize_product_config
 from hermes.plugins.model_router.proxy_config import load_proxy_config
 from hermes.plugins.model_router.setup_assistant import DiscoveredModel, SetupDiscovery
@@ -152,6 +153,10 @@ def test_settings_state_api_includes_models_and_downloads(tmp_path, monkeypatch)
     assert payload["config_valid"] is True
     assert payload["discovery"]["models"][0]["repo_id"] == "mlx-community/Qwen3-4B-4bit"
     assert payload["download_plan"]["suggestions"]
+    assert payload["recommendation"]["local_model_recommendations"]
+    assert "score" in payload["recommendation"]["local_model_recommendations"][0]
+    assert "score" in payload["download_plan"]["suggestions"][0]
+    assert payload["benchmarks"]["results"] == 0
     assert payload["telemetry"]["backend_counts"] == {"code": 1, "fast": 1}
     assert payload["telemetry"]["fallback_count"] == 1
     assert payload["telemetry"]["recent_request_ids"] == ["req-1", "req-2"]
@@ -282,6 +287,47 @@ def test_download_run_requires_explicit_confirmation(tmp_path, monkeypatch):
     assert allowed.status_code == 200
     assert calls
     assert calls[0][:3] == ("hf", "download", "org/model")
+
+
+def test_benchmark_run_requires_confirmation_and_stores_metrics(tmp_path, monkeypatch):
+    _init_config(tmp_path)
+    _stub_scan(monkeypatch)
+    calls: list[str] = []
+
+    def runner(target: BenchmarkTarget, _timeout: float) -> BenchmarkResult:
+        calls.append(target.backend)
+        return BenchmarkResult(
+            backend=target.backend,
+            route=target.route,
+            model=target.model,
+            base_url=target.base_url,
+            runtime_kind=target.runtime_kind,
+            managed_runtime=target.managed_runtime,
+            status="completed",
+            timestamp="2026-06-22T00:00:00.000Z",
+            total_latency_ms=100.0,
+            tokens_per_second=25.0,
+            measured_tokens=10,
+        )
+
+    app = settings_ui.create_settings_app(
+        config_dir=tmp_path,
+        benchmark_runner=runner,
+    )
+    client = TestClient(app)
+
+    blocked = client.post("/api/benchmark/run", json={})
+    planned = client.post("/api/benchmark/plan")
+    allowed = client.post("/api/benchmark/run", json={"confirm": True})
+    text = (tmp_path / "benchmarks.json").read_text(encoding="utf-8")
+
+    assert blocked.status_code == 400
+    assert planned.status_code == 200
+    assert planned.json()["targets"]
+    assert allowed.status_code == 200
+    assert calls == ["fast", "balanced", "reasoning", "code"]
+    assert "completed" in text
+    assert "Reply with one short sentence" not in text
 
 
 def test_feedback_api_writes_cli_compatible_jsonl(tmp_path, monkeypatch):

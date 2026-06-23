@@ -147,9 +147,18 @@ model-router-proxy --config ~/.model-router/routing_proxy.yaml --log-level info
 For local admin/config work, `model-router settings --config-dir ~/.model-router`
 runs a localhost-only settings UI on `127.0.0.1:8099` by default. It can edit
 proxy config fields, run doctor, start/stop/restart the proxy as a child
-process, inspect telemetry counts, and write feedback labels. It is not a chat
-UI, does not submit prompts, and does not display literal API keys or raw prompt
-text.
+process, inspect telemetry counts, show benchmark-backed recommendation status,
+run confirmed local backend benchmarks, and write feedback labels. It is not a
+chat UI, does not submit user prompts, and does not display literal API keys or
+raw prompt text.
+
+Setup recommendations treat RAM as a fit/load gate, then use CPU architecture,
+CPU core count, Apple Silicon/Metal, CUDA/ROCm hints, runtime format, model
+size, quantization, and optional benchmark results for usability scoring. Run
+`model-router setup benchmark --config ~/.model-router/routing_proxy.yaml` for a
+dry plan, and add `--execute --yes` only when you want local synthetic benchmark
+requests. Results are stored under `~/.model-router/benchmarks.json` without
+prompt bodies, request bodies, API keys, or secrets.
 
 Use the matching OpenAI-compatible agent settings:
 

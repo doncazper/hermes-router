@@ -30,6 +30,14 @@ from hermes.plugins.model_router.product import (
     doctor_proxy_config,
     initialize_product_config,
 )
+from hermes.plugins.model_router.model_benchmark import (
+    BenchmarkResult,
+    BenchmarkTarget,
+    benchmark_summary,
+    execute_benchmark_plan,
+    load_benchmark_results,
+    plan_backend_benchmarks,
+)
 from hermes.plugins.model_router.proxy_config import (
     ProxyConfigError,
     RoutingProxyConfig,
@@ -161,6 +169,7 @@ def create_settings_app(
     config_dir: str | Path = DEFAULT_CONFIG_DIR,
     proxy_supervisor: ProxyProcessSupervisor | None = None,
     download_runner: Callable[[tuple[str, ...]], int] | None = None,
+    benchmark_runner: Callable[[BenchmarkTarget, float], BenchmarkResult] | None = None,
 ):
     try:
         from fastapi import FastAPI, Request
@@ -194,13 +203,23 @@ def create_settings_app(
     @app.post("/api/scan")
     async def api_scan() -> JSONResponse:
         discovery = scan_local_environment()
-        recommendation = recommend_setup(discovery, download_alternatives=2)
-        plan = _download_plan(paths)
+        benchmark_results = load_benchmark_results(paths["benchmarks"])
+        recommendation = recommend_setup(
+            discovery,
+            download_alternatives=2,
+            benchmark_results=benchmark_results,
+        )
+        plan = _download_plan(
+            paths,
+            discovery=discovery,
+            benchmark_results=benchmark_results,
+        )
         return JSONResponse(
             {
                 "discovery": discovery.to_dict(),
                 "recommendation": recommendation.to_dict(),
                 "download_plan": plan.to_dict(),
+                "benchmarks": benchmark_summary(paths["benchmarks"]),
             }
         )
 
@@ -277,6 +296,44 @@ def create_settings_app(
         )
         return JSONResponse({"ok": result.ok, "result": result.to_dict()})
 
+    @app.post("/api/benchmark/plan")
+    async def api_benchmark_plan() -> JSONResponse:
+        try:
+            targets = plan_backend_benchmarks(paths["proxy_config"])
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+        return JSONResponse(
+            {
+                "ok": True,
+                "targets": [target.to_dict() for target in targets],
+                "output_path": str(paths["benchmarks"]),
+            }
+        )
+
+    @app.post("/api/benchmark/run")
+    async def api_benchmark_run(request: Request) -> JSONResponse:
+        payload = await _request_payload(request)
+        if not _payload_bool(payload, "confirm", default=False):
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "Benchmark execution requires confirm=true.",
+                },
+                status_code=400,
+            )
+        try:
+            targets = plan_backend_benchmarks(paths["proxy_config"])
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+        result = execute_benchmark_plan(
+            targets,
+            output_path=paths["benchmarks"],
+            execute=True,
+            confirmed=True,
+            runner=benchmark_runner,
+        )
+        return JSONResponse({"ok": result.ok, "result": result.to_dict()})
+
     @app.post("/api/feedback")
     async def api_feedback(request: Request) -> JSONResponse:
         payload = await _request_payload(request)
@@ -341,6 +398,7 @@ def settings_paths(config_dir: str | Path) -> dict[str, Path]:
         "feedback": base / "routing-feedback.jsonl",
         "settings_proxy_log": base / "logs" / "settings-proxy.log",
         "models": base / "models",
+        "benchmarks": base / "benchmarks.json",
     }
 
 
@@ -364,7 +422,12 @@ def build_settings_state(
         config_error = str(exc)
 
     discovery = scan_local_environment()
-    recommendation = recommend_setup(discovery, download_alternatives=2)
+    benchmark_results = load_benchmark_results(paths["benchmarks"])
+    recommendation = recommend_setup(
+        discovery,
+        download_alternatives=2,
+        benchmark_results=benchmark_results,
+    )
     state: dict[str, Any] = {
         "product": "ModelRouter",
         "paths": {name: str(path) for name, path in paths.items()},
@@ -379,7 +442,12 @@ def build_settings_state(
         "observability": _observability_state(config),
         "discovery": discovery.to_dict(),
         "recommendation": recommendation.to_dict(),
-        "download_plan": _download_plan(paths, discovery=discovery).to_dict(),
+        "download_plan": _download_plan(
+            paths,
+            discovery=discovery,
+            benchmark_results=benchmark_results,
+        ).to_dict(),
+        "benchmarks": benchmark_summary(paths["benchmarks"]),
         "telemetry": _telemetry_state(paths, config),
         "proxy_process": (
             supervisor.status().to_dict()
@@ -443,7 +511,14 @@ def render_settings_page(state: Mapping[str, Any]) -> str:
     download_rows = "\n".join(
         _download_row(item) for item in state["download_plan"]["suggestions"]
     )
+    recommendation_rows = "\n".join(
+        _recommendation_row(item)
+        for item in state["recommendation"].get("local_model_recommendations", [])[:8]
+    )
+    if not recommendation_rows:
+        recommendation_rows = '<tr><td colspan="4" class="muted">No local models scored yet.</td></tr>'
     telemetry = state["telemetry"]
+    benchmarks = state["benchmarks"]
     proxy = state["proxy"]
     observability = state["observability"]
     proxy_process = state["proxy_process"]
@@ -471,6 +546,10 @@ def render_settings_page(state: Mapping[str, Any]) -> str:
     recent_request_ids = escape(
         ", ".join(telemetry.get("recent_request_ids", [])[:5]) or "none"
     )
+    benchmark_results = escape(str(benchmarks.get("results", 0)))
+    benchmark_completed = escape(str(benchmarks.get("completed", 0)))
+    benchmark_failed = escape(str(benchmarks.get("failed", 0)))
+    benchmark_best = escape(_benchmark_best_summary(benchmarks))
     doctor_disabled = "" if state["config_exists"] else "disabled"
     return f"""<!doctype html>
 <html lang="en">
@@ -673,6 +752,14 @@ def render_settings_page(state: Mapping[str, Any]) -> str:
           <tbody>{backend_rows}</tbody>
         </table>
       </section>
+
+      <section>
+        <h2>Model Recommendations</h2>
+        <table>
+          <thead><tr><th>Route</th><th>Model</th><th>Label</th><th>Score</th></tr></thead>
+          <tbody>{recommendation_rows}</tbody>
+        </table>
+      </section>
     </div>
 
     <div>
@@ -715,6 +802,21 @@ def render_settings_page(state: Mapping[str, Any]) -> str:
           <thead><tr><th>Route</th><th>Repo</th><th>Action</th></tr></thead>
           <tbody>{download_rows}</tbody>
         </table>
+      </section>
+
+      <section>
+        <h2>Benchmarks</h2>
+        <div class="grid">
+          <div><h3>results</h3><strong>{benchmark_results}</strong></div>
+          <div><h3>completed</h3><strong>{benchmark_completed}</strong></div>
+          <div><h3>failed</h3><strong>{benchmark_failed}</strong></div>
+          <div><h3>best</h3><span class="mono">{benchmark_best}</span></div>
+        </div>
+        <p class="muted">Uses a fixed synthetic smoke prompt and stores metrics only.</p>
+        <div class="toolbar">
+          <button onclick="postAction('/api/benchmark/plan')">Plan benchmark</button>
+          <button onclick="runBenchmark()">Run benchmark</button>
+        </div>
       </section>
 
       <section>
@@ -786,6 +888,10 @@ def render_settings_page(state: Mapping[str, Any]) -> str:
     async function runDownload(route, repoId) {{
       if (!window.confirm('Download ' + repoId + ' for ' + route + '?')) return;
       await postAction('/api/download/run', {{confirm: true, route: route, repo_id: repoId}});
+    }}
+    async function runBenchmark() {{
+      if (!window.confirm('Run local backend benchmark requests with a fixed synthetic prompt?')) return;
+      await postAction('/api/benchmark/run', {{confirm: true}});
     }}
   </script>
 </body>
@@ -942,11 +1048,13 @@ def _download_plan(
     paths: Mapping[str, Path],
     *,
     discovery=None,
+    benchmark_results=None,
 ) -> DownloadPlan:
     return plan_model_downloads(
         discovery=discovery,
         alternatives=2,
         local_root=paths["models"],
+        benchmark_results=benchmark_results,
     )
 
 
@@ -964,6 +1072,7 @@ def _download_plan_from_payload(
         adapter=adapter,
         alternatives=1,
         local_root=paths["models"],
+        benchmark_results=load_benchmark_results(paths["benchmarks"]),
     )
 
 
@@ -1127,6 +1236,24 @@ def _route_for_backend(backend_name: str) -> str:
     return ROUTE_LABELS.get(backend_name, "backend")
 
 
+def _recommendation_row(item: Mapping[str, Any]) -> str:
+    score = item.get("score") if isinstance(item.get("score"), dict) else {}
+    label = escape(str(score.get("label", "unscored")))
+    overall = escape(str(score.get("overall_score", "n/a")))
+    warnings = score.get("warnings") if isinstance(score.get("warnings"), list) else []
+    warning_text = ", ".join(str(warning) for warning in warnings)
+    warning_html = (
+        f"<br><span class=\"muted\">{escape(warning_text)}</span>"
+        if warning_text
+        else ""
+    )
+    return (
+        f"<tr><td>{escape(str(item.get('route', '')))}</td>"
+        f"<td><span class=\"mono\">{escape(str(item.get('repo_id', '')))}</span></td>"
+        f"<td>{label}{warning_html}</td><td>{overall}</td></tr>"
+    )
+
+
 def _compact_counts(value: Any) -> str:
     if not isinstance(value, dict) or not value:
         return "none"
@@ -1141,10 +1268,30 @@ def _download_row(item: Mapping[str, Any]) -> str:
     repo = escape(str(item["repo_id"]))
     route_js = escape(json.dumps(str(item["route"])))
     repo_js = escape(json.dumps(str(item["repo_id"])))
+    score = item.get("score") if isinstance(item.get("score"), dict) else {}
+    label = score.get("label")
+    score_text = (
+        f"<br><span class=\"muted\">{escape(str(label))} "
+        f"{escape(str(score.get('overall_score', '')))}</span>"
+        if label
+        else ""
+    )
     return (
-        f"<tr><td>{route}</td><td><span class=\"mono\">{repo}</span></td>"
+        f"<tr><td>{route}</td><td><span class=\"mono\">{repo}</span>{score_text}</td>"
         f"<td><button onclick=\"runDownload({route_js}, {repo_js})\">Download</button></td></tr>"
     )
+
+
+def _benchmark_best_summary(benchmarks: Mapping[str, Any]) -> str:
+    best = benchmarks.get("best")
+    if not isinstance(best, list) or not best:
+        return "none"
+    first = best[0]
+    if not isinstance(first, dict):
+        return "none"
+    model = first.get("model") or first.get("backend") or "unknown"
+    tps = first.get("tokens_per_second")
+    return f"{model}: {tps} tok/s" if tps is not None else str(model)
 
 
 def _options(values: list[str] | tuple[str, ...], *, selected: Any) -> str:

@@ -337,13 +337,15 @@ The settings UI binds to `127.0.0.1:8099` by default and manages only local
 config and child processes you explicitly start. It can:
 
 - Show scanned local models and recommended Hugging Face downloads.
+- Show recommendation score labels and privacy-safe benchmark status.
 - Edit `~/.model-router/routing_proxy.yaml` fields for the proxy, observability,
   and per-route backends.
 - Show runtime state for managed `llama-server` and `mlx_lm.server` backends.
 - Start, stop, and restart `model-router-proxy` as a child process of the
   settings command.
-- Run `doctor`, show telemetry counts/recent request ids, and write feedback
-  labels in the same JSONL format as `model-router feedback`.
+- Run `doctor`, plan/run local backend benchmarks after confirmation, show
+  telemetry counts/recent request ids, and write feedback labels in the same
+  JSONL format as `model-router feedback`.
 
 Privacy and mutation defaults stay conservative. The UI has no prompt box, no
 chat transcript, does not display literal API keys, does not display raw prompt
@@ -767,9 +769,40 @@ model-router setup recommend --json
 
 Recommendations are produced by a bundled, versioned model advisor catalog at
 `hermes/plugins/model_router/data/model_catalog.yaml`. The advisor detects basic
-local hardware signals such as RAM, CPU architecture, Apple Silicon, and free
-disk space, then ranks setup-time Hugging Face suggestions for each route. This
-does not run during `route_fast(...)`, `route(...)`, or ordinary `decide` calls.
+local hardware signals such as RAM, CPU architecture, CPU core count, Apple
+Silicon, accelerator backend hints, and free disk space, then ranks setup-time
+Hugging Face suggestions for each route. RAM is treated as the fit/load gate;
+CPU, accelerator backend, model format, quantization, and benchmark results
+drive the usability score. This does not run during `route_fast(...)`,
+`route(...)`, or ordinary `decide` calls.
+
+Each recommendation includes a score breakdown:
+
+- `fit_score`: memory fit/load headroom.
+- `runtime_match_score`: MLX-LM, llama.cpp/GGUF, Ollama, LM Studio, or generic
+  runtime fit for the detected machine.
+- `expected_speed_score`: CPU/core/accelerator, model size, and quantization
+  usability estimate.
+- `quality_role_score`: route-specific quality fit.
+- `setup_friction_score`: expected setup effort.
+- `benchmark_score`: neutral until a local benchmark result exists.
+
+Run a privacy-safe local backend benchmark when you want measured data:
+
+```bash
+model-router setup benchmark \
+  --config ~/.model-router/routing_proxy.yaml
+
+model-router setup benchmark \
+  --config ~/.model-router/routing_proxy.yaml \
+  --execute --yes
+```
+
+The benchmark command targets configured backends only, sends a fixed synthetic
+smoke prompt, stores metrics in `~/.model-router/benchmarks.json`, and never
+stores prompt bodies, request bodies, API keys, or secrets. Benchmark results
+can improve future recommendation ranking, but they only propose choices; they
+never mutate config or routing policy automatically.
 
 Run the wizard:
 

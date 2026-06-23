@@ -14,6 +14,13 @@ from hermes.plugins.model_router.availability import validate_router_availabilit
 from hermes.plugins.model_router.config import RouterConfigError, load_router_config
 from hermes.plugins.model_router.dispatch import build_dispatch_plan, dispatch_plan_to_json
 from hermes.plugins.model_router.models import ModelEngine, RouterConfig
+from hermes.plugins.model_router.model_benchmark import (
+    DEFAULT_BENCHMARK_PATH,
+    benchmark_summary,
+    execute_benchmark_plan,
+    load_benchmark_results,
+    plan_backend_benchmarks,
+)
 from hermes.plugins.model_router.policy import ModelRouter, route_prompt
 from hermes.plugins.model_router.product import (
     DEFAULT_CONFIG_DIR,
@@ -408,6 +415,12 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
         default=2,
         help="Recommended download candidates per route",
     )
+    recommend.add_argument(
+        "--benchmark-results",
+        type=Path,
+        default=Path(DEFAULT_BENCHMARK_PATH),
+        help="Path to privacy-safe local benchmark results",
+    )
     recommend.set_defaults(func=_cmd_setup_recommend)
 
     prereqs = setup_subparsers.add_parser(
@@ -482,7 +495,54 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
         action="store_true",
         help="Confirm execution without an interactive prompt",
     )
+    download.add_argument(
+        "--benchmark-results",
+        type=Path,
+        default=Path(DEFAULT_BENCHMARK_PATH),
+        help="Path to privacy-safe local benchmark results",
+    )
     download.set_defaults(func=_cmd_setup_download)
+
+    benchmark = setup_subparsers.add_parser(
+        "benchmark",
+        help="Plan or run privacy-safe local backend smoke benchmarks",
+    )
+    benchmark.add_argument(
+        "--config",
+        type=Path,
+        default=Path(DEFAULT_CONFIG_DIR) / "routing_proxy.yaml",
+        help="Path to routing_proxy.yaml",
+    )
+    benchmark.add_argument(
+        "--backend",
+        action="append",
+        default=None,
+        help="Only benchmark a configured backend name",
+    )
+    benchmark.add_argument(
+        "--output",
+        type=Path,
+        default=Path(DEFAULT_BENCHMARK_PATH),
+        help="Path for benchmark result JSON",
+    )
+    benchmark.add_argument(
+        "--timeout",
+        type=float,
+        default=30.0,
+        help="Per-backend benchmark timeout in seconds",
+    )
+    benchmark.add_argument(
+        "--execute",
+        action="store_true",
+        help="Run the local benchmark requests",
+    )
+    benchmark.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm execution without an interactive prompt",
+    )
+    benchmark.add_argument("--json", action="store_true", help="Emit JSON output")
+    benchmark.set_defaults(func=_cmd_setup_benchmark)
 
     write = setup_subparsers.add_parser(
         "write",
@@ -849,6 +909,7 @@ def _cmd_setup_recommend(args: argparse.Namespace) -> int:
         discovery,
         profile=args.profile,
         download_alternatives=args.download_alternatives,
+        benchmark_results=load_benchmark_results(args.benchmark_results),
     )
     if args.json:
         print(json.dumps(recommendation.to_dict(), indent=2, sort_keys=True))
@@ -867,6 +928,7 @@ def _cmd_setup_download(args: argparse.Namespace) -> int:
         repo_id=args.repo_id,
         adapter=args.adapter,
         alternatives=args.alternatives,
+        benchmark_results=load_benchmark_results(args.benchmark_results),
     )
     confirmed = args.yes
     if args.execute and not confirmed and not args.json:
@@ -883,6 +945,30 @@ def _cmd_setup_download(args: argparse.Namespace) -> int:
         print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
     else:
         _print_download_result(result)
+    return 0 if result.ok else 1
+
+
+def _cmd_setup_benchmark(args: argparse.Namespace) -> int:
+    targets = plan_backend_benchmarks(args.config, backends=args.backend)
+    confirmed = args.yes
+    if args.execute and not confirmed and not args.json:
+        _print_benchmark_plan(targets, args.output)
+        answer = input("Run these local benchmark requests? [y/N] ").strip().lower()
+        confirmed = answer in {"y", "yes"}
+
+    result = execute_benchmark_plan(
+        targets,
+        output_path=args.output,
+        execute=args.execute,
+        confirmed=confirmed,
+        timeout_seconds=args.timeout,
+    )
+    if args.json:
+        payload = result.to_dict()
+        payload["summary"] = benchmark_summary(args.output)
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        _print_benchmark_result(result)
     return 0 if result.ok else 1
 
 
@@ -1102,11 +1188,29 @@ def _print_recommendation(recommendation) -> None:
         print("- none")
     for engine in sorted(recommendation.engine_overrides):
         print(f"- {engine}")
+    print("Local model recommendations:")
+    if not recommendation.local_model_recommendations:
+        print("- none")
+    for item in recommendation.local_model_recommendations[:12]:
+        print(
+            f"- {item.route}: {item.repo_id} "
+            f"({item.score.label}, score {item.score.overall_score})"
+        )
+        if item.score.warnings:
+            print("  warnings: " + ", ".join(item.score.warnings))
     print("Download suggestions:")
     if not recommendation.download_suggestions:
         print("- none")
     for suggestion in recommendation.download_suggestions:
-        print(f"- {suggestion.route}: {suggestion.repo_id}")
+        if suggestion.score is not None:
+            print(
+                f"- {suggestion.route}: {suggestion.repo_id} "
+                f"({suggestion.score.label}, score {suggestion.score.overall_score})"
+            )
+            if suggestion.score.warnings:
+                print("  warnings: " + ", ".join(suggestion.score.warnings))
+        else:
+            print(f"- {suggestion.route}: {suggestion.repo_id}")
         print(f"  command: {' '.join(suggestion.command)}")
     print("Notes:")
     if not recommendation.notes:
@@ -1495,6 +1599,41 @@ def _print_download_plan(plan) -> None:
     if not plan.notes:
         print("- none")
     for note in plan.notes:
+        print(f"- {note}")
+
+
+def _print_benchmark_plan(targets, output_path: Path) -> None:
+    print("Benchmark plan:")
+    if not targets:
+        print("- none")
+    for target in targets:
+        managed = "managed runtime" if target.managed_runtime else "unmanaged"
+        print(f"- {target.backend}: {target.model} ({target.route}; {managed})")
+        print(f"  base_url: {target.base_url}")
+    print(f"Output: {output_path}")
+    print("Prompt: fixed synthetic smoke prompt; prompt body is not stored.")
+
+
+def _print_benchmark_result(result) -> None:
+    print(f"Executed: {str(result.executed).lower()}")
+    print(f"OK: {str(result.ok).lower()}")
+    print(f"Output: {result.output_path}")
+    print("Results:")
+    if not result.results:
+        print("- none")
+    for item in result.results:
+        print(f"- {item.backend}: {item.status}")
+        print(f"  model: {item.model}")
+        if item.tokens_per_second is not None:
+            print(f"  tokens/sec: {item.tokens_per_second}")
+        if item.total_latency_ms is not None:
+            print(f"  total latency ms: {item.total_latency_ms}")
+        if item.error:
+            print(f"  error: {item.error}")
+    print("Notes:")
+    if not result.notes:
+        print("- none")
+    for note in result.notes:
         print(f"- {note}")
 
 

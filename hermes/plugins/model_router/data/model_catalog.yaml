@@ -1,6 +1,20 @@
 version: 1
 models:
   - route: fast_local
+    repo_id: mlx-community/Qwen3-0.6B-4bit
+    provider: huggingface
+    adapter: local_chat
+    reason: Fast MLX-LM chat model tuned for Apple Silicon.
+    min_memory_gb: 4
+    recommended_memory_gb: 8
+    quality_score: 2
+    speed_score: 5
+    profiles: [lightweight, balanced, quality]
+    hardware: [apple_silicon]
+    runtime_kind: mlx-lm
+    model_size_b: 0.6
+    quantization: 4bit
+  - route: fast_local
     repo_id: lmstudio-community/Qwen3-0.6B-GGUF
     provider: huggingface
     adapter: local_chat
@@ -12,6 +26,9 @@ models:
     profiles: [lightweight, balanced, quality]
     hardware: [cpu, apple_silicon]
     include: ["*Q4_K_M.gguf"]
+    runtime_kind: llama.cpp
+    model_size_b: 0.6
+    quantization: Q4_K_M
   - route: fast_local
     repo_id: lmstudio-community/Qwen3-4B-GGUF
     provider: huggingface
@@ -24,6 +41,23 @@ models:
     profiles: [quality]
     hardware: [cpu, apple_silicon]
     include: ["*Q4_K_M.gguf"]
+    runtime_kind: llama.cpp
+    model_size_b: 4
+    quantization: Q4_K_M
+  - route: balanced_local
+    repo_id: mlx-community/Qwen3-4B-4bit
+    provider: huggingface
+    adapter: local_chat
+    reason: Balanced MLX-LM chat model for Apple Silicon.
+    min_memory_gb: 8
+    recommended_memory_gb: 16
+    quality_score: 4
+    speed_score: 4
+    profiles: [lightweight, balanced, quality]
+    hardware: [apple_silicon]
+    runtime_kind: mlx-lm
+    model_size_b: 4
+    quantization: 4bit
   - route: balanced_local
     repo_id: Qwen/Qwen2.5-3B-Instruct-GGUF
     provider: huggingface
@@ -36,6 +70,9 @@ models:
     profiles: [lightweight, balanced]
     hardware: [cpu, apple_silicon]
     include: ["*Q4_K_M.gguf"]
+    runtime_kind: llama.cpp
+    model_size_b: 3
+    quantization: Q4_K_M
   - route: balanced_local
     repo_id: lmstudio-community/Qwen3-8B-GGUF
     provider: huggingface
@@ -48,6 +85,23 @@ models:
     profiles: [quality]
     hardware: [cpu, apple_silicon]
     include: ["*Q4_K_M.gguf"]
+    runtime_kind: llama.cpp
+    model_size_b: 8
+    quantization: Q4_K_M
+  - route: reasoning_local
+    repo_id: mlx-community/DeepSeek-R1-0528-Qwen3-8B-4bit
+    provider: huggingface
+    adapter: local_reasoning
+    reason: MLX-LM reasoning model for Apple Silicon planning-heavy routes.
+    min_memory_gb: 12
+    recommended_memory_gb: 24
+    quality_score: 5
+    speed_score: 3
+    profiles: [balanced, quality]
+    hardware: [apple_silicon]
+    runtime_kind: mlx-lm
+    model_size_b: 8
+    quantization: 4bit
   - route: reasoning_local
     repo_id: Qwen/Qwen3-8B-GGUF
     provider: huggingface
@@ -60,6 +114,9 @@ models:
     profiles: [lightweight, balanced]
     hardware: [cpu, apple_silicon]
     include: ["*Q4_K_M.gguf"]
+    runtime_kind: llama.cpp
+    model_size_b: 8
+    quantization: Q4_K_M
   - route: reasoning_local
     repo_id: lmstudio-community/DeepSeek-R1-0528-Qwen3-8B-GGUF
     provider: huggingface
@@ -72,6 +129,23 @@ models:
     profiles: [quality]
     hardware: [cpu, apple_silicon]
     include: ["*Q4_K_M.gguf"]
+    runtime_kind: llama.cpp
+    model_size_b: 8
+    quantization: Q4_K_M
+  - route: code_agent
+    repo_id: mlx-community/Qwen2.5-Coder-7B-Instruct-4bit
+    provider: huggingface
+    adapter: local_code
+    reason: MLX-LM coding model for Apple Silicon repository work.
+    min_memory_gb: 12
+    recommended_memory_gb: 24
+    quality_score: 5
+    speed_score: 3
+    profiles: [balanced, quality]
+    hardware: [apple_silicon]
+    runtime_kind: mlx-lm
+    model_size_b: 7
+    quantization: 4bit
   - route: code_agent
     repo_id: Qwen/Qwen2.5-Coder-3B-Instruct-GGUF
     provider: huggingface
@@ -84,6 +158,9 @@ models:
     profiles: [lightweight]
     hardware: [cpu, apple_silicon]
     include: ["*Q4_K_M.gguf"]
+    runtime_kind: llama.cpp
+    model_size_b: 3
+    quantization: Q4_K_M
   - route: code_agent
     repo_id: Qwen/Qwen2.5-Coder-7B-Instruct-GGUF
     provider: huggingface
@@ -96,6 +173,9 @@ models:
     profiles: [balanced, quality]
     hardware: [cpu, apple_silicon]
     include: ["*Q4_K_M.gguf"]
+    runtime_kind: llama.cpp
+    model_size_b: 7
+    quantization: Q4_K_M
   - route: web_research
     repo_id: BAAI/bge-small-en-v1.5
     provider: huggingface

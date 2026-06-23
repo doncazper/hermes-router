@@ -237,10 +237,30 @@ model-router setup recommend --json
 
 Recommendations come from the packaged setup-time model advisor catalog at
 `hermes/plugins/model_router/data/model_catalog.yaml`. The advisor uses local
-hardware signals such as RAM, CPU architecture, Apple Silicon, and free disk
-space to rank Hugging Face candidates for each route. This catalog is not loaded
-by `ModelRouter`, and hardware detection never runs inside `route_fast(...)` or
-`route(...)`.
+hardware signals such as RAM, CPU architecture, CPU core count, Apple Silicon,
+accelerator backend hints, and free disk space to rank Hugging Face candidates
+for each route. RAM is the fit/load gate; CPU/GPU/accelerator backend, runtime
+format, quantization, and measured benchmark results drive whether a model is
+expected to feel usable. This catalog is not loaded by `ModelRouter`, and
+hardware detection never runs inside `route_fast(...)` or `route(...)`.
+
+Recommendation JSON includes `fit_score`, `runtime_match_score`,
+`expected_speed_score`, `quality_role_score`, `setup_friction_score`,
+`benchmark_score`, `overall_score`, labels such as `recommended`,
+`fits_but_likely_slow`, `too_large`, `needs_runtime`, and
+`benchmark_recommended`, plus human-readable reasons and warnings.
+
+Optional local backend benchmarks are explicit:
+
+```bash
+model-router setup benchmark --config ~/.model-router/routing_proxy.yaml
+model-router setup benchmark --config ~/.model-router/routing_proxy.yaml --execute --yes
+```
+
+The command benchmarks configured backends with a fixed synthetic prompt and
+stores metrics in `~/.model-router/benchmarks.json`. It stores no prompt bodies,
+request bodies, API keys, or secrets, and benchmark-driven recommendations never
+silently mutate config.
 
 Interactive wizard:
 

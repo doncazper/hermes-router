@@ -363,23 +363,24 @@ Done when:
 Goal: make first-run local runtime setup recommend several good choices instead
 of forcing one model or runtime.
 
-Status: in progress. Setup recommendations now keep local model discovery and
-download recommendations separate: compatible local models can fill generated
-configs, but hardware-aware download candidates are still shown as alternatives.
-Prerequisite installs are explicit and run through the active Python
-environment. `init --auto-models` can fill managed MLX-LM and llama.cpp/GGUF
-configs from route-matched local models only.
+Status: implemented. Setup recommendations now keep local model discovery and
+download recommendations separate, score both local and downloadable options,
+and treat RAM as the fit/load gate rather than the whole ranking. The score
+breakdown includes fit, runtime match, expected speed, route quality, setup
+friction, and optional benchmark evidence. Hardware signals now include CPU
+architecture, CPU core count, Apple Silicon/Metal, CUDA/ROCm hints, model
+format, and quantization. `model-router setup benchmark` can plan or run a
+privacy-safe synthetic benchmark against configured backends, storing metrics in
+`~/.model-router/benchmarks.json` without prompt bodies, request bodies, API
+keys, or secrets. The settings UI shows score labels and benchmark status.
+Benchmark data improves future recommendations but never silently mutates config
+or routing policy.
 
 Next:
 
-- Move runtime/format metadata into the model catalog so MLX-LM, GGUF,
-  Ollama, LM Studio, and generic OpenAI-compatible options are ranked by one
-  shared scoring path.
-- Add a local benchmark command that measures startup time, first-token latency,
-  throughput, failure rate, and route-specific smoke quality for configured
-  backends.
-- Save privacy-safe local scores under `~/.model-router/` and use them to
-  propose config changes, never to silently mutate routing policy.
+- Dogfood benchmark-backed recommendations on a few real local setups.
+- Add richer benchmark modes later if needed, such as streaming first-token
+  timing or route-specific quality smoke checks.
 - Keep downloads and benchmark-driven config changes user-approved.
 
 ## Milestone 12: Local Admin Settings UI
