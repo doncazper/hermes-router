@@ -121,6 +121,10 @@ def test_settings_home_page_loads_without_chat_surface(tmp_path, monkeypatch):
     assert "Settings UI Follow-Through" in response.text
     assert "Telemetry Review" in response.text
     assert "code_agent" in response.text
+    assert response.text.count('id="settings"') == 1
+    assert 'id="runtime-detail"' in response.text
+    assert 'id="catalog"' in response.text
+    assert "LM Studio / code" in response.text
     assert "No chat surface" in response.text
     assert "chat transcript" not in response.text.lower()
     assert "textarea id=\"chat" not in response.text.lower()
@@ -210,14 +214,15 @@ def test_dashboard_uses_latest_safe_route_receipt_without_prompt_leakage(
                 "requirements": {"needs_tools": True},
                 "receipt_summary": (
                     "Selected code_agent under the balanced profile; "
-                    "no confirmation required; fallback available: reasoning_local."
+                    "api_key=metadata-secret; fallback available: reasoning_local."
                 ),
                 "reason_codes": [
                     "profile.balanced",
                     "route.coding",
                     "requirement.tools",
+                    "token=metadata-secret",
                 ],
-                "policy_explanation": "Allowed providers: local, human.",
+                "policy_explanation": "Allowed providers: token=metadata-secret.",
                 "fallback_explanation": (
                     "No fallback was used; reasoning_local remains available."
                 ),
@@ -247,6 +252,9 @@ def test_dashboard_uses_latest_safe_route_receipt_without_prompt_leakage(
     assert "api_key=super-secret" not in html
     assert "fix this repository" not in serialized
     assert "fix this repository" not in html
+    assert "metadata-secret" not in serialized
+    assert "metadata-secret" not in html
+    assert "[REDACTED]" in html
 
 
 def test_dashboard_route_map_reflects_configured_backends(tmp_path, monkeypatch):
@@ -280,6 +288,32 @@ def test_dashboard_route_map_reflects_configured_backends(tmp_path, monkeypatch)
     assert code_row["latency"] == "On demand"
     assert state["provider_runtime"]["detail"]["builder"]["port"] == "8093"
     assert state["provider_runtime"]["detail"]["builder"]["model"] == "/models/local-code.gguf"
+
+
+def test_human_confirm_latest_event_does_not_select_backend(tmp_path, monkeypatch):
+    _init_config(tmp_path)
+    _stub_scan(monkeypatch)
+    events_path = tmp_path / "logs" / "routing-events.jsonl"
+    events_path.write_text(
+        json.dumps(
+            {
+                "event_type": "routing_event",
+                "request_id": "req-confirm",
+                "selected_engine": "human_confirm",
+                "status": "blocked",
+                "fallback_used": False,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    state = settings_ui.build_settings_state(settings_ui.settings_paths(tmp_path))
+
+    assert state["route_receipt"]["selected"] == "human_confirm"
+    assert state["route_receipt"]["backend"] == "unassigned"
+    assert state["provider_runtime"]["selected_backend"] == ""
+    assert state["provider_runtime"]["detail"] == {}
 
 
 def test_save_config_can_apply_preset_template_explicitly(tmp_path, monkeypatch):

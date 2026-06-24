@@ -55,6 +55,7 @@ from hermes.plugins.model_router.routing_log import (
     RoutingLogWriter,
     build_feedback,
     read_jsonl,
+    redact_text,
 )
 from hermes.plugins.model_router.setup_assistant import (
     DownloadPlan,
@@ -1885,17 +1886,24 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
 def _dashboard_js() -> str:
     return """
 async function postAction(path, payload = {}) {
-  const response = await fetch(path, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(payload)
-  });
-  const data = await response.json();
   const target = document.getElementById('last-action');
-  if (target) {
-    target.textContent = data.ok === false ? data.error : 'Action complete';
+  try {
+    const response = await fetch(path, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const data = await response.json();
+    if (target) {
+      target.textContent = data.ok === false ? data.error : 'Action complete';
+    }
+    return data;
+  } catch (error) {
+    if (target) {
+      target.textContent = 'Action failed: ' + error;
+    }
+    return {ok: false, error: String(error)};
   }
-  return data;
 }
 async function saveProfile() {
   const active = document.querySelector('.segment.active');
@@ -1971,7 +1979,12 @@ async function planBenchmark() {
   if (target) target.textContent = JSON.stringify(data.targets || data, null, 2);
 }
 async function copyText(text) {
-  if (navigator.clipboard) await navigator.clipboard.writeText(text);
+  if (!text) return;
+  try {
+    if (navigator.clipboard) await navigator.clipboard.writeText(text);
+  } catch (error) {
+    // Copy support can be blocked in some local browser contexts; keep labeling usable.
+  }
   const target = document.getElementById('last-action');
   if (target) target.textContent = 'Copied ' + text;
 }
@@ -2062,7 +2075,7 @@ def _dashboard_health_checks(state: Mapping[str, Any]) -> str:
         ("Observability configured", bool(state.get("observability", {}).get("enabled"))),
         ("llama.cpp configured", has_llama),
         ("LM Studio configured", has_lmstudio),
-        ("Ollama available", has_ollama),
+        ("Ollama configured", has_ollama),
         ("Human confirm route", "human_confirm" in route_ids),
     )
     return "\n".join(
@@ -2269,7 +2282,7 @@ def _providers_runtime_section(state: Mapping[str, Any]) -> str:
     fallback_text = ", ".join(str(item) for item in fallback_chain) if fallback_chain else "none"
     return f"""<div class="runtime-grid" id="providers">
       <div class="provider-list">{provider_rows}</div>
-      <div class="runtime-detail" id="settings">
+      <div class="runtime-detail" id="runtime-detail">
         <div class="detail-field detail-wide">
           <label>Runtime command</label>
           <span class="code">{escape(str(detail.get("runtime_command") or "No backend selected."))}</span>
@@ -2453,17 +2466,17 @@ def _risk_dot(risk: str) -> str:
 
 
 def _provider_icon_name(name: str) -> str:
-    if name == "llama.cpp":
+    if "llama.cpp" in name:
         return "code"
-    if name in {"LM Studio", "LocalAI"}:
+    if "LM Studio" in name or "LocalAI" in name:
         return "cube"
-    if name == "Ollama":
+    if "Ollama" in name:
         return "runtime"
-    if name == "MLX-LM":
+    if "MLX-LM" in name:
         return "chip"
-    if name in {"OpenAI", "Anthropic"} or "OpenAI-compatible" in name:
+    if "OpenAI" in name or "Anthropic" in name or "OpenAI-compatible" in name:
         return "providers"
-    if name in {"Codex", "Claude Code"}:
+    if "Codex" in name or "Claude Code" in name:
         return "terminal"
     return "server"
 
@@ -2787,7 +2800,7 @@ def _catalog_panel(state: Mapping[str, Any]) -> str:
     log_path = escape(str(catalog.get("migration_log") or ""))
     overrides = catalog.get("overrides") or []
     override_text = escape(", ".join(overrides) if overrides else "none")
-    return f"""<section class="inspector-card" id="settings" aria-labelledby="catalog-title">
+    return f"""<section class="inspector-card" id="catalog" aria-labelledby="catalog-title">
       <header>
         <h2 id="catalog-title">{_icon("server")} Catalog</h2>
         <span class="muted">packaged only</span>
@@ -3081,16 +3094,73 @@ def _telemetry_state(
     except Exception:
         labels = {"labels": []}
     recent_ids = [
-        str(label.get("request_id"))
+        _safe_event_string(label.get("request_id"), max_chars=120)
         for label in labels.get("labels", [])
         if label.get("request_id")
     ]
     event_recent_ids = event_summary.pop("recent_request_ids")
     return {
         **event_summary,
-        **summary,
+        **_sanitize_telemetry_summary(summary),
         "recent_request_ids": event_recent_ids or recent_ids,
     }
+
+
+def _sanitize_telemetry_summary(summary: Mapping[str, Any]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for key, value in summary.items():
+        if key in {
+            "selected_engine_counts",
+            "status_counts",
+            "mismatch_groups",
+            "confusion_matrix",
+        }:
+            payload[key] = _safe_count_mapping(value)
+        elif key in {
+            "unlabeled_replayable_request_ids",
+            "skipped_no_prompt_request_ids",
+            "feedback_without_event_request_ids",
+            "feedback_for_private_event_request_ids",
+        }:
+            payload[key] = _safe_string_list(value, max_chars=120)
+        elif key in {
+            "route_changes",
+            "expected_mismatches",
+        }:
+            payload[key] = _safe_telemetry_rows(value)
+        elif isinstance(value, str):
+            payload[key] = _safe_event_string(value, max_chars=320)
+        else:
+            payload[key] = value
+    return payload
+
+
+def _safe_count_mapping(value: Any) -> dict[str, int]:
+    if not isinstance(value, Mapping):
+        return {}
+    counts: Counter[str] = Counter()
+    for raw_key, raw_count in value.items():
+        key = _safe_event_string(raw_key, max_chars=120)
+        if key:
+            counts[key] += _safe_int(raw_count)
+    return dict(sorted(counts.items()))
+
+
+def _safe_telemetry_rows(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[dict[str, str]] = []
+    for row in value[:20]:
+        if not isinstance(row, Mapping):
+            continue
+        safe_row = {
+            str(key): _safe_event_string(item, max_chars=120)
+            for key, item in row.items()
+            if isinstance(key, str) and isinstance(item, str)
+        }
+        if safe_row:
+            rows.append(safe_row)
+    return rows
 
 
 def _recent_routing_events(events_path: Path, *, limit: int = 10) -> list[dict[str, Any]]:
@@ -3205,7 +3275,9 @@ def _provider_runtime_state(
     if config is None:
         return {"providers": [], "detail": {}}
     selected_backend_name = str(latest_event.get("backend") or "")
-    if selected_backend_name not in config.backends:
+    if latest_event.get("selected_engine") == "human_confirm":
+        selected_backend_name = ""
+    elif selected_backend_name not in config.backends:
         selected_backend_name = (
             config.engine_backends.get("code_agent")
             or config.engine_backends.get("balanced_local")
@@ -3227,7 +3299,7 @@ def _provider_runtime_state(
         )
         providers.append(
             {
-                "name": _provider_runtime_label(backend),
+                "name": f"{_provider_runtime_label(backend)} / {backend.name}",
                 "backend": backend.name,
                 "status": status,
                 "detail": _host_port_label(backend.base_url),
@@ -3334,11 +3406,12 @@ def _route_receipt_state(
 
 def _review_state(paths: Mapping[str, Path]) -> dict[str, Any]:
     try:
-        return review_queue(
+        payload = review_queue(
             events_path=paths["events"],
             feedback_path=paths["feedback"],
             max_rows=8,
         )
+        return _sanitize_review_state(payload, feedback_path=paths["feedback"])
     except Exception as exc:
         return {
             "reviewable": 0,
@@ -3352,6 +3425,50 @@ def _review_state(paths: Mapping[str, Path]) -> dict[str, Any]:
                 "secrets are hidden by default."
             ),
         }
+
+
+def _sanitize_review_state(
+    payload: Mapping[str, Any],
+    *,
+    feedback_path: Path,
+) -> dict[str, Any]:
+    items: list[dict[str, Any]] = []
+    for item in payload.get("items", []):
+        if not isinstance(item, Mapping):
+            continue
+        request_id = _safe_event_string(item.get("request_id"), max_chars=120)
+        items.append(
+            {
+                "request_id": request_id,
+                "selected_engine": _safe_event_string(item.get("selected_engine")),
+                "status": _safe_event_string(item.get("status")),
+                "backend": _safe_event_string(item.get("backend")),
+                "routing_profile": _safe_event_string(item.get("routing_profile")),
+                "receipt_summary": _safe_event_string(item.get("receipt_summary")),
+                "reason_codes": _safe_string_list(item.get("reason_codes"))[:8],
+                "replayable": item.get("replayable") is True,
+                "suggested_feedback_command": (
+                    "model-router feedback "
+                    f"{request_id} <expected_engine> "
+                    f"--output {feedback_path}"
+                ),
+            }
+        )
+    return {
+        "reviewable": len(items),
+        "items": items,
+        "truncated": payload.get("truncated") is True,
+        "skipped_labeled": _safe_int(payload.get("skipped_labeled")),
+        "skipped_private": _safe_int(payload.get("skipped_private")),
+        "privacy": _safe_event_string(
+            payload.get("privacy"),
+            max_chars=320,
+        )
+        or (
+            "Prompts, prompt previews, request bodies, feedback notes, and "
+            "secrets are hidden by default."
+        ),
+    }
 
 
 def _workflow_benchmark_state(paths: Mapping[str, Path]) -> dict[str, Any]:
@@ -3438,17 +3555,17 @@ def _safe_event_summary(events_path: Path) -> dict[str, Any]:
     for row in rows:
         if row.get("event_type") != "routing_event":
             continue
-        request_id = row.get("request_id")
-        if isinstance(request_id, str) and request_id:
+        request_id = _safe_event_string(row.get("request_id"), max_chars=120)
+        if request_id:
             recent_request_ids.append(request_id)
-        selected_engine = row.get("selected_engine")
-        if isinstance(selected_engine, str) and selected_engine:
+        selected_engine = _safe_event_string(row.get("selected_engine"), max_chars=80)
+        if selected_engine:
             engine_counts[selected_engine] += 1
-        backend = row.get("backend")
-        if isinstance(backend, str) and backend:
+        backend = _safe_event_string(row.get("backend"), max_chars=80)
+        if backend:
             backend_counts[backend] += 1
-        status = row.get("status")
-        if isinstance(status, str) and status:
+        status = _safe_event_string(row.get("status"), max_chars=80)
+        if status:
             status_counts[status] += 1
         if row.get("fallback_used") is True:
             fallback_count += 1
@@ -3461,16 +3578,31 @@ def _safe_event_summary(events_path: Path) -> dict[str, Any]:
     }
 
 
-def _safe_event_string(value: Any) -> str:
+def _safe_event_string(value: Any, *, max_chars: int = 240) -> str:
     if not isinstance(value, str):
         return ""
-    return value.strip()
+    text = redact_text(value).strip()
+    if len(text) <= max_chars:
+        return text
+    return text[: max(0, max_chars - 1)].rstrip() + "…"
 
 
-def _safe_string_list(value: Any) -> list[str]:
+def _safe_string_list(value: Any, *, max_chars: int = 120) -> list[str]:
     if isinstance(value, (list, tuple)):
-        return [str(item) for item in value if str(item)]
+        return [
+            _safe_event_string(item, max_chars=max_chars)
+            for item in value
+            if _safe_event_string(item, max_chars=max_chars)
+        ]
     return []
+
+
+def _safe_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return max(0, value)
+    return 0
 
 
 def _short_event_time(value: Any) -> str:
