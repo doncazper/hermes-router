@@ -57,8 +57,11 @@ The current product already includes:
   `ModelRouter.route(...)`.
 - OpenAI-compatible proxy endpoints for supported request shapes.
 - Local settings UI through `model-router settings`.
-- Proxy config editing, doctor output, telemetry summaries, feedback labels,
-  benchmark-backed model recommendations, and proxy process controls.
+- Data-backed settings dashboard panels for the latest route receipt, configured
+  routing map, provider/runtime config, recent telemetry, feedback labels,
+  benchmark status, and proxy process controls.
+- Visual proxy config editing for profile, observability, backend policy, and
+  per-route backend/runtime fields with explicit Save/Apply/Restart actions.
 - Response headers, receipts, and telemetry workflows that make route ids easier
   to identify and label.
 - Opt-in managed local runtimes for configured llama.cpp and MLX-LM processes.
@@ -71,7 +74,8 @@ The north star assumes continued polish around:
   UI.
 - More complete visual runtime status, readiness, logs, and managed-runtime
   controls.
-- Better recent-request inspection and wrong-route review loops.
+- Continued dogfooding of the recent-request and wrong-route review loops before
+  adding heavier review surfaces.
 - Broader dogfood evidence from real local runtimes and benchmark-backed setup.
 
 ## Future Direction

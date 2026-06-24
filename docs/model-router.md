@@ -20,6 +20,11 @@ and wrong-route feedback visible while preserving privacy-safe defaults.
 See `docs/product-north-star.md` for the canonical north-star screenshot and
 the implemented/in-progress/future split.
 
+The current settings dashboard is data-backed where implemented: latest route
+receipt, routing map, provider/runtime panel, recent telemetry, benchmark
+status, and wrong-route feedback all come from local config and telemetry files
+rather than a demo chat surface.
+
 ## Architecture
 
 The router is implemented under `hermes/plugins/model_router/`. This is a

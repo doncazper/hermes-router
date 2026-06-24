@@ -495,23 +495,55 @@ For each track:
 - End with a short recommendation for the next track.
 ```
 
-## Next Planned Work After Milestone 13
+## Milestone 14: Data-Backed Settings Dashboard
+
+Goal: make the north-star dashboard panels honest and interactive without adding
+chat UI, agent behavior, or more architecture.
+
+Status: first pass implemented. The settings dashboard now uses real local state
+for the latest route receipt, configured routing map, provider/runtime panel,
+recent telemetry, review queue, backend/runtime editing controls, catalog
+diff/apply, and local/workflow benchmark status. Writes remain explicit through
+Save, Apply, Restart, Download, and Benchmark actions.
+
+Remaining dogfood work:
+
+- Real proxy dogfood: run LM Studio, Ollama, llama.cpp, and MLX-LM setups
+  through `/v1/chat/completions`, `/v1/responses`, streaming, fallback,
+  `human_confirm`, backend policy rejection, and optional verifier modes.
+- Runtime control polish: continue improving llama.cpp and MLX-LM command
+  builders, readiness/log display, and managed runtime status once real local
+  dogfood reveals rough edges.
+- Telemetry review polish: use the dashboard review queue and
+  `model-router telemetry review` with real requests; only build a heavier
+  review surface if copying request ids and writing feedback still feels clunky.
+- Release hardening: prepare a v0.7.0 candidate once dashboard data-backed
+  behavior has been dogfooded, with changelog, benchmark output, route-fast
+  latency output, and upgrade guidance.
+
+Do not add hidden orchestration, default hosted-provider calls, automatic
+downloads, runtime auto-start, verifier calls, prompt logging, webchat, or agent
+surfaces while doing this work. Keep `route_fast(...)` deterministic and keep
+safety gates explicit.
+
+## Next Planned Work After Milestone 14
 
 Goal: turn the open switchboard foundation into a tighter daily-use loop.
 
-First-pass status: the local proxy dogfood harness, catalog diff/apply controls,
-privacy-safe telemetry review queue, receipt next-action calibration, and
-release-evidence docs are implemented. Live LM Studio, Ollama, llama.cpp, and
-MLX-LM dogfood runs remain manual, opt-in release checks.
+First-pass status: the data-backed settings dashboard, local proxy dogfood
+harness, catalog diff/apply controls, privacy-safe telemetry review queue,
+receipt next-action calibration, and release-evidence docs are implemented. Live
+LM Studio, Ollama, llama.cpp, and MLX-LM dogfood runs remain manual, opt-in
+release checks.
 
 Recommended tasks:
 
 - Real proxy dogfood: run LM Studio, Ollama, llama.cpp, and MLX-LM setups
   through `/v1/chat/completions`, `/v1/responses`, streaming, fallback,
   `human_confirm`, backend policy rejection, and optional verifier modes.
-- Settings UI follow-through: add explicit catalog diff/apply controls with
-  confirmation, show workflow benchmark status, and keep all write actions
-  local and user-confirmed.
+- Settings UI follow-through: dogfood the data-backed panels, verify the latest
+  route receipt/mini monitor/review queue are useful during real work, and keep
+  all write actions local and user-confirmed.
 - Telemetry review queue: dogfood the `model-router telemetry review` flow for
   labeling wrong routes without exposing notes or prompt bodies by default.
 - Receipt calibration: dogfood the wrong-route next actions and promote stable

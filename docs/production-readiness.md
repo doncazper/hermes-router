@@ -305,10 +305,11 @@ model-router-proxy --config ~/.model-router/routing_proxy.yaml --log-level info
 For local admin/config work, `model-router settings --config-dir ~/.model-router`
 runs a localhost-only settings UI on `127.0.0.1:8099` by default. It can edit
 proxy config fields, run doctor, start/stop/restart the proxy as a child
-process, inspect telemetry counts, show benchmark-backed recommendation status,
-run confirmed local backend benchmarks, and write feedback labels. It is not a
-chat UI, does not submit user prompts, and does not display literal API keys or
-raw prompt text.
+process, show the latest actual route receipt, render the routing map from the
+configured engine/backend/fallback policy, inspect recent telemetry, show local
+and workflow benchmark status, run confirmed local backend benchmarks, and write
+feedback labels. It is not a chat UI, does not submit user prompts, and does not
+display literal API keys or raw prompt text.
 
 The product north star in `docs/product-north-star.md` defines the intended UI
 shape: a local proxy control center for routing policy, runtime status, route

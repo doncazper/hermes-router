@@ -543,16 +543,23 @@ model-router settings --config-dir ~/.model-router --no-open
 The settings UI binds to `127.0.0.1:8099` by default and manages only local
 config and child processes you explicitly start. It can:
 
+- Show a data-backed route receipt for the latest actual proxy request, including
+  the safe request id needed for wrong-route feedback.
+- Render the routing map from the configured `engine_backends`, backend models,
+  runtime types, privacy/cost hints, and fallback chains.
+- Show provider/runtime rows from real backend config and latest telemetry,
+  rather than demo-only sample rows.
 - Show scanned local models and recommended Hugging Face downloads.
-- Show recommendation score labels and privacy-safe benchmark status.
+- Show recommendation score labels, local backend benchmark status, and workflow
+  benchmark status.
 - Edit `~/.model-router/routing_proxy.yaml` fields for the proxy, observability,
   and per-route backends.
 - Show runtime state for managed `llama-server` and `mlx_lm.server` backends.
 - Start, stop, and restart `model-router-proxy` as a child process of the
   settings command.
-- Run `doctor`, plan/run local backend benchmarks after confirmation, show
-  telemetry counts/recent request ids, and write feedback labels in the same
-  JSONL format as `model-router feedback`.
+- Run `doctor`, plan/run local backend benchmarks after confirmation, inspect
+  recent request telemetry, copy request ids, and write feedback labels in the
+  same JSONL format as `model-router feedback`.
 
 Privacy and mutation defaults stay conservative. The UI has no prompt box, no
 chat transcript, does not display literal API keys, does not display raw prompt

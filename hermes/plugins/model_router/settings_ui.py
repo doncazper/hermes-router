@@ -18,7 +18,7 @@ import subprocess
 import sys
 import tempfile
 from typing import Any
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlparse
 import webbrowser
 
 import yaml
@@ -63,7 +63,7 @@ from hermes.plugins.model_router.setup_assistant import (
     recommend_setup,
     scan_local_environment,
 )
-from hermes.plugins.model_router.telemetry import feedback_summary, replay_events
+from hermes.plugins.model_router.telemetry import feedback_summary, replay_events, review_queue
 
 
 DEFAULT_SETTINGS_HOST = "127.0.0.1"
@@ -73,6 +73,43 @@ ROUTE_LABELS = {
     "balanced": "balanced",
     "reasoning": "reasoning",
     "code": "code",
+}
+DASHBOARD_ENGINE_ORDER = (
+    "fast_local",
+    "balanced_local",
+    "reasoning_local",
+    "code_agent",
+    "web_research",
+    "multimodal_vision",
+    "image_generation",
+    "human_confirm",
+)
+ROUTE_CLASS_BY_ENGINE = {
+    "fast_local": "Simple",
+    "balanced_local": "Balanced",
+    "reasoning_local": "Reasoning",
+    "code_agent": "Coding",
+    "web_research": "Research",
+    "multimodal_vision": "Vision",
+    "image_generation": "Image generation",
+    "human_confirm": "Risky actions",
+}
+ROUTE_DESCRIPTION_BY_ENGINE = {
+    "fast_local": "Fast/local route",
+    "balanced_local": "Default everyday route",
+    "reasoning_local": "Reasoning route",
+    "code_agent": "Code and repository route",
+    "web_research": "Research/RAG route",
+    "multimodal_vision": "Vision/OCR route",
+    "image_generation": "Image generation route",
+    "human_confirm": "Human confirmation gate",
+}
+TOOL_HINT_BY_ENGINE = {
+    "code_agent": "Yes",
+    "web_research": "Yes",
+    "multimodal_vision": "Yes",
+    "image_generation": "Limited",
+    "human_confirm": "N/A",
 }
 
 
@@ -431,6 +468,7 @@ def settings_paths(config_dir: str | Path) -> dict[str, Path]:
         "settings_proxy_log": base / "logs" / "settings-proxy.log",
         "models": base / "models",
         "benchmarks": base / "benchmarks.json",
+        "workflow_benchmarks": base / "workflow-benchmarks.json",
     }
 
 
@@ -460,6 +498,18 @@ def build_settings_state(
         download_alternatives=2,
         benchmark_results=benchmark_results,
     )
+    download_plan = _download_plan(
+        paths,
+        discovery=discovery,
+        benchmark_results=benchmark_results,
+    )
+    proxy_process = (
+        supervisor.status().to_dict()
+        if supervisor is not None
+        else ProxyProcessStatus("unknown").to_dict()
+    )
+    recent_events = _recent_routing_events(paths["events"])
+    latest_event = recent_events[0] if recent_events else {}
     state: dict[str, Any] = {
         "product": "ModelRouter",
         "paths": {name: str(path) for name, path in paths.items()},
@@ -478,18 +528,17 @@ def build_settings_state(
         "observability": _observability_state(config),
         "discovery": discovery.to_dict(),
         "recommendation": recommendation.to_dict(),
-        "download_plan": _download_plan(
-            paths,
-            discovery=discovery,
-            benchmark_results=benchmark_results,
-        ).to_dict(),
+        "download_plan": download_plan.to_dict(),
         "benchmarks": benchmark_summary(paths["benchmarks"]),
+        "workflow_benchmarks": _workflow_benchmark_state(paths),
         "telemetry": _telemetry_state(paths, config),
-        "proxy_process": (
-            supervisor.status().to_dict()
-            if supervisor is not None
-            else ProxyProcessStatus("unknown").to_dict()
-        ),
+        "proxy_process": proxy_process,
+        "route_map": _route_map_state(config, latest_event),
+        "provider_runtime": _provider_runtime_state(config, latest_event),
+        "route_receipt": _route_receipt_state(config, latest_event),
+        "recent_events": recent_events,
+        "review": _review_state(paths),
+        "model_options": _model_options_state(discovery, download_plan),
         "not_chat_ui": True,
     }
     return state
@@ -962,15 +1011,24 @@ def render_settings_page(state: Mapping[str, Any]) -> str:
 
 
 def render_dashboard_page(state: Mapping[str, Any]) -> str:
-    """Render the polished local-control dashboard draft."""
+    """Render the local-control dashboard from real config and telemetry state."""
 
     config_error = state.get("config_error")
     proxy = state["proxy"]
     observability = state["observability"]
+    proxy_process = state.get("proxy_process", {})
     endpoint = escape(str(proxy.get("endpoint") or "http://127.0.0.1:8082/v1"))
     profile_value = str(proxy.get("routing_profile") or "balanced")
     profile_label = _profile_label(profile_value)
     telemetry_state = "On" if observability.get("enabled") else "Off"
+    telemetry_dot = "green-dot" if observability.get("enabled") else "yellow-dot"
+    proxy_state = str(proxy_process.get("state") or "unknown")
+    proxy_dot = (
+        "green-dot"
+        if proxy_state == "running"
+        else ("yellow-dot" if proxy_state in {"stopped", "unknown"} else "red-dot")
+    )
+    proxy_label = proxy_state.replace("_", " ").title()
     health_checks = _dashboard_health_checks(state)
     return f"""<!doctype html>
 <html lang="en">
@@ -1012,9 +1070,9 @@ def render_dashboard_page(state: Mapping[str, Any]) -> str:
           </div>
         </div>
         <div class="top-status" aria-label="Runtime status">
-          <span>Status: <strong><i class="dot green-dot"></i> Running</strong></span>
+          <span>Status: <strong><i class="dot {proxy_dot}"></i> {escape(proxy_label)}</strong></span>
           <span>Mode: <strong class="accent" id="top-mode">{profile_label}</strong></span>
-          <span>Telemetry: <strong><i class="dot green-dot"></i> {telemetry_state}</strong></span>
+          <span>Telemetry: <strong><i class="dot {telemetry_dot}"></i> {telemetry_state}</strong></span>
           <button class="icon-button" type="button" onclick="postAction('/api/doctor')">
             {_icon("pulse")}<span>Live</span>
           </button>
@@ -1039,7 +1097,7 @@ def render_dashboard_page(state: Mapping[str, Any]) -> str:
         <div class="primary-column">
           <section class="panel flow-panel" aria-labelledby="flow-title">
             <h2 id="flow-title" class="sr-only">Route Flow</h2>
-            {_route_flow()}
+            {_route_flow(state)}
             <div class="profile-row">
               <div class="segmented" role="tablist" aria-label="Routing profile">
                 {_profile_button("Fast", profile_value == "fast")}
@@ -1055,6 +1113,7 @@ def render_dashboard_page(state: Mapping[str, Any]) -> str:
                 <strong>Private</strong> = local-only, no hosted APIs;
                 <strong>Safe</strong> = stricter human-confirmation gates.
               </p>
+              <button class="button-blue" type="button" onclick="saveProfile()">Save mode</button>
             </div>
           </section>
 
@@ -1065,36 +1124,40 @@ def render_dashboard_page(state: Mapping[str, Any]) -> str:
                 {_icon("refresh")}
               </button>
             </div>
-            {_routing_map_table()}
+            {_routing_map_table(state)}
           </section>
 
           <section class="panel" id="runtimes" aria-labelledby="runtimes-title">
             <div class="panel-title">
               <h2 id="runtimes-title">Providers / Runtimes</h2>
-              <span class="muted">llama.cpp is selected for code-capable local routing.</span>
+              <span class="muted">{escape(_runtime_panel_summary(state))}</span>
             </div>
             {_providers_runtime_section(state)}
           </section>
 
+          {_settings_follow_through_panel(state)}
+
           <section class="panel" id="telemetry" aria-labelledby="telemetry-title">
             <div class="panel-title">
               <h2 id="telemetry-title">Recent Requests / Telemetry</h2>
-              <button class="text-button" type="button">View all requests {_icon("arrow-right")}</button>
+              <button class="text-button" type="button" onclick="jumpTo('review')">Review queue {_icon("arrow-right")}</button>
             </div>
-            {_recent_requests_table()}
+            {_recent_requests_table(state)}
           </section>
         </div>
 
         <aside class="inspector-column" aria-label="Inspectors">
-          {_route_receipt_panel()}
+          {_route_receipt_panel(state)}
           {_safety_panel()}
+          {_benchmark_status_panel(state)}
+          {_review_panel(state)}
           {_catalog_panel(state)}
         </aside>
       </div>
     </main>
   </div>
 
-    {_mini_popup(endpoint, "Running", telemetry_state, profile_label)}
+    {_mini_popup(state, endpoint, proxy_label, telemetry_state, profile_label)}
 
   <script>{_dashboard_js()}</script>
 </body>
@@ -1153,6 +1216,21 @@ button {
   cursor: pointer;
 }
 button:hover { border-color: #c4cedb; background: #f9fbfd; }
+input, select, textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  min-height: 28px;
+  padding: 5px 7px;
+}
+textarea {
+  min-height: 44px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+}
 a { color: var(--accent); text-decoration: none; }
 h1, h2, h3, p { margin: 0; }
 h1 { font-size: 22px; line-height: 1.08; font-weight: 760; }
@@ -1367,7 +1445,7 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
 .flow-arrow { color: #9aa5b5; display: grid; place-items: center; }
 .profile-row {
   display: grid;
-  grid-template-columns: minmax(380px, 44%) 1fr;
+  grid-template-columns: minmax(380px, 44%) 1fr auto;
   gap: 14px;
   align-items: center;
   margin-top: 8px;
@@ -1532,6 +1610,54 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
   font-size: 11px;
   white-space: pre-wrap;
 }
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  padding: 14px;
+}
+.settings-grid label,
+.backend-editor label,
+.review-form label {
+  display: grid;
+  gap: 4px;
+  color: #59687d;
+  font-size: 10.5px;
+  font-weight: 720;
+}
+.backend-editor {
+  padding: 0 14px 14px;
+}
+.backend-editor .data-table input,
+.backend-editor .data-table select,
+.backend-editor .data-table textarea {
+  min-width: 0;
+}
+.settings-actions {
+  padding: 0 14px 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  align-items: center;
+}
+.review-list {
+  padding: 12px 14px;
+  display: grid;
+  gap: 9px;
+}
+.review-item {
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  padding: 8px;
+  background: #fbfcfe;
+}
+.review-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 8px;
+}
+.review-form label:last-of-type { grid-column: 1 / -1; }
 .inspector-card {
   background: var(--surface);
   border: 1px solid var(--line);
@@ -1746,7 +1872,7 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
   .top-status { flex-wrap: wrap; }
   .flow { grid-template-columns: 1fr; }
   .flow-arrow { transform: rotate(90deg); min-height: 22px; }
-  .profile-row, .runtime-grid { grid-template-columns: 1fr; }
+  .profile-row, .runtime-grid, .settings-grid, .review-form { grid-template-columns: 1fr; }
   .provider-list { border-right: 0; border-bottom: 1px solid var(--line); }
 }
 @media (max-width: 1500px) {
@@ -1775,6 +1901,89 @@ async function saveProfile() {
   const active = document.querySelector('.segment.active');
   const profile = active ? active.dataset.profileValue : 'balanced';
   await postAction('/api/save-config', {proxy: {routing_profile: profile}});
+}
+function backendPayload() {
+  const backends = {};
+  document.querySelectorAll('[data-backend]').forEach(row => {
+    const name = row.dataset.backend;
+    backends[name] = {
+      model: row.querySelector('[data-field="model"]').value,
+      base_url: row.querySelector('[data-field="base_url"]').value,
+      runtime: {
+        enabled: row.querySelector('[data-field="runtime_enabled"]').value === 'true',
+        kind: row.querySelector('[data-field="runtime_kind"]').value,
+        command: row.querySelector('[data-field="runtime_command"]').value,
+        readiness_url: row.querySelector('[data-field="readiness_url"]').value,
+        idle_timeout_seconds: row.querySelector('[data-field="idle_timeout_seconds"]').value,
+        log_path: row.querySelector('[data-field="log_path"]').value
+      }
+    };
+  });
+  return backends;
+}
+async function saveConfig() {
+  const payload = {
+    proxy: {
+      host: document.getElementById('proxy-host').value,
+      port: document.getElementById('proxy-port').value
+    },
+    observability: {
+      enabled: document.getElementById('observability-enabled').value === 'true',
+      prompt_capture: document.getElementById('prompt-capture').value,
+      log_path: document.getElementById('observability-log').value
+    },
+    backend_policy: {
+      backend_allowlist: document.getElementById('backend-allowlist').value,
+      backend_denylist: document.getElementById('backend-denylist').value
+    },
+    backends: backendPayload()
+  };
+  await postAction('/api/save-config', payload);
+}
+async function applyPreset() {
+  const preset = document.getElementById('preset').value;
+  if (!window.confirm('Replace current config with the ' + preset + ' preset?')) return;
+  await postAction('/api/save-config', {apply_preset: true, preset: preset});
+}
+async function sendFeedback() {
+  await postAction('/api/feedback', {
+    request_id: document.getElementById('feedback-request-id').value,
+    expected_engine: document.getElementById('feedback-engine').value,
+    notes: document.getElementById('feedback-notes').value
+  });
+}
+async function runDownload(route, repoId) {
+  if (!window.confirm('Download ' + repoId + ' for ' + route + '?')) return;
+  await postAction('/api/download/run', {confirm: true, route: route, repo_id: repoId});
+}
+async function runBenchmark() {
+  if (!window.confirm('Run local backend benchmark requests with a fixed synthetic prompt?')) return;
+  await postAction('/api/benchmark/run', {confirm: true});
+}
+async function scanModels() {
+  const data = await postAction('/api/scan');
+  const target = document.getElementById('scan-output');
+  if (target) target.textContent = JSON.stringify(data.recommendation || data, null, 2);
+}
+async function planBenchmark() {
+  const data = await postAction('/api/benchmark/plan');
+  const target = document.getElementById('benchmark-output');
+  if (target) target.textContent = JSON.stringify(data.targets || data, null, 2);
+}
+async function copyText(text) {
+  if (navigator.clipboard) await navigator.clipboard.writeText(text);
+  const target = document.getElementById('last-action');
+  if (target) target.textContent = 'Copied ' + text;
+}
+async function sendReviewFeedback(requestId) {
+  const expected = document.getElementById('expected-' + requestId);
+  const notes = document.getElementById('notes-' + requestId);
+  if (!expected || !expected.value) return;
+  await postAction('/api/feedback', {
+    request_id: requestId,
+    expected_engine: expected.value,
+    notes: notes ? notes.value : ''
+  });
 }
 async function showCatalogDiff() {
   const output = document.getElementById('catalog-output');
@@ -1812,11 +2021,12 @@ document.querySelectorAll('.segment').forEach((button) => {
 });
 document.querySelectorAll('[data-feedback]').forEach((button) => {
   button.addEventListener('click', () => {
-    const route = button.getAttribute('data-feedback');
-    button.textContent = 'Feedback queued';
-    button.disabled = true;
+    const requestId = button.getAttribute('data-feedback');
+    const input = document.getElementById('feedback-request-id');
+    if (input) input.value = requestId;
+    jumpTo('review');
     const target = document.getElementById('last-action');
-    if (target) target.textContent = 'Wrong-route feedback started for ' + route + '.';
+    if (target) target.textContent = 'Ready to label ' + requestId + '.';
   });
 });
 """
@@ -1824,13 +2034,36 @@ document.querySelectorAll('[data-feedback]').forEach((button) => {
 
 def _dashboard_health_checks(state: Mapping[str, Any]) -> str:
     proxy_process = state.get("proxy_process", {})
+    discovery = state.get("discovery", {})
+    commands = discovery.get("commands") if isinstance(discovery, dict) else {}
+    commands = commands if isinstance(commands, dict) else {}
+    backends = state.get("backends") if isinstance(state.get("backends"), list) else []
+    route_ids = {
+        str(row.get("route_id"))
+        for row in state.get("route_map", [])
+        if isinstance(row, dict)
+    }
+    has_llama = bool(commands.get("llama-server")) or any(
+        isinstance(backend, dict)
+        and backend.get("runtime", {}).get("kind") == "llama-server"
+        for backend in backends
+    )
+    has_lmstudio = any(
+        isinstance(backend, dict) and ":1234" in str(backend.get("base_url", ""))
+        for backend in backends
+    )
+    has_ollama = bool(commands.get("ollama")) or any(
+        isinstance(backend, dict) and ":11434" in str(backend.get("base_url", ""))
+        for backend in backends
+    )
     checks = (
         ("Proxy running", str(proxy_process.get("state")) == "running"),
         ("Config valid", bool(state.get("config_valid"))),
-        ("llama.cpp connected", True),
-        ("LM Studio available", True),
-        ("Ollama available", True),
-        ("Human confirm enabled", True),
+        ("Observability configured", bool(state.get("observability", {}).get("enabled"))),
+        ("llama.cpp configured", has_llama),
+        ("LM Studio configured", has_lmstudio),
+        ("Ollama available", has_ollama),
+        ("Human confirm route", "human_confirm" in route_ids),
     )
     return "\n".join(
         f'<span class="check-item"><i class="dot {"green-dot" if ok else "yellow-dot"}"></i>'
@@ -1881,13 +2114,21 @@ def _profile_label(value: str) -> str:
     return normalized.replace("_", " ").title()
 
 
-def _route_flow() -> str:
+def _route_flow(state: Mapping[str, Any]) -> str:
+    receipt = state.get("route_receipt", {})
+    selected = str(receipt.get("selected") or "none yet")
+    backend = str(receipt.get("backend") or "none yet")
+    response = (
+        "Stream / JSON"
+        if receipt.get("has_event")
+        else "waiting for request"
+    )
     nodes = (
         ("Request", "Incoming", "request", ""),
         ("ModelRouter", "Classify & Route", "shield", "router"),
-        ("Selected Engine", "code_agent", "puzzle", "selected"),
-        ("Backend Runtime", "llama.cpp local coder", "server", ""),
-        ("Response", "Stream / JSON", "response", ""),
+        ("Selected Engine", selected, "puzzle", "selected"),
+        ("Backend Runtime", backend, "server", ""),
+        ("Response", response, "response", ""),
     )
     parts: list[str] = ['<div class="flow">']
     for index, (title, subtitle, icon_name, class_name) in enumerate(nodes):
@@ -1903,106 +2144,11 @@ def _route_flow() -> str:
     return "\n".join(parts)
 
 
-def _routing_map_table() -> str:
-    rows = (
-        (
-            "Simple",
-            "fast_local",
-            "llama.cpp / Qwen fast local",
-            "llama.cpp",
-            "Very Low",
-            "$ Low",
-            "Local only",
-            "Limited",
-            "balanced_local",
-            "",
-        ),
-        (
-            "Balanced",
-            "balanced_local",
-            "LM Studio / Ollama general model",
-            "LM Studio / Ollama",
-            "Low",
-            "$ Low",
-            "Local",
-            "Limited",
-            "reasoning_local",
-            "",
-        ),
-        (
-            "Reasoning",
-            "reasoning_local",
-            "llama.cpp reasoning model or hosted fallback",
-            "llama.cpp",
-            "Medium",
-            "$$ Low",
-            "Local or Hosted",
-            "Yes",
-            "LM Studio",
-            "",
-        ),
-        (
-            "Coding",
-            "code_agent",
-            "Codex / Claude Code / local coder",
-            "llama.cpp",
-            "Medium",
-            "$$ Low",
-            "Local only",
-            "Yes",
-            "reasoning_local",
-            "selected-row",
-        ),
-        (
-            "Research",
-            "web_research",
-            "Web/RAG adapter",
-            "RAG Adapter",
-            "Medium",
-            "$ Low",
-            "Mixed",
-            "Yes",
-            "balanced_local",
-            "",
-        ),
-        (
-            "Vision",
-            "multimodal_vision",
-            "Vision/OCR model",
-            "llama.cpp / Vision",
-            "Medium",
-            "$$ Low",
-            "Local only",
-            "Yes",
-            "LM Studio",
-            "",
-        ),
-        (
-            "Image generation",
-            "image_generation",
-            "Local diffusion model",
-            "Stable Diffusion",
-            "High",
-            "$$ Medium",
-            "Local only",
-            "Limited",
-            "human_confirm",
-            "",
-        ),
-        (
-            "Risky actions",
-            "human_confirm",
-            "Confirmation gate",
-            "Safety Gate",
-            "Very Low",
-            "$ Low",
-            "Local only",
-            "N/A",
-            "—",
-            "",
-        ),
-    )
-    body = "\n".join(_routing_map_row(row) for row in rows)
+def _routing_map_table(state: Mapping[str, Any]) -> str:
+    rows = state.get("route_map") if isinstance(state.get("route_map"), list) else []
+    body = "\n".join(_routing_map_row(row) for row in rows if isinstance(row, dict))
+    if not body:
+        body = '<tr><td colspan="9" class="muted">No valid routing config loaded.</td></tr>'
     return f"""<table class="data-table">
       <colgroup>
         <col style="width: 10%">
@@ -2032,27 +2178,33 @@ def _routing_map_table() -> str:
     </table>"""
 
 
-def _routing_map_row(row: tuple[str, ...]) -> str:
-    (
-        route_class,
-        route_id,
-        target,
-        provider,
-        latency,
-        cost,
-        privacy,
-        tools,
-        fallback,
-        class_name,
-    ) = row
-    latency_class = "red" if latency == "High" else "yellow" if latency == "Medium" else "green"
-    privacy_class = "yellow" if privacy in {"Mixed", "Local or Hosted"} else "green"
+def _routing_map_row(row: Mapping[str, Any]) -> str:
+    route_class = str(row.get("route_class") or "")
+    route_id = str(row.get("route_id") or "")
+    target = str(row.get("target") or "")
+    provider = str(row.get("provider") or "")
+    latency = str(row.get("latency") or "")
+    cost = str(row.get("cost") or "")
+    privacy = str(row.get("privacy") or "")
+    tools = str(row.get("tools") or "")
+    fallback = str(row.get("fallback") or "—")
+    policy_status = str(row.get("policy_status") or "allowed")
+    class_name = "selected-row" if row.get("selected") else ""
+    latency_class = (
+        "red"
+        if latency in {"High", "Hosted"}
+        else "yellow"
+        if latency in {"Medium", "On demand", "Unmeasured"}
+        else "green"
+    )
+    privacy_class = "yellow" if privacy in {"Mixed", "Local or Hosted", "Hosted"} else "green"
     tools_class = "blue" if tools == "Yes" else "gray"
-    cost_class = "yellow" if "Medium" in cost else "green"
+    cost_class = "yellow" if "Medium" in cost or "Hosted" in cost else "green"
+    target_text = target if policy_status == "allowed" else f"{target} ({policy_status})"
     return f"""<tr class="{class_name}">
       <td><span class="route-cell"><span class="row-icon">{_icon(_route_icon_name(route_class))}</span><strong>{escape(route_class)}</strong></span></td>
       <td><span class="code {'linkish' if route_id == 'code_agent' else ''}">{escape(route_id)}</span></td>
-      <td>{escape(target)}</td>
+      <td>{escape(target_text)}</td>
       <td><span class="provider-cell">{_provider_glyph(provider)}<span>{escape(provider)}</span></span></td>
       <td><span class="pill {latency_class}">{escape(latency)}</span></td>
       <td><span class="pill {cost_class}">{escape(cost)}</span></td>
@@ -2081,6 +2233,10 @@ def _provider_glyph(provider: str) -> str:
         icon_name = "code"
     elif "LM Studio" in provider:
         icon_name = "cube"
+    elif "Ollama" in provider:
+        icon_name = "runtime"
+    elif "MLX" in provider:
+        icon_name = "chip"
     elif "RAG" in provider:
         icon_name = "database"
     elif "Diffusion" in provider:
@@ -2091,51 +2247,72 @@ def _provider_glyph(provider: str) -> str:
 
 
 def _providers_runtime_section(state: Mapping[str, Any]) -> str:
-    providers = (
-        ("llama.cpp", "Connected", "llama-server on :8090", "active", "green-dot"),
-        ("LM Studio", "Available", "localhost:1234", "", "green-dot"),
-        ("Ollama", "Available", "localhost:11434", "", "green-dot"),
-        ("MLX-LM", "Configured", "Apple Silicon", "", "yellow-dot"),
-        ("LocalAI", "Disabled", "—", "", "yellow-dot"),
-        ("OpenAI", "API key set", "api.openai.com", "", "green-dot"),
-        ("Anthropic", "Disabled", "—", "", "yellow-dot"),
-        ("Codex", "Command found", "codex", "", "green-dot"),
-        ("Claude Code", "Not installed", "—", "", "red-dot"),
-    )
+    provider_state = state.get("provider_runtime", {})
+    providers = provider_state.get("providers") if isinstance(provider_state, dict) else []
+    detail = provider_state.get("detail") if isinstance(provider_state, dict) else {}
+    detail = detail if isinstance(detail, dict) else {}
     provider_rows = "\n".join(
-        _provider_row(name, status, detail, class_name, dot)
-        for name, status, detail, class_name, dot in providers
+        _provider_row(
+            str(item.get("name") or item.get("backend") or ""),
+            str(item.get("status") or ""),
+            str(item.get("detail") or ""),
+            "active" if item.get("active") else "",
+            str(item.get("dot") or "yellow-dot"),
+        )
+        for item in providers
+        if isinstance(item, dict)
     )
+    if not provider_rows:
+        provider_rows = '<div class="muted">No backends configured.</div>'
+    builder = detail.get("builder") if isinstance(detail.get("builder"), dict) else {}
+    fallback_chain = detail.get("fallback_chain") if isinstance(detail.get("fallback_chain"), list) else []
+    fallback_text = ", ".join(str(item) for item in fallback_chain) if fallback_chain else "none"
     return f"""<div class="runtime-grid" id="providers">
       <div class="provider-list">{provider_rows}</div>
       <div class="runtime-detail" id="settings">
         <div class="detail-field detail-wide">
           <label>Runtime command</label>
-          <span class="code">llama-server -m /models/qwen2.5-coder-7b-instruct.gguf -c 8192 -ngl 35 --host 0.0.0.0 --port 8090</span>
+          <span class="code">{escape(str(detail.get("runtime_command") or "No backend selected."))}</span>
         </div>
         <div class="detail-field">
-          <label>Model path</label>
-          <span>/Users/Shared/models/qwen2.5-coder-7b-instruct.gguf</span>
+          <label>Backend</label>
+          <span>{escape(str(detail.get("backend") or "none"))}</span>
         </div>
         <div class="detail-field">
-          <label>Context size</label>
-          <span>8192</span>
+          <label>Model</label>
+          <span>{escape(str(detail.get("model") or "none"))}</span>
         </div>
         <div class="detail-field">
-          <label>GPU layers</label>
-          <span>35 (Metal)</span>
+          <label>Runtime kind</label>
+          <span>{escape(str(detail.get("runtime_kind") or "unmanaged"))}</span>
         </div>
         <div class="detail-field">
           <label>Port</label>
-          <span>8090</span>
+          <span>{escape(str(builder.get("port") or _port_from_url(str(detail.get("base_url") or "")) or "n/a"))}</span>
         </div>
         <div class="detail-field">
           <label>Readiness URL</label>
-          <span><a href="http://127.0.0.1:8090/health">http://127.0.0.1:8090/health</a></span>
+          <span>{_runtime_link(detail.get("readiness_url"))}</span>
         </div>
         <div class="detail-field">
           <label>Idle timeout</label>
-          <span>15 minutes <span class="linkish">(idle unload enabled)</span></span>
+          <span>{escape(str(detail.get("idle_timeout") or "not managed"))}</span>
+        </div>
+        <div class="detail-field">
+          <label>Context size</label>
+          <span>{escape(str(builder.get("context_size") or "not set"))}</span>
+        </div>
+        <div class="detail-field">
+          <label>GPU layers</label>
+          <span>{escape(str(builder.get("gpu_layers") or "not set"))}</span>
+        </div>
+        <div class="detail-field">
+          <label>Fallback chain</label>
+          <span>{escape(fallback_text)}</span>
+        </div>
+        <div class="detail-field">
+          <label>Status</label>
+          <span>{escape(str(detail.get("runtime_status") or "unknown"))}; {escape(str(detail.get("policy_status") or "allowed"))}</span>
         </div>
         {_policy_summary_fields(state)}
         <div class="runtime-actions">
@@ -2247,6 +2424,34 @@ def _provider_row(
     </div>"""
 
 
+def _runtime_panel_summary(state: Mapping[str, Any]) -> str:
+    provider_state = state.get("provider_runtime", {})
+    detail = provider_state.get("detail") if isinstance(provider_state, dict) else {}
+    if not isinstance(detail, dict) or not detail:
+        return "No backend selected."
+    backend = detail.get("backend") or "backend"
+    status = detail.get("runtime_status") or "configured"
+    return f"{backend} is selected from config/telemetry; runtime is {status}."
+
+
+def _runtime_link(value: Any) -> str:
+    url = str(value or "").strip()
+    if not url:
+        return "not configured"
+    return f'<a href="{escape(url)}">{escape(url)}</a>'
+
+
+def _risk_dot(risk: str) -> str:
+    lowered = risk.lower()
+    if lowered == "high":
+        return "red-dot"
+    if lowered == "medium":
+        return "yellow-dot"
+    if lowered == "low":
+        return "green-dot"
+    return "yellow-dot"
+
+
 def _provider_icon_name(name: str) -> str:
     if name == "llama.cpp":
         return "code"
@@ -2256,57 +2461,67 @@ def _provider_icon_name(name: str) -> str:
         return "runtime"
     if name == "MLX-LM":
         return "chip"
-    if name in {"OpenAI", "Anthropic"}:
+    if name in {"OpenAI", "Anthropic"} or "OpenAI-compatible" in name:
         return "providers"
     if name in {"Codex", "Claude Code"}:
         return "terminal"
     return "server"
 
 
-def _route_receipt_panel() -> str:
+def _route_receipt_panel(state: Mapping[str, Any]) -> str:
+    receipt = state.get("route_receipt", {})
+    receipt = receipt if isinstance(receipt, dict) else {}
+    reason_codes = receipt.get("reason_codes") if isinstance(receipt.get("reason_codes"), list) else []
+    rationale = "\n".join(
+        f'<span class="pill blue">{escape(str(code))}</span>' for code in reason_codes[:8]
+    )
+    if not rationale:
+        rationale = '<span class="pill gray">no route receipt yet</span>'
+    request_id = str(receipt.get("request_id") or "")
+    copy_button = (
+        f'<button class="icon-only" type="button" aria-label="Copy request id" '
+        f'onclick="copyText({json.dumps(request_id)})">{_icon("copy")}</button>'
+        if request_id
+        else f'<button class="icon-only" type="button" aria-label="No request id">{_icon("copy")}</button>'
+    )
     return f"""<section class="inspector-card" aria-labelledby="receipt-title">
       <header>
         <h2 id="receipt-title">Route Receipt</h2>
-        <button class="icon-only" type="button" aria-label="Copy receipt">{_icon("copy")}</button>
+        {copy_button}
       </header>
       <div class="receipt-body">
-        <p class="receipt-summary">Selected code_agent under the balanced profile; no confirmation required; fallback available: reasoning_local.</p>
+        <p class="receipt-summary">{escape(str(receipt.get("summary") or ""))}</p>
         <dl class="receipt-grid">
-          <dt>Selected:</dt><dd><strong class="linkish">code_agent</strong></dd>
-          <dt>Backend:</dt><dd>llama.cpp local coder</dd>
-          <dt>Model:</dt><dd>qwen2.5-coder-7b-instruct.gguf</dd>
-          <dt>Reason:</dt><dd>coding and repository intent detected</dd>
-          <dt>Risk:</dt><dd><span class="status-line"><i class="dot yellow-dot"></i> medium</span></dd>
-          <dt>Tools:</dt><dd>required</dd>
-          <dt>Fallback:</dt><dd>reasoning_local</dd>
-          <dt>Rejected:</dt><dd>fast_local, balanced_local</dd>
-          <dt>Confirmation:</dt><dd>not required</dd>
+          <dt>Request ID:</dt><dd><span class="code">{escape(request_id or "none yet")}</span></dd>
+          <dt>Selected:</dt><dd><strong class="linkish">{escape(str(receipt.get("selected") or ""))}</strong></dd>
+          <dt>Backend:</dt><dd>{escape(str(receipt.get("backend") or ""))}</dd>
+          <dt>Model:</dt><dd>{escape(str(receipt.get("model") or ""))}</dd>
+          <dt>Reason:</dt><dd>{escape(str(receipt.get("reason") or ""))}</dd>
+          <dt>Risk:</dt><dd><span class="status-line"><i class="dot {_risk_dot(str(receipt.get("risk") or ""))}"></i> {escape(str(receipt.get("risk") or ""))}</span></dd>
+          <dt>Tools:</dt><dd>{escape(str(receipt.get("tools") or ""))}</dd>
+          <dt>Fallback:</dt><dd>{escape(str(receipt.get("fallback") or ""))}</dd>
+          <dt>Confirmation:</dt><dd>{escape(str(receipt.get("confirmation") or ""))}</dd>
         </dl>
         <div class="receipt-divider"></div>
         <dl class="receipt-grid">
-          <dt>Routing latency:</dt><dd><strong class="linkish">2.1 us</strong></dd>
-          <dt>Upstream latency:</dt><dd>840 ms</dd>
-          <dt>Privacy:</dt><dd><strong class="linkish">local-only</strong></dd>
+          <dt>Routing latency:</dt><dd><strong class="linkish">{escape(str(receipt.get("route_latency") or "n/a"))}</strong></dd>
+          <dt>Upstream latency:</dt><dd>{escape(str(receipt.get("upstream_latency") or "n/a"))}</dd>
+          <dt>Privacy:</dt><dd><strong class="linkish">{escape(str(receipt.get("privacy") or ""))}</strong></dd>
         </dl>
         <div class="receipt-divider"></div>
         <h3>Rationale</h3>
         <div class="rationale">
-          <span class="pill blue">route.coding</span>
-          <span class="pill blue">requirement.tools</span>
-          <span class="pill blue">fallback.configured</span>
-          <span class="pill blue">repo intent</span>
-          <span class="pill blue">code context</span>
-          <span class="pill blue">tool-capable</span>
+          {rationale}
         </div>
         <div class="receipt-divider"></div>
         <dl class="receipt-grid">
-          <dt>Policy:</dt><dd>Allowed providers: local, human.</dd>
-          <dt>Fallback:</dt><dd>No fallback was used; reasoning_local remains available.</dd>
-          <dt>Safety:</dt><dd>No human confirmation is required by the current safety policy.</dd>
-          <dt>Wrong route:</dt><dd>Label the request id with model-router feedback.</dd>
+          <dt>Policy:</dt><dd>{escape(str(receipt.get("policy") or ""))}</dd>
+          <dt>Fallback:</dt><dd>{escape(str(receipt.get("fallback_explanation") or ""))}</dd>
+          <dt>Safety:</dt><dd>{escape(str(receipt.get("safety") or ""))}</dd>
+          <dt>Wrong route:</dt><dd>{escape(str(receipt.get("wrong_route") or ""))}</dd>
         </dl>
-        <button class="receipt-button" type="button">
-          <span>{_icon("braces")} View full receipt (JSON)</span>
+        <button class="receipt-button" type="button" data-feedback="{escape(request_id)}">
+          <span>{_icon("comment")} Label wrong route</span>
           {_icon("chevron-right")}
         </button>
       </div>
@@ -2337,6 +2552,223 @@ def _safety_panel() -> str:
       </div>
       <div class="protected-note">{_icon("lock")} Protected defaults: safer by design.</div>
     </section>"""
+
+
+def _settings_follow_through_panel(state: Mapping[str, Any]) -> str:
+    proxy = state.get("proxy", {})
+    observability = state.get("observability", {})
+    backend_policy = state.get("backend_policy", {})
+    model_options = state.get("model_options") if isinstance(state.get("model_options"), list) else []
+    datalist = "\n".join(
+        f'<option value="{escape(str(item.get("value") or ""))}">{escape(str(item.get("label") or ""))}</option>'
+        for item in model_options
+        if isinstance(item, dict)
+    )
+    backend_rows = "\n".join(
+        _dashboard_backend_row(backend)
+        for backend in state.get("backends", [])
+        if isinstance(backend, dict)
+    )
+    if not backend_rows:
+        backend_rows = '<tr><td colspan="6" class="muted">No backend config loaded.</td></tr>'
+    return f"""<section class="panel" id="settings" aria-labelledby="settings-title">
+      <div class="panel-title">
+        <h2 id="settings-title">Settings UI Follow-Through</h2>
+        <span class="muted">All writes are explicit: Save, Apply, Restart.</span>
+      </div>
+      <div class="settings-grid">
+        <label>Preset
+          <select id="preset">{_options(state.get("presets", []), selected="lmstudio")}</select>
+        </label>
+        <label>Proxy host
+          <input id="proxy-host" value="{escape(str(proxy.get("host") or "127.0.0.1"))}">
+        </label>
+        <label>Proxy port
+          <input id="proxy-port" value="{escape(str(proxy.get("port") or DEFAULT_PROXY_PORT))}">
+        </label>
+        <label>Observability
+          <select id="observability-enabled">{_bool_options(observability.get("enabled"))}</select>
+        </label>
+        <label>Prompt capture
+          <select id="prompt-capture">{_options(state.get("prompt_capture_modes", []), selected=observability.get("prompt_capture"))}</select>
+        </label>
+        <label>Telemetry log
+          <input id="observability-log" value="{escape(str(observability.get("log_path") or ""))}">
+        </label>
+        <label>Backend allowlist
+          <input id="backend-allowlist" value="{escape(", ".join(backend_policy.get("backend_allowlist") or []))}" placeholder="any">
+        </label>
+        <label>Backend denylist
+          <input id="backend-denylist" value="{escape(", ".join(backend_policy.get("backend_denylist") or []))}" placeholder="none">
+        </label>
+        <label>Scanned / recommended models
+          <input id="model-options" list="model-options-list" placeholder="Select a model below">
+          <datalist id="model-options-list">{datalist}</datalist>
+        </label>
+      </div>
+      <div class="backend-editor">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Backend</th>
+              <th>Model</th>
+              <th>Base URL</th>
+              <th>Runtime</th>
+              <th>Readiness / idle</th>
+              <th>Log</th>
+            </tr>
+          </thead>
+          <tbody>{backend_rows}</tbody>
+        </table>
+      </div>
+      <div class="settings-actions">
+        <button type="button" onclick="applyPreset()">Apply preset template</button>
+        <button class="button-blue" type="button" onclick="saveConfig()">Save config</button>
+        <button type="button" onclick="saveConfig().then(() => postAction('/api/proxy/restart'))">Apply and restart proxy</button>
+        <button type="button" onclick="scanModels()">Scan models</button>
+        <button type="button" onclick="postAction('/api/doctor')">Run doctor</button>
+        <span id="last-action" class="muted" aria-live="polite"></span>
+      </div>
+      <pre id="scan-output" class="catalog-output">No scan action yet.</pre>
+    </section>"""
+
+
+def _dashboard_backend_row(backend: Mapping[str, Any]) -> str:
+    runtime = backend.get("runtime") if isinstance(backend.get("runtime"), dict) else {}
+    command = " ".join(shlex.quote(part) for part in runtime.get("command", []))
+    name = escape(str(backend.get("name") or ""))
+    model = escape(str(backend.get("model") or ""))
+    base_url = escape(str(backend.get("base_url") or ""))
+    readiness_url = escape(str(runtime.get("readiness_url") or ""))
+    idle_timeout = escape(str(runtime.get("idle_timeout_seconds") or ""))
+    log_path = escape(str(runtime.get("log_path") or ""))
+    return f"""<tr data-backend="{name}">
+      <td><strong>{name}</strong><br><span class="muted">{escape(_route_for_backend(str(backend.get("name") or "")))}</span></td>
+      <td><input data-field="model" list="model-options-list" value="{model}"></td>
+      <td><input data-field="base_url" value="{base_url}"></td>
+      <td>
+        <select data-field="runtime_enabled">{_bool_options(runtime.get("enabled"))}</select>
+        <select data-field="runtime_kind">{_options(["generic", "llama-server", "mlx-lm"], selected=runtime.get("kind"))}</select>
+        <textarea data-field="runtime_command">{escape(command)}</textarea>
+      </td>
+      <td>
+        <input data-field="readiness_url" value="{readiness_url}" placeholder="readiness URL">
+        <input data-field="idle_timeout_seconds" value="{idle_timeout}" placeholder="idle seconds">
+      </td>
+      <td><input data-field="log_path" value="{log_path}" placeholder="log path"></td>
+    </tr>"""
+
+
+def _benchmark_status_panel(state: Mapping[str, Any]) -> str:
+    benchmarks = state.get("benchmarks", {})
+    workflow = state.get("workflow_benchmarks", {})
+    best = _benchmark_best_summary(benchmarks if isinstance(benchmarks, dict) else {})
+    return f"""<section class="inspector-card" aria-labelledby="benchmarks-title">
+      <header>
+        <h2 id="benchmarks-title">{_icon("pulse")} Benchmarks</h2>
+        <span class="muted">explicit only</span>
+      </header>
+      <dl class="receipt-grid">
+        <dt>Local backend:</dt><dd>{escape(str(benchmarks.get("completed", 0) if isinstance(benchmarks, dict) else 0))} completed, {escape(str(benchmarks.get("failed", 0) if isinstance(benchmarks, dict) else 0))} failed</dd>
+        <dt>Best measured:</dt><dd class="code">{escape(best)}</dd>
+        <dt>Workflow:</dt><dd>{escape(str(workflow.get("status") if isinstance(workflow, dict) else "unknown"))}</dd>
+        <dt>Command:</dt><dd class="code">{escape(str(workflow.get("command") if isinstance(workflow, dict) else "model-router workflow-benchmark --json --fail-on-mismatch"))}</dd>
+      </dl>
+      <div class="receipt-divider"></div>
+      <div class="runtime-actions">
+        <button type="button" onclick="planBenchmark()">Plan local benchmark</button>
+        <button class="danger-text" type="button" onclick="runBenchmark()">Run local benchmark</button>
+      </div>
+      <pre id="benchmark-output" class="catalog-output">No benchmark action yet.</pre>
+    </section>"""
+
+
+def _review_panel(state: Mapping[str, Any]) -> str:
+    review = state.get("review", {})
+    review = review if isinstance(review, dict) else {}
+    items = review.get("items") if isinstance(review.get("items"), list) else []
+    latest_request = str(state.get("route_receipt", {}).get("request_id") or "")
+    if items:
+        rows = "\n".join(
+            _review_item(item, state)
+            for item in items
+            if isinstance(item, dict)
+        )
+    else:
+        rows = (
+            '<div class="review-item muted">No unlabeled routing events in the review queue.</div>'
+        )
+    return f"""<section class="inspector-card" id="review" aria-labelledby="review-title">
+      <header>
+        <h2 id="review-title">{_icon("comment")} Telemetry Review</h2>
+        <span class="muted">{escape(str(review.get("reviewable", 0)))} open</span>
+      </header>
+      <div class="review-list">
+        <p class="muted">{escape(str(review.get("privacy") or "Prompts and secrets are hidden by default."))}</p>
+        {rows}
+        <div class="review-item">
+          <strong>Manual label</strong>
+          <div class="review-form">
+            <label>Request ID
+              <input id="feedback-request-id" value="{escape(latest_request)}" placeholder="request id">
+            </label>
+            <label>Expected route
+              <select id="feedback-engine">{_review_engine_options(state)}</select>
+            </label>
+            <label>Notes
+              <input id="feedback-notes" placeholder="optional, privacy-safe note">
+            </label>
+          </div>
+          <div class="settings-actions">
+            <button class="button-blue" type="button" onclick="sendFeedback()">Submit feedback</button>
+          </div>
+        </div>
+      </div>
+    </section>"""
+
+
+def _review_item(item: Mapping[str, Any], state: Mapping[str, Any]) -> str:
+    request_id = str(item.get("request_id") or "")
+    reason_codes = item.get("reason_codes") if isinstance(item.get("reason_codes"), list) else []
+    reason_html = " ".join(
+        f'<span class="pill blue">{escape(str(code))}</span>' for code in reason_codes[:4]
+    )
+    if not reason_html:
+        reason_html = '<span class="pill gray">no reason codes</span>'
+    return f"""<div class="review-item">
+      <strong class="code">{escape(request_id)}</strong>
+      <button class="text-button" type="button" onclick="copyText({json.dumps(request_id)})">Copy id</button>
+      <p class="muted">{escape(str(item.get("receipt_summary") or "No receipt summary recorded."))}</p>
+      <dl class="receipt-grid">
+        <dt>Selected:</dt><dd>{escape(str(item.get("selected_engine") or ""))}</dd>
+        <dt>Backend:</dt><dd>{escape(str(item.get("backend") or "unassigned"))}</dd>
+        <dt>Status:</dt><dd>{escape(str(item.get("status") or "unknown"))}</dd>
+        <dt>Replayable:</dt><dd>{escape("yes" if item.get("replayable") else "no; private/no full prompt")}</dd>
+      </dl>
+      <div class="rationale">{reason_html}</div>
+      <div class="review-form">
+        <label>Expected route
+          <select id="expected-{escape(request_id)}">{_review_engine_options(state)}</select>
+        </label>
+        <label>Notes
+          <input id="notes-{escape(request_id)}" placeholder="optional, privacy-safe note">
+        </label>
+      </div>
+      <div class="settings-actions">
+        <button class="button-blue" type="button" onclick="sendReviewFeedback({json.dumps(request_id)})">Label route</button>
+      </div>
+    </div>"""
+
+
+def _review_engine_options(state: Mapping[str, Any]) -> str:
+    route_ids = [
+        str(row.get("route_id"))
+        for row in state.get("route_map", [])
+        if isinstance(row, dict) and row.get("route_id")
+    ]
+    if "human_confirm" not in route_ids:
+        route_ids.append("human_confirm")
+    return _options(tuple(dict.fromkeys(route_ids)), selected="")
 
 
 def _catalog_panel(state: Mapping[str, Any]) -> str:
@@ -2376,25 +2808,23 @@ def _catalog_panel(state: Mapping[str, Any]) -> str:
     </section>"""
 
 
-def _recent_requests_table() -> str:
-    rows = (
-        ("12:42", "code_agent", "llama.cpp", "Forwarded", "812 ms", "green-dot"),
-        ("12:44", "human_confirm", "blocked", "Confirm", "1 ms", "yellow-dot"),
-        ("12:47", "web_research", "rag-local", "Forwarded", "1.9 s", "green-dot"),
-        ("12:51", "reasoning", "LM Studio", "Forwarded", "2.3 s", "green-dot"),
-    )
+def _recent_requests_table(state: Mapping[str, Any]) -> str:
+    rows = state.get("recent_events") if isinstance(state.get("recent_events"), list) else []
     body = "\n".join(
         f"""<tr>
-          <td>{escape(time)}</td>
-          <td><span class="code">{escape(route)}</span></td>
-          <td>{escape(backend)}</td>
-          <td><span class="status-line"><i class="dot {dot}"></i>{escape(status)}</span></td>
-          <td>{escape(latency)}</td>
-          <td><button class="text-button" type="button" data-feedback="{escape(route)}">Wrong route? {_icon("comment")}</button></td>
-          <td>{_icon("chevron-right")}</td>
+          <td>{escape(str(row.get("time") or "—"))}</td>
+          <td><span class="code">{escape(str(row.get("selected_engine") or ""))}</span></td>
+          <td>{escape(str(row.get("backend") or ""))}</td>
+          <td><span class="status-line"><i class="dot {escape(str(row.get("dot") or "yellow-dot"))}"></i>{escape(str(row.get("status") or ""))}</span></td>
+          <td>{escape(str(row.get("total_latency") or row.get("route_latency") or "n/a"))}</td>
+          <td><button class="text-button" type="button" onclick="copyText({json.dumps(str(row.get("request_id") or ""))})">Copy id</button></td>
+          <td><button class="text-button" type="button" data-feedback="{escape(str(row.get("request_id") or ""))}">Wrong route? {_icon("comment")}</button></td>
         </tr>"""
-        for time, route, backend, status, latency, dot in rows
+        for row in rows[:8]
+        if isinstance(row, dict)
     )
+    if not body:
+        body = '<tr><td colspan="7" class="muted">No routing telemetry yet. Start the proxy and send a request.</td></tr>'
     return f"""<table class="data-table">
       <thead>
         <tr>
@@ -2403,8 +2833,8 @@ def _recent_requests_table() -> str:
           <th>Backend</th>
           <th>Status</th>
           <th>Latency</th>
+          <th>Request ID</th>
           <th>Details</th>
-          <th></th>
         </tr>
       </thead>
       <tbody>{body}</tbody>
@@ -2412,11 +2842,27 @@ def _recent_requests_table() -> str:
 
 
 def _mini_popup(
+    state: Mapping[str, Any],
     endpoint: str,
     proxy_state: str,
     telemetry_state: str,
     profile_label: str,
 ) -> str:
+    receipt = state.get("route_receipt", {})
+    receipt = receipt if isinstance(receipt, dict) else {}
+    recent = state.get("recent_events") if isinstance(state.get("recent_events"), list) else []
+    proxy_dot = "green-dot" if proxy_state.lower() == "running" else "yellow-dot"
+    telemetry_dot = "green-dot" if telemetry_state == "On" else "yellow-dot"
+    selected = str(receipt.get("selected") or "none")
+    backend = str(receipt.get("backend") or "none")
+    privacy = str(receipt.get("privacy") or "configured")
+    mini_recent = "\n".join(
+        f"""<div class="mini-recent-row"><span>{escape(str(row.get("time") or "—"))}</span><span>{escape(str(row.get("selected_engine") or ""))}</span><span>{escape(str(row.get("backend") or ""))}</span><span><i class="dot {escape(str(row.get("dot") or "yellow-dot"))}"></i>{escape(str(row.get("total_latency") or "n/a"))}</span></div>"""
+        for row in recent[:2]
+        if isinstance(row, dict)
+    )
+    if not mini_recent:
+        mini_recent = '<div class="mini-recent-row"><span>—</span><span>No telemetry yet</span><span>—</span><span>—</span></div>'
     return f"""<aside class="mini-popup" aria-label="ModelRouter status controller">
       <div class="mini-header">
         <div class="mini-title">
@@ -2430,28 +2876,27 @@ def _mini_popup(
       <div class="mini-body">
         <div class="mini-chips">
           <span class="mini-chip">{endpoint.replace("http://", "")}</span>
-          <span class="mini-chip"><i class="dot green-dot"></i>{escape(proxy_state.title())}</span>
+          <span class="mini-chip"><i class="dot {proxy_dot}"></i>{escape(proxy_state)}</span>
           <span class="mini-chip accent" id="mini-mode">{profile_label}</span>
-          <span class="mini-chip"><i class="dot green-dot"></i>{escape(telemetry_state)}</span>
+          <span class="mini-chip"><i class="dot {telemetry_dot}"></i>{escape(telemetry_state)}</span>
         </div>
         <div class="mini-flow">
           <span class="mini-box">Request</span><span>→</span>
-          <span class="mini-box selected">code_agent</span><span>→</span>
-          <span class="mini-box">llama.cpp</span><span>→</span>
+          <span class="mini-box selected">{escape(selected)}</span><span>→</span>
+          <span class="mini-box">{escape(backend)}</span><span>→</span>
           <span class="mini-box">Response</span>
         </div>
         <div class="mini-summary">
-          <div><span>Selected</span><strong class="linkish">code_agent</strong></div>
-          <div><span>Routing latency</span><strong>2.1 us</strong></div>
-          <div><span>Backend</span><strong>llama.cpp</strong></div>
-          <div><span>Upstream latency</span><strong>840 ms</strong></div>
-          <div><span>Privacy</span><strong class="linkish">local-only</strong></div>
-          <div><span>Safety</span><strong>no confirmation required</strong></div>
+          <div><span>Selected</span><strong class="linkish">{escape(selected)}</strong></div>
+          <div><span>Routing latency</span><strong>{escape(str(receipt.get("route_latency") or "n/a"))}</strong></div>
+          <div><span>Backend</span><strong>{escape(backend)}</strong></div>
+          <div><span>Upstream latency</span><strong>{escape(str(receipt.get("upstream_latency") or "n/a"))}</strong></div>
+          <div><span>Privacy</span><strong class="linkish">{escape(privacy)}</strong></div>
+          <div><span>Safety</span><strong>{escape(str(receipt.get("confirmation") or "n/a"))}</strong></div>
         </div>
         <div class="mini-recent">
           <h3>Recent</h3>
-          <div class="mini-recent-row"><span>12:42</span><span>code_agent</span><span>llama.cpp</span><span><i class="dot green-dot"></i>817 ms</span></div>
-          <div class="mini-recent-row"><span>12:44</span><span>human_confirm</span><span>blocked</span><span><i class="dot yellow-dot"></i>1 ms</span></div>
+          {mini_recent}
         </div>
         <div class="mini-actions">
           <button type="button" onclick="jumpTo('dashboard')">{_icon("open")}<span>Open Dashboard</span></button>
@@ -2462,9 +2907,9 @@ def _mini_popup(
         </div>
       </div>
       <div class="mini-bottom">
-        <span class="mini-chip"><i class="dot green-dot"></i>Proxy running</span>
-        <span class="mini-chip"><i class="dot green-dot"></i>llama.cpp connected</span>
-        <span class="mini-chip"><i class="dot green-dot"></i>Human confirm on</span>
+        <span class="mini-chip"><i class="dot {proxy_dot}"></i>Proxy {escape(proxy_state)}</span>
+        <span class="mini-chip"><i class="dot {telemetry_dot}"></i>Telemetry {escape(telemetry_state)}</span>
+        <span class="mini-chip"><i class="dot green-dot"></i>No chat surface</span>
       </div>
     </aside>"""
 
@@ -2648,6 +3093,338 @@ def _telemetry_state(
     }
 
 
+def _recent_routing_events(events_path: Path, *, limit: int = 10) -> list[dict[str, Any]]:
+    try:
+        rows = read_jsonl(events_path)
+    except Exception:
+        rows = []
+    events = [row for row in rows if row.get("event_type") == "routing_event"]
+    recent: list[dict[str, Any]] = []
+    for row in reversed(events):
+        request_id = _safe_event_string(row.get("request_id"))
+        selected_engine = _safe_event_string(row.get("selected_engine")) or "unknown"
+        status = _safe_event_string(row.get("status")) or "unknown"
+        backend = _safe_event_string(row.get("backend")) or "unassigned"
+        backend_model = _safe_event_string(row.get("backend_model"))
+        recent.append(
+            {
+                "timestamp": _safe_event_string(row.get("timestamp")),
+                "time": _short_event_time(row.get("timestamp")),
+                "request_id": request_id,
+                "route_api": _safe_event_string(row.get("route_api")),
+                "selected_engine": selected_engine,
+                "routing_profile": _safe_event_string(row.get("routing_profile")),
+                "status": status,
+                "backend": backend,
+                "backend_model": backend_model,
+                "status_code": row.get("status_code")
+                if isinstance(row.get("status_code"), int)
+                else None,
+                "route_latency": _format_latency(row.get("route_latency_ms")),
+                "upstream_latency": _format_latency(row.get("upstream_latency_ms")),
+                "total_latency": _format_latency(row.get("total_latency_ms")),
+                "fallback_used": row.get("fallback_used") is True,
+                "risk": _risk_label(row.get("risk_score")),
+                "tools": _tools_label(row.get("requirements"), selected_engine),
+                "confirmation": _confirmation_label(row, selected_engine),
+                "privacy": _safe_event_string(row.get("privacy_explanation"))
+                or "configured policy",
+                "receipt_summary": _safe_event_string(row.get("receipt_summary")),
+                "reason_codes": _safe_string_list(row.get("reason_codes"))[:8],
+                "policy_explanation": _safe_event_string(row.get("policy_explanation")),
+                "fallback_explanation": _safe_event_string(
+                    row.get("fallback_explanation")
+                ),
+                "safety_explanation": _safe_event_string(row.get("safety_explanation")),
+                "wrong_route_next_action": _safe_event_string(
+                    row.get("wrong_route_next_action")
+                ),
+                "dot": _status_dot(status),
+            }
+        )
+        if len(recent) >= limit:
+            break
+    return recent
+
+
+def _route_map_state(
+    config: RoutingProxyConfig | None,
+    latest_event: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    if config is None:
+        return []
+    selected_engine = str(latest_event.get("selected_engine") or "")
+    engines = [
+        engine
+        for engine in DASHBOARD_ENGINE_ORDER
+        if engine in config.engine_backends or engine == "human_confirm"
+    ]
+    engines.extend(
+        sorted(
+            engine
+            for engine in config.engine_backends
+            if engine not in engines
+        )
+    )
+    rows: list[dict[str, Any]] = []
+    for engine in engines:
+        backend_name = config.engine_backends.get(engine)
+        backend = config.backends.get(backend_name) if backend_name else None
+        fallback_name = (
+            config.fallback_backends.get(backend.name, ("",))[0]
+            if backend and config.fallback_backends.get(backend.name)
+            else ""
+        )
+        fallback_engine = _engine_for_backend(config, fallback_name) or fallback_name
+        rejection = config.backend_policy_rejection_reason(backend.name) if backend else None
+        rows.append(
+            {
+                "route_class": ROUTE_CLASS_BY_ENGINE.get(
+                    engine,
+                    engine.replace("_", " ").title(),
+                ),
+                "route_id": engine,
+                "target": _route_target(engine, backend),
+                "provider": _provider_runtime_label(backend),
+                "latency": _configured_latency_label(backend),
+                "cost": _configured_cost_label(backend),
+                "privacy": _configured_privacy_label(backend),
+                "tools": TOOL_HINT_BY_ENGINE.get(engine, "Limited"),
+                "fallback": fallback_engine or "—",
+                "selected": bool(selected_engine and engine == selected_engine),
+                "policy_status": rejection or "allowed",
+            }
+        )
+    return rows
+
+
+def _provider_runtime_state(
+    config: RoutingProxyConfig | None,
+    latest_event: Mapping[str, Any],
+) -> dict[str, Any]:
+    if config is None:
+        return {"providers": [], "detail": {}}
+    selected_backend_name = str(latest_event.get("backend") or "")
+    if selected_backend_name not in config.backends:
+        selected_backend_name = (
+            config.engine_backends.get("code_agent")
+            or config.engine_backends.get("balanced_local")
+            or next(iter(config.backends), "")
+        )
+    providers: list[dict[str, Any]] = []
+    for backend in config.backends.values():
+        rejection = config.backend_policy_rejection_reason(backend.name)
+        runtime = backend.runtime
+        active = backend.name == selected_backend_name
+        status = (
+            "Policy denied"
+            if rejection
+            else (
+                "Selected recently"
+                if active and latest_event
+                else ("Managed" if runtime.enabled else "Configured")
+            )
+        )
+        providers.append(
+            {
+                "name": _provider_runtime_label(backend),
+                "backend": backend.name,
+                "status": status,
+                "detail": _host_port_label(backend.base_url),
+                "active": active,
+                "dot": "red-dot"
+                if rejection
+                else ("green-dot" if active else "yellow-dot" if runtime.enabled else "green-dot"),
+                "icon": _provider_icon_name(_provider_runtime_label(backend)),
+            }
+        )
+    selected_backend = config.backends.get(selected_backend_name)
+    return {
+        "providers": providers,
+        "detail": _runtime_detail_state(selected_backend, config),
+        "selected_backend": selected_backend_name,
+    }
+
+
+def _runtime_detail_state(
+    backend: Any,
+    config: RoutingProxyConfig,
+) -> dict[str, Any]:
+    if backend is None:
+        return {}
+    runtime = backend.runtime
+    fallback_chain = tuple(
+        item.name for item in config.fallback_chain_for_backend(backend.name)
+    )
+    return {
+        "backend": backend.name,
+        "model": backend.model,
+        "base_url": backend.base_url,
+        "runtime_enabled": runtime.enabled,
+        "runtime_kind": runtime.kind,
+        "runtime_status": "managed-by-proxy" if runtime.enabled else "unmanaged",
+        "runtime_command": " ".join(shlex.quote(part) for part in runtime.command)
+        if runtime.command
+        else "unmanaged backend; start it outside ModelRouter",
+        "readiness_url": runtime.readiness_url,
+        "idle_timeout": _idle_timeout_label(runtime.idle_timeout_seconds, runtime.enabled),
+        "log_path": runtime.log_path if runtime.enabled else "",
+        "fallback_chain": list(fallback_chain),
+        "policy_status": config.backend_policy_rejection_reason(backend.name) or "allowed",
+        "builder": _runtime_builder_fields(backend),
+    }
+
+
+def _route_receipt_state(
+    config: RoutingProxyConfig | None,
+    latest_event: Mapping[str, Any],
+) -> dict[str, Any]:
+    if not latest_event:
+        return {
+            "has_event": False,
+            "summary": "No routing events yet. Start the proxy and send a request to see a real route receipt.",
+            "selected": "none yet",
+            "backend": "none yet",
+            "model": "none yet",
+            "reason": "waiting for first request",
+            "risk": "n/a",
+            "tools": "n/a",
+            "fallback": "n/a",
+            "confirmation": "n/a",
+            "route_latency": "n/a",
+            "upstream_latency": "n/a",
+            "privacy": "privacy-safe defaults",
+            "reason_codes": [],
+            "request_id": "",
+            "policy": "No request has been routed in this session.",
+            "fallback_explanation": "No fallback data yet.",
+            "safety": "Safety gates remain configured.",
+            "wrong_route": "After a request, copy its request id and label it with model-router feedback.",
+        }
+    selected = str(latest_event.get("selected_engine") or "unknown")
+    backend_name = str(latest_event.get("backend") or "")
+    backend = config.backends.get(backend_name) if config and backend_name else None
+    fallback = _fallback_for_event(config, selected, backend_name)
+    return {
+        "has_event": True,
+        "summary": latest_event.get("receipt_summary")
+        or f"Selected {selected}; status {latest_event.get('status', 'unknown')}.",
+        "selected": selected,
+        "backend": backend_name or "unassigned",
+        "model": latest_event.get("backend_model") or (backend.model if backend else ""),
+        "reason": _receipt_reason(latest_event),
+        "risk": latest_event.get("risk") or "n/a",
+        "tools": latest_event.get("tools") or "n/a",
+        "fallback": fallback,
+        "confirmation": latest_event.get("confirmation") or "n/a",
+        "route_latency": latest_event.get("route_latency") or "n/a",
+        "upstream_latency": latest_event.get("upstream_latency") or "n/a",
+        "privacy": _privacy_short(latest_event.get("privacy")),
+        "reason_codes": list(latest_event.get("reason_codes") or []),
+        "request_id": latest_event.get("request_id") or "",
+        "policy": latest_event.get("policy_explanation") or "Policy followed configured defaults.",
+        "fallback_explanation": latest_event.get("fallback_explanation")
+        or "Fallback details were not recorded for this event.",
+        "safety": latest_event.get("safety_explanation")
+        or "Safety details were not recorded for this event.",
+        "wrong_route": latest_event.get("wrong_route_next_action")
+        or "Copy this request id and label it with model-router feedback.",
+    }
+
+
+def _review_state(paths: Mapping[str, Path]) -> dict[str, Any]:
+    try:
+        return review_queue(
+            events_path=paths["events"],
+            feedback_path=paths["feedback"],
+            max_rows=8,
+        )
+    except Exception as exc:
+        return {
+            "reviewable": 0,
+            "items": [],
+            "truncated": False,
+            "skipped_labeled": 0,
+            "skipped_private": 0,
+            "error": str(exc),
+            "privacy": (
+                "Prompts, prompt previews, request bodies, feedback notes, and "
+                "secrets are hidden by default."
+            ),
+        }
+
+
+def _workflow_benchmark_state(paths: Mapping[str, Path]) -> dict[str, Any]:
+    path = paths.get("workflow_benchmarks")
+    command = "model-router workflow-benchmark --json --fail-on-mismatch"
+    if path is None or not path.exists():
+        return {
+            "status": "not run from settings",
+            "path": str(path or ""),
+            "command": command,
+            "passed": None,
+            "failed": None,
+        }
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {
+            "status": "unreadable",
+            "path": str(path),
+            "command": command,
+            "passed": None,
+            "failed": None,
+        }
+    results = payload.get("results") if isinstance(payload, dict) else None
+    if isinstance(results, list):
+        failed = sum(1 for item in results if isinstance(item, dict) and not item.get("ok"))
+        passed = len(results) - failed
+        status = "passing" if failed == 0 else "needs attention"
+    else:
+        passed = payload.get("passed") if isinstance(payload, dict) else None
+        failed = payload.get("failed") if isinstance(payload, dict) else None
+        status = str(payload.get("status") or "recorded") if isinstance(payload, dict) else "recorded"
+    return {
+        "status": status,
+        "path": str(path),
+        "command": command,
+        "passed": passed,
+        "failed": failed,
+    }
+
+
+def _model_options_state(discovery: Any, plan: DownloadPlan) -> list[dict[str, str]]:
+    options: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for model in getattr(discovery, "models", ())[:80]:
+        repo_id = model.repo_id
+        if repo_id in seen:
+            continue
+        seen.add(repo_id)
+        options.append(
+            {
+                "value": repo_id,
+                "label": f"{model.name} · local",
+                "source": model.source,
+                "path": model.path,
+            }
+        )
+    for suggestion in plan.suggestions[:12]:
+        repo_id = suggestion.repo_id
+        if repo_id in seen:
+            continue
+        seen.add(repo_id)
+        options.append(
+            {
+                "value": repo_id,
+                "label": f"{repo_id} · recommended download",
+                "source": suggestion.provider,
+                "path": "",
+            }
+        )
+    return options
+
+
 def _safe_event_summary(events_path: Path) -> dict[str, Any]:
     engine_counts: Counter[str] = Counter()
     backend_counts: Counter[str] = Counter()
@@ -2682,6 +3459,242 @@ def _safe_event_summary(events_path: Path) -> dict[str, Any]:
         "fallback_count": fallback_count,
         "recent_request_ids": recent_request_ids[-10:],
     }
+
+
+def _safe_event_string(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip()
+
+
+def _safe_string_list(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value if str(item)]
+    return []
+
+
+def _short_event_time(value: Any) -> str:
+    text = _safe_event_string(value)
+    if "T" in text:
+        text = text.split("T", 1)[1]
+    if "." in text:
+        text = text.split(".", 1)[0]
+    if text.endswith("Z"):
+        text = text[:-1]
+    return text[:5] if text else "—"
+
+
+def _format_latency(value: Any) -> str:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "n/a"
+    amount = float(value)
+    if amount < 1:
+        return f"{amount * 1000:.1f} us"
+    if amount < 1000:
+        return f"{amount:.1f} ms" if amount < 10 else f"{amount:.0f} ms"
+    return f"{amount / 1000:.1f} s"
+
+
+def _risk_label(value: Any) -> str:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "n/a"
+    score = float(value)
+    if score >= 70:
+        return "high"
+    if score >= 35:
+        return "medium"
+    return "low"
+
+
+def _tools_label(requirements: Any, selected_engine: str) -> str:
+    if selected_engine == "human_confirm":
+        return "N/A"
+    if isinstance(requirements, dict) and requirements.get("needs_tools") is True:
+        return "required"
+    return TOOL_HINT_BY_ENGINE.get(selected_engine, "limited")
+
+
+def _confirmation_label(row: Mapping[str, Any], selected_engine: str) -> str:
+    if selected_engine == "human_confirm":
+        return "required"
+    reason_codes = set(_safe_string_list(row.get("reason_codes")))
+    if "safety.confirmation_required" in reason_codes:
+        return "required"
+    return "not required"
+
+
+def _status_dot(status: str) -> str:
+    lowered = status.lower()
+    if lowered in {"forwarded", "completed", "ok"}:
+        return "green-dot"
+    if lowered in {"blocked", "confirm", "runtime_start_failed"}:
+        return "yellow-dot"
+    if lowered in {"error", "failed", "upstream_error"}:
+        return "red-dot"
+    return "yellow-dot"
+
+
+def _engine_for_backend(config: RoutingProxyConfig, backend_name: str) -> str:
+    for engine, mapped_backend in config.engine_backends.items():
+        if mapped_backend == backend_name:
+            return engine
+    return ""
+
+
+def _route_target(engine: str, backend: Any) -> str:
+    if backend is None:
+        return ROUTE_DESCRIPTION_BY_ENGINE.get(engine, engine.replace("_", " "))
+    description = ROUTE_DESCRIPTION_BY_ENGINE.get(engine, engine.replace("_", " "))
+    return f"{description}: {backend.model}"
+
+
+def _provider_runtime_label(backend: Any) -> str:
+    if backend is None:
+        return "Safety Gate"
+    runtime = backend.runtime
+    if runtime.enabled:
+        return {
+            "llama-server": "llama.cpp",
+            "mlx-lm": "MLX-LM",
+            "generic": "Managed runtime",
+        }.get(runtime.kind, runtime.kind)
+    parsed = urlparse(backend.base_url)
+    host = parsed.hostname or ""
+    port = parsed.port
+    if host in {"127.0.0.1", "localhost", "::1", "0.0.0.0"} and port == 11434:
+        return "Ollama"
+    if host in {"127.0.0.1", "localhost", "::1", "0.0.0.0"} and port == 1234:
+        return "LM Studio"
+    if _is_local_base_url(backend.base_url):
+        return "OpenAI-compatible local"
+    if "openai" in host:
+        return "OpenAI-compatible hosted"
+    return "OpenAI-compatible"
+
+
+def _configured_latency_label(backend: Any) -> str:
+    if backend is None:
+        return "Very Low"
+    if backend.runtime.enabled:
+        return "On demand"
+    if _is_local_base_url(backend.base_url):
+        return "Unmeasured"
+    return "Hosted"
+
+
+def _configured_cost_label(backend: Any) -> str:
+    if backend is None:
+        return "$ Low"
+    return "$ Low" if _is_local_base_url(backend.base_url) else "$$ Hosted"
+
+
+def _configured_privacy_label(backend: Any) -> str:
+    if backend is None:
+        return "Local only"
+    return "Local only" if _is_local_base_url(backend.base_url) else "Hosted"
+
+
+def _is_local_base_url(base_url: str) -> bool:
+    host = urlparse(base_url).hostname or ""
+    return host in {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
+
+
+def _host_port_label(base_url: str) -> str:
+    parsed = urlparse(base_url)
+    host = parsed.hostname or parsed.netloc or base_url
+    return f"{host}:{parsed.port}" if parsed.port else host
+
+
+def _idle_timeout_label(seconds: Any, enabled: bool) -> str:
+    if not enabled:
+        return "not managed"
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+        return "managed"
+    minutes = max(0, float(seconds)) / 60
+    if minutes >= 1:
+        return f"{minutes:g} minutes (idle unload enabled)"
+    return f"{seconds:g} seconds (idle unload enabled)"
+
+
+def _runtime_builder_fields(backend: Any) -> dict[str, str]:
+    runtime = backend.runtime
+    command = list(runtime.command)
+    return {
+        "kind": runtime.kind,
+        "model": _flag_arg(command, "--model")
+        or _flag_arg(command, "-m")
+        or backend.model,
+        "port": _flag_arg(command, "--port") or _port_from_url(backend.base_url),
+        "context_size": _flag_arg(command, "-c")
+        or _flag_arg(command, "--ctx-size")
+        or "",
+        "gpu_layers": _flag_arg(command, "-ngl")
+        or _flag_arg(command, "--n-gpu-layers")
+        or "",
+        "argv_preview": " ".join(shlex.quote(part) for part in command),
+    }
+
+
+def _flag_arg(command: list[str], flag: str) -> str:
+    try:
+        index = command.index(flag)
+    except ValueError:
+        return ""
+    if index + 1 >= len(command):
+        return ""
+    return command[index + 1]
+
+
+def _port_from_url(base_url: str) -> str:
+    parsed = urlparse(base_url)
+    return str(parsed.port or "")
+
+
+def _fallback_for_event(
+    config: RoutingProxyConfig | None,
+    selected_engine: str,
+    backend_name: str,
+) -> str:
+    if config is None:
+        return "not configured"
+    if backend_name:
+        chain = config.fallback_backends.get(backend_name, ())
+        if chain:
+            return _engine_for_backend(config, chain[0]) or chain[0]
+    backend = config.engine_backends.get(selected_engine)
+    if backend:
+        chain = config.fallback_backends.get(backend, ())
+        if chain:
+            return _engine_for_backend(config, chain[0]) or chain[0]
+    return "not configured"
+
+
+def _receipt_reason(event: Mapping[str, Any]) -> str:
+    codes = list(event.get("reason_codes") or [])
+    for prefix, reason in (
+        ("route.coding", "coding and repository intent detected"),
+        ("route.research", "fresh research or current information"),
+        ("route.vision", "vision or OCR handling"),
+        ("route.image_generation", "image generation route"),
+        ("route.confirmation", "human confirmation gate selected"),
+        ("route.reasoning", "higher-complexity reasoning"),
+        ("route.simple", "simple local request"),
+    ):
+        if prefix in codes:
+            return reason
+    return str(event.get("status") or "configured route selected")
+
+
+def _privacy_short(value: Any) -> str:
+    text = _safe_event_string(value)
+    lowered = text.lower()
+    if not text:
+        return "configured policy"
+    if "local-only" in lowered or "local only" in lowered:
+        return "local-only"
+    if "hosted" in lowered:
+        return "hosted allowed"
+    return "configured policy"
 
 
 def _download_plan(

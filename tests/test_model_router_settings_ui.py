@@ -117,8 +117,10 @@ def test_settings_home_page_loads_without_chat_surface(tmp_path, monkeypatch):
     assert "Catalog" in response.text
     assert "showCatalogDiff" in response.text
     assert "applyCatalogUpdate" in response.text
-    assert "Selected code_agent under the balanced profile" in response.text
-    assert "route.coding" in response.text
+    assert "No routing events yet" in response.text
+    assert "Settings UI Follow-Through" in response.text
+    assert "Telemetry Review" in response.text
+    assert "code_agent" in response.text
     assert "No chat surface" in response.text
     assert "chat transcript" not in response.text.lower()
     assert "textarea id=\"chat" not in response.text.lower()
@@ -175,6 +177,109 @@ def test_settings_state_api_includes_models_and_downloads(tmp_path, monkeypatch)
     assert payload["telemetry"]["backend_counts"] == {"code": 1, "fast": 1}
     assert payload["telemetry"]["fallback_count"] == 1
     assert payload["telemetry"]["recent_request_ids"] == ["req-1", "req-2"]
+    assert payload["route_receipt"]["request_id"] == "req-2"
+    assert payload["route_receipt"]["selected"] == "code_agent"
+    assert payload["provider_runtime"]["selected_backend"] == "code"
+    assert any(row["route_id"] == "code_agent" for row in payload["route_map"])
+
+
+def test_dashboard_uses_latest_safe_route_receipt_without_prompt_leakage(
+    tmp_path,
+    monkeypatch,
+):
+    _init_config(tmp_path)
+    _stub_scan(monkeypatch)
+    events_path = tmp_path / "logs" / "routing-events.jsonl"
+    events_path.write_text(
+        json.dumps(
+            {
+                "event_type": "routing_event",
+                "timestamp": "2026-06-23T12:42:00.000Z",
+                "request_id": "req-secret",
+                "route_api": "chat_completions",
+                "selected_engine": "code_agent",
+                "routing_profile": "balanced",
+                "status": "forwarded",
+                "route_latency_ms": 0.0021,
+                "upstream_latency_ms": 840.0,
+                "total_latency_ms": 841.0,
+                "fallback_used": False,
+                "backend": "code",
+                "backend_model": "qwen-code-local",
+                "risk_score": 50,
+                "requirements": {"needs_tools": True},
+                "receipt_summary": (
+                    "Selected code_agent under the balanced profile; "
+                    "no confirmation required; fallback available: reasoning_local."
+                ),
+                "reason_codes": [
+                    "profile.balanced",
+                    "route.coding",
+                    "requirement.tools",
+                ],
+                "policy_explanation": "Allowed providers: local, human.",
+                "fallback_explanation": (
+                    "No fallback was used; reasoning_local remains available."
+                ),
+                "safety_explanation": "No human confirmation is required.",
+                "privacy_explanation": "Local-only routing is active.",
+                "wrong_route_next_action": "Label the request id with feedback.",
+                "prompt_preview": "api_key=super-secret fix this repository",
+                "prompt": "api_key=super-secret fix this repository",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    state = settings_ui.build_settings_state(settings_ui.settings_paths(tmp_path))
+    serialized = json.dumps(state, sort_keys=True)
+    html = settings_ui.render_dashboard_page(state)
+
+    assert state["route_receipt"]["request_id"] == "req-secret"
+    assert state["route_receipt"]["selected"] == "code_agent"
+    assert state["route_receipt"]["backend"] == "code"
+    assert state["route_receipt"]["privacy"] == "local-only"
+    assert state["recent_events"][0]["request_id"] == "req-secret"
+    assert "route.coding" in html
+    assert "req-secret" in html
+    assert "api_key=super-secret" not in serialized
+    assert "api_key=super-secret" not in html
+    assert "fix this repository" not in serialized
+    assert "fix this repository" not in html
+
+
+def test_dashboard_route_map_reflects_configured_backends(tmp_path, monkeypatch):
+    _init_config(tmp_path)
+    _stub_scan(monkeypatch)
+    config_path = tmp_path / "routing_proxy.yaml"
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    data["backends"]["code"]["base_url"] = "http://127.0.0.1:8093/v1"
+    data["backends"]["code"]["model"] = "local-code.gguf"
+    data["backends"]["code"]["runtime"] = {
+        "enabled": True,
+        "kind": "llama-server",
+        "command": [
+            "llama-server",
+            "-m",
+            "/models/local-code.gguf",
+            "--port",
+            "8093",
+        ],
+        "readiness_url": "http://127.0.0.1:8093/health",
+        "idle_timeout_seconds": 900,
+        "log_path": "~/.model-router/logs/code.log",
+    }
+    config_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+    state = settings_ui.build_settings_state(settings_ui.settings_paths(tmp_path))
+    code_row = next(row for row in state["route_map"] if row["route_id"] == "code_agent")
+
+    assert code_row["target"].endswith("local-code.gguf")
+    assert code_row["provider"] == "llama.cpp"
+    assert code_row["latency"] == "On demand"
+    assert state["provider_runtime"]["detail"]["builder"]["port"] == "8093"
+    assert state["provider_runtime"]["detail"]["builder"]["model"] == "/models/local-code.gguf"
 
 
 def test_save_config_can_apply_preset_template_explicitly(tmp_path, monkeypatch):
