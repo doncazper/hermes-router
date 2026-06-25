@@ -6,8 +6,8 @@ This folder turns the installer, TUI, UI, model-library, and basic-router-mode d
 
 - [control-plane-roadmap.md](control-plane-roadmap.md) — product direction, scope, milestones, and implementation order.
 - [ui-tui-wireframes.md](ui-tui-wireframes.md) — mock screenshots, page/tab purposes, and the backend state/actions each field must use.
-- [milestones-and-prompts.md](milestones-and-prompts.md) — prepared Codex prompts with acceptance criteria for each milestone.
-- [admin-state-contract.yaml](admin-state-contract.yaml) — machine-readable state/action contract for the web UI, TUI, installer, and future admin API.
+- [implementation-briefs.md](implementation-briefs.md) — concise implementation briefs with acceptance criteria for each milestone.
+- [admin-state-contract.md](admin-state-contract.md) — shared state/action contract for the web UI, TUI, installer, and future admin API.
 - [maturity-and-escape-hatches.md](maturity-and-escape-hatches.md) — feature maturity levels, safe fallback behavior, and clear paths from experimental to stable.
 
 ## Core product decision
