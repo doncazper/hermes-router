@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.7.0 - Local Admin Control Center
+
+- Added the local admin settings surface direction and data-backed dashboard
+  panels for route receipts, routing maps, providers/runtimes, telemetry,
+  model library, catalog workflow, benchmarks, and wrong-route feedback.
+- Extracted shared admin state/actions so settings, installer, future admin
+  APIs, and the TUI use one control plane with confirmation-gated mutations.
+- Added manual/basic router mode as the first decision-layer-off path, while
+  preserving decision mode as the default.
+- Added deterministic `model-router install` onboarding, a model library and
+  discover surface, hardware-aware recommendations, runtime adapter state, and
+  optional `model-router tui`.
+- Expanded proxy compatibility with `/v1/embeddings`, `/v1/completions`,
+  capability hints in `/v1/models`, and shaped unsupported `/v1/messages`
+  responses.
+- Added maturity metadata, doctor/settings/TUI maturity displays, dogfood
+  release gates, upgrade/uninstall docs, and reusable release checklist steps.
+- Hardened manual/basic mode so `safety_gate_mode: always_static` fails closed
+  to `human_confirm` without calling the decision layer.
+
 ## 0.6.2 - Installer And First-Run Polish
 
 - Added `model-router init --auto` to choose a local proxy preset from Ollama

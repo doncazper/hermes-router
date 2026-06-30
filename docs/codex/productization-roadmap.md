@@ -207,7 +207,7 @@ in `docs/upgrade-uninstall.md` and `docs/release-checklist.md`.
 
 ## Immediate Next Step
 
-Dogfood the v0.7.0 candidate from `main`: run the release checklist, exercise
-decision mode and manual/basic mode against real local backends, and verify the
-settings UI and TUI maturity labels are visible. Tag v0.7.0 only after those
-checks are boring.
+v0.7.0 is the release target for the shared admin control-plane work: run the
+release checklist, exercise decision mode and manual/basic mode against real
+local backends, and verify the settings UI and TUI maturity labels are visible
+before publishing the tag.

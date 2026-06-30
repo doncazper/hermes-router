@@ -517,9 +517,9 @@ Remaining dogfood work:
 - Telemetry review polish: use the dashboard review queue and
   `model-router telemetry review` with real requests; only build a heavier
   review surface if copying request ids and writing feedback still feels clunky.
-- Release hardening: prepare a v0.7.0 candidate once dashboard data-backed
-  behavior has been dogfooded, with changelog, benchmark output, route-fast
-  latency output, and upgrade guidance.
+- Release hardening: v0.7.0 release prep should include changelog, benchmark
+  output, route-fast latency output, upgrade guidance, and decision/manual
+  dogfood results against a real local backend.
 
 Do not add hidden orchestration, default hosted-provider calls, automatic
 downloads, runtime auto-start, verifier calls, prompt logging, webchat, or agent
