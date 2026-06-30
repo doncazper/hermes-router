@@ -739,11 +739,13 @@ Model: model-router
 API key: leave blank unless proxy auth is configured
 ```
 
-Future adapter work should stay separate from scoring policy. If a later
-runtime adapter executes non-chat actions or talks to host-specific APIs, it
-should remain behind explicit adapter contracts and confirmation gates for risky
-actions, preserve receipt emission, and keep decision logic testable without
-provider calls.
+Runtime adapter work stays separate from scoring policy. The current adapter
+foundation reports local health, visible models, loaded-model placeholders,
+capabilities, disabled action reasons, and log metadata for admin surfaces. If a
+later runtime adapter executes non-chat actions or talks to host-specific APIs,
+it must remain behind explicit adapter contracts and confirmation gates for
+risky actions, preserve receipt emission, and keep decision logic testable
+without provider calls.
 
 ## Feedback To Regression Workflow
 

@@ -62,6 +62,7 @@ from hermes.plugins.model_router.routing_log import (
     read_jsonl,
     redact_text,
 )
+from hermes.plugins.model_router.runtime_adapters import runtime_state_for_backend
 from hermes.plugins.model_router.setup_assistant import (
     DownloadPlan,
     plan_model_downloads,
@@ -2244,6 +2245,13 @@ def _providers_runtime_section(state: Mapping[str, Any]) -> str:
     builder = detail.get("builder") if isinstance(detail.get("builder"), dict) else {}
     fallback_chain = detail.get("fallback_chain") if isinstance(detail.get("fallback_chain"), list) else []
     fallback_text = ", ".join(str(item) for item in fallback_chain) if fallback_chain else "none"
+    capabilities = detail.get("capabilities") if isinstance(detail.get("capabilities"), dict) else {}
+    load_support = capabilities.get("load_model") if isinstance(capabilities.get("load_model"), dict) else {}
+    unload_support = capabilities.get("unload_model") if isinstance(capabilities.get("unload_model"), dict) else {}
+    discovered_models = detail.get("discovered_models") if isinstance(detail.get("discovered_models"), list) else []
+    loaded_models = detail.get("loaded_models") if isinstance(detail.get("loaded_models"), list) else []
+    logs = detail.get("logs") if isinstance(detail.get("logs"), dict) else {}
+    log_paths = logs.get("paths") if isinstance(logs.get("paths"), list) else []
     return f"""<div class="runtime-grid" id="providers">
       <div class="provider-list">{provider_rows}</div>
       <div class="runtime-detail" id="runtime-detail">
@@ -2290,6 +2298,26 @@ def _providers_runtime_section(state: Mapping[str, Any]) -> str:
         <div class="detail-field">
           <label>Status</label>
           <span>{escape(str(detail.get("runtime_status") or "unknown"))}; {escape(str(detail.get("policy_status") or "allowed"))}</span>
+        </div>
+        <div class="detail-field">
+          <label>Adapter health</label>
+          <span>{escape(str(detail.get("health_status") or "unknown"))}; {escape(str(detail.get("health_detail") or "not checked"))}</span>
+        </div>
+        <div class="detail-field">
+          <label>Models visible</label>
+          <span>{escape(str(len(discovered_models)))} discovered; {escape(str(len(loaded_models)))} loaded</span>
+        </div>
+        <div class="detail-field">
+          <label>Load action</label>
+          <span>{escape(_support_label(load_support))}</span>
+        </div>
+        <div class="detail-field">
+          <label>Unload action</label>
+          <span>{escape(_support_label(unload_support))}</span>
+        </div>
+        <div class="detail-field detail-wide">
+          <label>Runtime logs</label>
+          <span class="code">{escape(", ".join(str(path) for path in log_paths) or str(logs.get("disabled_reason") or "not configured"))}</span>
         </div>
         {_policy_summary_fields(state)}
         <div class="runtime-actions">
@@ -2642,6 +2670,29 @@ def _runtime_panel_summary(state: Mapping[str, Any]) -> str:
     backend = detail.get("backend") or "backend"
     status = detail.get("runtime_status") or "configured"
     return f"{backend} is selected from config/telemetry; runtime is {status}."
+
+
+def _adapter_dot(
+    adapter: Mapping[str, Any],
+    *,
+    active: bool,
+    managed: bool,
+) -> str:
+    health = adapter.get("health") if isinstance(adapter.get("health"), dict) else {}
+    if health.get("ok") is True:
+        return "green-dot"
+    if health.get("status") in {"degraded", "error"}:
+        return "red-dot"
+    if active or managed:
+        return "yellow-dot"
+    return "green-dot"
+
+
+def _support_label(value: Mapping[str, Any]) -> str:
+    if value.get("supported") is True:
+        return "supported"
+    reason = value.get("disabled_reason")
+    return f"disabled: {reason}" if reason else "disabled"
 
 
 def _runtime_link(value: Any) -> str:
@@ -3285,6 +3336,10 @@ def _redacted_backend_states(config: RoutingProxyConfig | None) -> list[dict[str
                     "log_path": runtime.log_path,
                     "status": "managed-by-proxy" if runtime.enabled else "unmanaged",
                 },
+                "runtime_adapter": runtime_state_for_backend(
+                    backend,
+                    timeout_seconds=min(config.health.backend_timeout_seconds, 0.2),
+                ),
             }
         )
     return rows
@@ -3527,6 +3582,11 @@ def _provider_runtime_state(
     for backend in config.backends.values():
         rejection = config.backend_policy_rejection_reason(backend.name)
         runtime = backend.runtime
+        adapter = runtime_state_for_backend(
+            backend,
+            timeout_seconds=min(config.health.backend_timeout_seconds, 0.2),
+        )
+        health = adapter.get("health") if isinstance(adapter.get("health"), dict) else {}
         active = backend.name == selected_backend_name
         status = (
             "Policy denied"
@@ -3534,7 +3594,7 @@ def _provider_runtime_state(
             else (
                 "Selected recently"
                 if active and latest_event
-                else ("Managed" if runtime.enabled else "Configured")
+                else str(health.get("status") or ("Managed" if runtime.enabled else "Configured"))
             )
         )
         providers.append(
@@ -3546,8 +3606,9 @@ def _provider_runtime_state(
                 "active": active,
                 "dot": "red-dot"
                 if rejection
-                else ("green-dot" if active else "yellow-dot" if runtime.enabled else "green-dot"),
+                else _adapter_dot(adapter, active=active, managed=runtime.enabled),
                 "icon": _provider_icon_name(_provider_runtime_label(backend)),
+                "runtime_adapter": adapter,
             }
         )
     selected_backend = config.backends.get(selected_backend_name)
@@ -3565,6 +3626,19 @@ def _runtime_detail_state(
     if backend is None:
         return {}
     runtime = backend.runtime
+    adapter = runtime_state_for_backend(
+        backend,
+        timeout_seconds=min(config.health.backend_timeout_seconds, 0.2),
+    )
+    health = adapter.get("health") if isinstance(adapter.get("health"), dict) else {}
+    capabilities = (
+        adapter.get("capabilities") if isinstance(adapter.get("capabilities"), dict) else {}
+    )
+    models = adapter.get("models") if isinstance(adapter.get("models"), list) else []
+    loaded = (
+        adapter.get("loaded_models") if isinstance(adapter.get("loaded_models"), list) else []
+    )
+    logs = adapter.get("logs") if isinstance(adapter.get("logs"), dict) else {}
     fallback_chain = tuple(
         item.name for item in config.fallback_chain_for_backend(backend.name)
     )
@@ -3575,6 +3649,23 @@ def _runtime_detail_state(
         "runtime_enabled": runtime.enabled,
         "runtime_kind": runtime.kind,
         "runtime_status": "managed-by-proxy" if runtime.enabled else "unmanaged",
+        "adapter": adapter.get("adapter"),
+        "adapter_provider": adapter.get("provider"),
+        "health_status": health.get("status"),
+        "health_detail": health.get("detail"),
+        "health_ok": health.get("ok") is True,
+        "discovered_models": [
+            str(item.get("model_id"))
+            for item in models
+            if isinstance(item, dict) and item.get("model_id")
+        ],
+        "loaded_models": [
+            str(item.get("model_id"))
+            for item in loaded
+            if isinstance(item, dict) and item.get("model_id")
+        ],
+        "capabilities": capabilities,
+        "logs": logs,
         "runtime_command": " ".join(shlex.quote(part) for part in runtime.command)
         if runtime.command
         else "unmanaged backend; start it outside ModelRouter",

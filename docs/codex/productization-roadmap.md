@@ -152,6 +152,15 @@ backends, LM Studio, Ollama, MLX-LM, llama.cpp, LocalAI, and custom backends.
 Done when adapter failures do not crash settings/TUI and unsupported actions are
 disabled with reasons.
 
+Current implementation note: M4 adds
+`hermes/plugins/model_router/runtime_adapters.py` with a shared adapter protocol,
+generic OpenAI-compatible adapter, LM Studio/Ollama local detection, and managed
+llama.cpp/MLX-LM wrappers for process-owned runtimes. Settings state now exposes
+adapter health, visible models, loaded-model placeholders, capabilities,
+disabled action reasons, and runtime log metadata without crashing when a
+runtime is unavailable. Load/unload remain disabled unless a runtime exposes a
+safe explicit action.
+
 ### M5: TUI v1
 
 Add `model-router tui` as a terminal control center using the shared state/action

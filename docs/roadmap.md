@@ -591,7 +591,10 @@ remain deferred until alias/capability work is ready. M2 now adds
 `model-router install` as deterministic, plan-only onboarding that reports local
 install/config/runtime state and prints explicit next commands without
 mutating files. M3 now adds the settings Models section backed by shared state:
-Installed, Discover, Recommended, Downloads, and Assignments.
+Installed, Discover, Recommended, Downloads, and Assignments. M4 now adds
+runtime adapter foundations so settings/TUI state can report backend health,
+model visibility, capabilities, disabled action reasons, and log metadata
+without crashing when local runtimes are unavailable.
 
 Guardrails:
 

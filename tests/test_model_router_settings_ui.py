@@ -232,6 +232,11 @@ def test_settings_state_api_includes_models_and_downloads(tmp_path, monkeypatch)
     assert payload["route_receipt"]["request_id"] == "req-2"
     assert payload["route_receipt"]["selected"] == "code_agent"
     assert payload["provider_runtime"]["selected_backend"] == "code"
+    fast_backend = next(row for row in payload["backends"] if row["name"] == "fast")
+    fast_adapter = fast_backend["runtime_adapter"]
+    assert fast_adapter["provider"] == "lmstudio"
+    assert fast_adapter["capabilities"]["load_model"]["supported"] is False
+    assert "disabled_reason" in fast_adapter["capabilities"]["load_model"]
     assert any(row["route_id"] == "code_agent" for row in payload["route_map"])
 
 
@@ -371,6 +376,11 @@ def test_dashboard_route_map_reflects_configured_backends(tmp_path, monkeypatch)
     assert code_row["latency"] == "On demand"
     assert state["provider_runtime"]["detail"]["builder"]["port"] == "8093"
     assert state["provider_runtime"]["detail"]["builder"]["model"] == "/models/local-code.gguf"
+    assert state["provider_runtime"]["detail"]["adapter_provider"] == "llamacpp"
+    assert state["provider_runtime"]["detail"]["capabilities"]["load_model"] == {
+        "supported": False,
+        "disabled_reason": "Managed runtimes load by starting their configured process.",
+    }
 
 
 def test_human_confirm_latest_event_does_not_select_backend(tmp_path, monkeypatch):
