@@ -23,6 +23,11 @@ from hermes.plugins.model_router.model_benchmark import (
     load_benchmark_results,
     plan_backend_benchmarks,
 )
+from hermes.plugins.model_router.pricing_catalog import (
+    apply_pricing_catalog,
+    pricing_diff,
+    pricing_status,
+)
 from hermes.plugins.model_router.product import doctor_proxy_config as _doctor_proxy_config
 from hermes.plugins.model_router.proxy_config import ProxyConfigError, load_proxy_config
 from hermes.plugins.model_router.routing_log import RoutingLogWriter, build_feedback
@@ -66,6 +71,8 @@ ACTION_ALIASES = {
     "benchmark_run": "benchmark.run",
     "catalog_diff": "catalog.diff",
     "catalog_apply": "catalog.apply",
+    "pricing_diff": "pricing.diff",
+    "pricing_apply": "pricing.apply",
     "feedback": "telemetry.feedback.write",
 }
 
@@ -78,6 +85,7 @@ MUTATING_ACTIONS = {
     "proxy.restart",
     "proxy.start",
     "proxy.stop",
+    "pricing.apply",
     "telemetry.feedback.write",
 }
 
@@ -90,6 +98,7 @@ CONFIRMATION_ERRORS = {
     "proxy.restart": "Proxy restart requires confirm=true.",
     "proxy.start": "Proxy start requires confirm=true.",
     "proxy.stop": "Proxy stop requires confirm=true.",
+    "pricing.apply": "Pricing catalog apply requires confirm=true.",
     "telemetry.feedback.write": "Feedback submission requires confirm=true.",
 }
 
@@ -149,6 +158,27 @@ _ACTION_DESCRIPTORS: tuple[dict[str, Any], ...] = (
         "mutates": True,
         "requires_confirm": True,
         "description": "Apply packaged catalog defaults to local config.",
+    },
+    {
+        "id": "pricing.status",
+        "label": "Pricing status",
+        "mutates": False,
+        "requires_confirm": False,
+        "description": "Inspect local pricing catalog metadata without network checks.",
+    },
+    {
+        "id": "pricing.diff",
+        "label": "Pricing diff",
+        "mutates": False,
+        "requires_confirm": False,
+        "description": "Preview packaged pricing metadata against the local override.",
+    },
+    {
+        "id": "pricing.apply",
+        "label": "Apply pricing",
+        "mutates": True,
+        "requires_confirm": True,
+        "description": "Write packaged pricing metadata to the local override.",
     },
     {
         "id": "telemetry.feedback.write",
@@ -242,6 +272,12 @@ def run_admin_action(
         body = _catalog_diff_action(paths)
     elif normalized == "catalog.apply":
         body = _catalog_apply_action(paths)
+    elif normalized == "pricing.status":
+        body = _pricing_status_action(paths)
+    elif normalized == "pricing.diff":
+        body = _pricing_diff_action(paths)
+    elif normalized == "pricing.apply":
+        body = _pricing_apply_action(paths)
     elif normalized == "telemetry.feedback.write":
         body = _feedback_action(paths, action_payload)
     else:
@@ -439,6 +475,29 @@ def _catalog_apply_action(paths: Mapping[str, Path]) -> dict[str, Any]:
         "ok": result.ok,
         "result": result.to_dict(),
         "catalog": catalog_status(paths["model_router_config"]).to_dict(),
+    }
+
+
+def _pricing_status_action(paths: Mapping[str, Path]) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "status": pricing_status(paths["pricing"]).to_dict(),
+    }
+
+
+def _pricing_diff_action(paths: Mapping[str, Path]) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "diff": pricing_diff(paths["pricing"]).to_dict(),
+    }
+
+
+def _pricing_apply_action(paths: Mapping[str, Path]) -> dict[str, Any]:
+    result = apply_pricing_catalog(paths["pricing"], confirmed=True)
+    return {
+        "ok": result.ok,
+        "result": result.to_dict(),
+        "status": pricing_status(paths["pricing"]).to_dict(),
     }
 
 

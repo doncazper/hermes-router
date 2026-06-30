@@ -72,6 +72,41 @@ routing or forwarding requests. A later maintenance command can preview and
 apply packaged defaults, but provider price updates should remain an operator
 action.
 
+Create the default override file from packaged metadata:
+
+```bash
+model-router pricing apply --override ~/.model-router/pricing_catalog.yaml --yes
+```
+
+Then edit `~/.model-router/pricing_catalog.yaml` with prices you have verified
+against your provider contract, invoice, or official pricing page. Do not rely
+on the packaged example hosted entry for spend reporting; it exists only to show
+the schema and exercise estimates.
+
+Example operator override entry:
+
+```yaml
+catalog_version: 2
+updated_at: "2026-06-30T00:00:00Z"
+notes:
+  - Operator-verified from provider pricing terms on 2026-06-30.
+entries:
+  - provider: your-provider
+    model: your-model-id
+    input_per_1m: 1.25
+    output_per_1m: 5.00
+    cached_input_per_1m: 0.25
+    currency: USD
+    effective_date: "2026-06-30"
+    source: operator-verified-provider-pricing
+    notes: Replace this example with pricing verified for your account/region/plan.
+```
+
+If telemetry rows do not include provider identity, ModelRouter can still match
+by model id only when exactly one catalog entry has that model id. If multiple
+providers share the same model id, add provider metadata to the telemetry source
+or use distinct model ids in your override.
+
 Override semantics:
 
 - Packaged entries load first.

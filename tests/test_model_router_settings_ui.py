@@ -154,6 +154,10 @@ def test_settings_home_page_loads_without_chat_surface(tmp_path, monkeypatch):
     assert "Catalog" in response.text
     assert "showCatalogDiff" in response.text
     assert "applyCatalogUpdate" in response.text
+    assert 'id="pricing"' in response.text
+    assert "showPricingStatus" in response.text
+    assert "showPricingDiff" in response.text
+    assert "applyPricingCatalog" in response.text
     assert "No routing events yet" in response.text
     assert "Settings UI Follow-Through" in response.text
     assert "Telemetry Review" in response.text
@@ -245,6 +249,11 @@ entries:
         "backend_allowlist": [],
         "backend_denylist": [],
     }
+    assert payload["pricing_catalog"]["override_path"].endswith("pricing_catalog.yaml")
+    assert payload["pricing_catalog"]["active_catalog_version"] == 4
+    assert payload["pricing_catalog"]["active_catalog_source"].startswith(
+        "packaged+override:"
+    )
     assert payload["verifier"]["mode"] == "off"
     assert payload["discovery"]["models"][0]["repo_id"] == "mlx-community/Qwen3-4B-4bit"
     assert payload["download_plan"]["suggestions"]
@@ -761,6 +770,30 @@ def test_catalog_api_requires_confirmation_before_apply(tmp_path, monkeypatch):
     assert applied.json()["ok"] is True
     assert "migration_log" in applied.json()["result"]
     assert applied.json()["catalog"]["local_config"].endswith("model_router.yaml")
+
+
+def test_pricing_api_requires_confirmation_before_apply(tmp_path, monkeypatch):
+    _init_config(tmp_path)
+    _stub_scan(monkeypatch)
+    app = settings_ui.create_settings_app(config_dir=tmp_path)
+    client = TestClient(app)
+
+    status = client.post("/api/pricing/status")
+    diff = client.post("/api/pricing/diff")
+    blocked = client.post("/api/pricing/apply", json={})
+    applied = client.post("/api/pricing/apply", json={"confirm": True})
+
+    assert status.status_code == 200
+    assert status.json()["status"]["remote_checks_enabled"] is False
+    assert diff.status_code == 200
+    assert diff.json()["ok"] is True
+    assert "diff" in diff.json()
+    assert blocked.status_code == 400
+    assert blocked.json()["error"] == "Pricing catalog apply requires confirm=true."
+    assert applied.status_code == 200
+    assert applied.json()["ok"] is True
+    assert applied.json()["status"]["override_exists"] is True
+    assert (tmp_path / "pricing_catalog.yaml").exists()
 
 
 def test_feedback_api_writes_cli_compatible_jsonl(tmp_path, monkeypatch):

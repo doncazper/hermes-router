@@ -871,7 +871,8 @@ model-router pricing apply --yes
 
 These commands read packaged/local files only. They do not scrape provider pages
 or run during routing/proxy forwarding. See
-[Versioned pricing catalog](docs/pricing-catalog.md).
+[Versioned pricing catalog](docs/pricing-catalog.md) for the override file
+shape and an operator-verified provider example.
 
 When a route is wrong, copy `X-ModelRouter-Request-ID` from the response and
 label it:
@@ -1343,7 +1344,7 @@ model-router decide --json "fix the repo and run tests"
 For a non-editable install from GitHub:
 
 ```bash
-python -m pip install "git+https://github.com/doncazper/model-router.git@v0.7.0"
+python -m pip install "git+https://github.com/doncazper/model-router.git@v0.7.1"
 model-router decide "rewrite this text"
 ```
 

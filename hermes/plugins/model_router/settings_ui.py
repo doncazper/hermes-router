@@ -45,6 +45,7 @@ from hermes.plugins.model_router.product import (
     doctor_proxy_config,  # noqa: F401 - compatibility patch point for tests/callers.
     initialize_product_config,
 )
+from hermes.plugins.model_router.pricing_catalog import pricing_status
 from hermes.plugins.model_router.model_benchmark import (
     BenchmarkResult,
     BenchmarkTarget,
@@ -273,6 +274,18 @@ def create_settings_app(
     async def api_catalog_apply(request: Request) -> JSONResponse:
         return await run_endpoint_action("catalog.apply", request)
 
+    @app.post("/api/pricing/status")
+    async def api_pricing_status() -> JSONResponse:
+        return await run_endpoint_action("pricing.status")
+
+    @app.post("/api/pricing/diff")
+    async def api_pricing_diff() -> JSONResponse:
+        return await run_endpoint_action("pricing.diff")
+
+    @app.post("/api/pricing/apply")
+    async def api_pricing_apply(request: Request) -> JSONResponse:
+        return await run_endpoint_action("pricing.apply", request)
+
     @app.post("/api/feedback")
     async def api_feedback(request: Request) -> JSONResponse:
         return await run_endpoint_action("telemetry.feedback.write", request)
@@ -371,6 +384,7 @@ def _build_settings_state_impl(
         "backend_policy": _backend_policy_state(config),
         "verifier": _verifier_state(config),
         "catalog": catalog_status(paths["model_router_config"]).to_dict(),
+        "pricing_catalog": pricing_status(paths["pricing"]).to_dict(),
         "backends": _redacted_backend_states(config),
         "engine_backends": dict(sorted(config.engine_backends.items())) if config else {},
         "observability": _observability_state(config),
@@ -1084,6 +1098,7 @@ def render_dashboard_page(state: Mapping[str, Any]) -> str:
           {_benchmark_status_panel(state)}
           {_review_panel(state)}
           {_catalog_panel(state)}
+          {_pricing_catalog_panel(state)}
         </aside>
       </div>
     </main>
@@ -2008,6 +2023,27 @@ async function applyCatalogUpdate() {
   const output = document.getElementById('catalog-output');
   if (output) output.textContent = 'Applying catalog update...';
   const data = await postAction('/api/catalog/apply', {confirm: true});
+  if (output) output.textContent = JSON.stringify(data.result || data, null, 2);
+}
+async function showPricingStatus() {
+  const output = document.getElementById('pricing-output');
+  if (output) output.textContent = 'Loading pricing catalog status...';
+  const data = await postAction('/api/pricing/status');
+  if (output) output.textContent = JSON.stringify(data.status || data, null, 2);
+}
+async function showPricingDiff() {
+  const output = document.getElementById('pricing-output');
+  if (output) output.textContent = 'Loading pricing catalog diff...';
+  const data = await postAction('/api/pricing/diff');
+  if (output) output.textContent = JSON.stringify(data.diff || data, null, 2);
+}
+async function applyPricingCatalog() {
+  if (!window.confirm('Write packaged pricing metadata to the local override? Verify provider prices before using estimates for spend review.')) {
+    return;
+  }
+  const output = document.getElementById('pricing-output');
+  if (output) output.textContent = 'Applying pricing catalog metadata...';
+  const data = await postAction('/api/pricing/apply', {confirm: true});
   if (output) output.textContent = JSON.stringify(data.result || data, null, 2);
 }
 function jumpTo(id) {
@@ -3173,6 +3209,44 @@ def _catalog_panel(state: Mapping[str, Any]) -> str:
         <button class="danger-text" type="button" onclick="applyCatalogUpdate()">{_icon("check")} Apply</button>
       </div>
       <pre id="catalog-output" class="catalog-output">No catalog action yet.</pre>
+    </section>"""
+
+
+def _pricing_catalog_panel(state: Mapping[str, Any]) -> str:
+    pricing = state.get("pricing_catalog", {})
+    pricing = pricing if isinstance(pricing, Mapping) else {}
+    override_state = (
+        "missing"
+        if not pricing.get("override_exists")
+        else ("valid" if pricing.get("override_valid") else "invalid")
+    )
+    active_version = escape(str(pricing.get("active_catalog_version") or "?"))
+    active_source = escape(str(pricing.get("active_catalog_source") or "unknown"))
+    override_path = escape(str(pricing.get("override_path") or ""))
+    entries = escape(str(pricing.get("active_entry_count", 0)))
+    validation = pricing.get("validation_errors")
+    validation_text = escape(", ".join(validation) if isinstance(validation, list) and validation else "none")
+    return f"""<section class="inspector-card" id="pricing" aria-labelledby="pricing-title">
+      <header>
+        <h2 id="pricing-title">{_icon("database")} Pricing</h2>
+        <span class="muted">local catalog</span>
+      </header>
+      <dl class="receipt-grid">
+        <dt>Active catalog:</dt><dd>v{active_version}</dd>
+        <dt>Source:</dt><dd>{active_source}</dd>
+        <dt>Entries:</dt><dd>{entries}</dd>
+        <dt>Override:</dt><dd>{escape(override_state)}</dd>
+        <dt>Override path:</dt><dd class="code">{override_path}</dd>
+        <dt>Validation:</dt><dd>{validation_text}</dd>
+      </dl>
+      <p class="muted">Cost estimates use local metadata only. Verify provider prices before spend review.</p>
+      <div class="receipt-divider"></div>
+      <div class="runtime-actions">
+        <button type="button" onclick="showPricingStatus()">{_icon("pulse")} Status</button>
+        <button type="button" onclick="showPricingDiff()">{_icon("braces")} Diff</button>
+        <button class="danger-text" type="button" onclick="applyPricingCatalog()">{_icon("check")} Apply</button>
+      </div>
+      <pre id="pricing-output" class="catalog-output">No pricing action yet.</pre>
     </section>"""
 
 
