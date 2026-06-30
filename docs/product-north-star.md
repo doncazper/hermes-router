@@ -13,6 +13,13 @@ implemented today.
 ModelRouter is a local OpenAI-compatible proxy router and admin control center.
 It is not an agent, not a webchat UI, and not a prompt transcript product.
 
+The decision router is ModelRouter's default differentiator, but the product
+should also support an explicit "decision layer off" path. In that mode,
+ModelRouter behaves as a basic model gateway with manual backend selection,
+model aliases, passthrough routing, health, fallback, telemetry, and model
+management. This makes smart routing optional without weakening the default
+router experience.
+
 The product should make routing observable and controllable:
 
 - A local endpoint is visible and copyable.
@@ -65,6 +72,8 @@ The current product already includes:
 - Response headers, receipts, and telemetry workflows that make route ids easier
   to identify and label.
 - Opt-in managed local runtimes for configured llama.cpp and MLX-LM processes.
+- A documented productization plan for shared admin state/actions and optional
+  basic-router modes in `docs/codex/productization-roadmap.md`.
 
 ## In Progress
 
@@ -72,6 +81,10 @@ The north star assumes continued polish around:
 
 - Richer route-map editing and profile/provider policy controls in the settings
   UI.
+- Shared admin state/actions that power the web UI, future TUI, installer, and
+  admin API without duplicated control-plane logic.
+- Optional non-decision routing modes: manual backend, model aliases, and
+  passthrough.
 - More complete visual runtime status, readiness, logs, and managed-runtime
   controls.
 - Continued dogfooding of the recent-request and wrong-route review loops before

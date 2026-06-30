@@ -554,3 +554,42 @@ Recommended tasks:
 Do not add hidden orchestration, default hosted-provider calls, automatic
 downloads, runtime auto-start, verifier calls, or prompt logging while doing
 this work. Keep `route_fast(...)` deterministic and keep safety gates explicit.
+
+## Productization Track: Shared Admin Control Plane
+
+Imported planning docs:
+
+- `docs/codex/productization-roadmap.md`
+- `docs/codex/admin-state-contract.yaml`
+
+Goal: turn the local admin dashboard into a real product control plane that can
+power the web UI, future TUI, installer, admin API, and routing-mode expansion
+from one shared state/action layer.
+
+Key product decision: the deterministic decision router remains the default, but
+the decision layer must become optional. Users should be able to run ModelRouter
+as a basic model gateway with manual backend selection, model aliases,
+passthrough routing, health, fallback, telemetry, and model management.
+
+Recommended sequence:
+
+1. M0: extract shared admin state/actions from `settings_ui.py`.
+2. M1: add the smallest stable basic-router slice, preferably `decision` plus
+   `manual` mode first.
+3. M2: add deterministic `model-router install` onboarding.
+4. M3: add the data-backed Model Library and Discover UI.
+5. M4: add runtime adapter foundations for health, models, capabilities, and
+   supported actions.
+6. M5: add a TUI only after the shared state/action layer exists.
+7. M6: expand endpoint compatibility through capability-driven forwarding.
+8. M7: add maturity labels, dogfood checks, release gates, and rollback docs.
+
+Guardrails:
+
+- No UI or TUI surface should invent its own control plane.
+- No haphazard placeholders: render real state, useful empty states, or disabled
+  controls with concrete reasons.
+- Mutating actions require explicit confirmation.
+- No silent downloads, hosted-provider enablement, config writes, runtime
+  process changes, benchmark runs, or prompt display.
+- Non-decision modes must not call `route_fast(...)`.

@@ -1,0 +1,598 @@
+version: 1
+contract_name: model_router_shared_admin_state_and_actions_full
+product: ModelRouter
+status: draft_for_codex_implementation
+purpose: Define the shared state and action contract that must power the web settings
+  UI, TUI, installer, future admin API, and Codex implementation milestones.
+design_principles:
+- Every rendered web UI and TUI field must read from shared admin state or a documented
+  action result.
+- 'No haphazard placeholder UI: render real state, a useful empty state, or a disabled
+  control with a concrete reason.'
+- Every mutating action must require explicit confirmation from the user.
+- The web UI and TUI must call the same shared action layer; they must not duplicate
+  process/config/runtime logic.
+- The decision layer remains the default differentiator, but it must be possible to
+  disable it and run as a basic router.
+- 'Privacy defaults are conservative: no raw prompt display unless the user explicitly
+  configured prompt capture.'
+- No silent model downloads, hosted-provider enablement, config writes, benchmark
+  runs, runtime starts, or service installation.
+routing_modes:
+  decision:
+    label: Smart router
+    decision_layer_enabled: true
+    description: 'Current ModelRouter behavior: inspect prompt, select engine/backend/model,
+      apply safety/profile/policy, emit receipts.'
+    proxy_behavior:
+    - Extract prompt from supported request body.
+    - Call ModelRouter.route_fast(prompt, hints) for hot-path selection.
+    - Map selected engine to backend.
+    - Override outbound model using backend config.
+    - Return human_confirm as 409 and never forward.
+  manual:
+    label: Manual backend
+    decision_layer_enabled: false
+    description: No prompt classification. Forward to configured default backend/model,
+      optionally respecting client model when allowed.
+    proxy_behavior:
+    - Do not call route_fast or route.
+    - Resolve backend from proxy.default_backend.
+    - Resolve model from proxy.default_model unless respect_client_model is true and
+      the client model is allowed.
+    - Emit basic-mode receipt and mode headers.
+  model_map:
+    label: Model aliases
+    decision_layer_enabled: false
+    description: No prompt classification. Resolve incoming request model through
+      configured model_aliases.
+    proxy_behavior:
+    - Do not call route_fast or route.
+    - Use request.model to find an enabled alias in model_aliases.
+    - Alias supplies backend and outbound model.
+    - Unknown alias follows proxy.unknown_model_behavior.
+  passthrough:
+    label: Passthrough
+    decision_layer_enabled: false
+    description: No prompt classification. Forward to default backend and preserve
+      client-supplied model.
+    proxy_behavior:
+    - Do not call route_fast or route.
+    - Resolve backend from proxy.default_backend.
+    - Preserve request.model in outbound payload.
+    - If no request.model is supplied, use proxy.default_model or backend model.
+proxy_config_extensions:
+  proxy.routing_mode:
+    type: enum
+    values:
+    - decision
+    - manual
+    - model_map
+    - passthrough
+    default: decision
+    ui_control: select
+    requires_restart: true
+  proxy.default_backend:
+    type: string|null
+    default: null
+    ui_control: backend_select
+    used_by_modes:
+    - manual
+    - passthrough
+    validation: must reference configured backend when routing_mode is manual or passthrough
+  proxy.default_model:
+    type: string|null
+    default: null
+    ui_control: model_select_or_text
+    used_by_modes:
+    - manual
+    - passthrough
+  proxy.respect_client_model:
+    type: boolean
+    default_by_mode:
+      decision: false
+      manual: true
+      model_map: true
+      passthrough: true
+    ui_control: switch
+  proxy.unknown_model_behavior:
+    type: enum
+    values:
+    - fallback_to_default
+    - reject_404
+    default: fallback_to_default
+    ui_control: select
+  proxy.safety_gate_mode:
+    type: enum
+    values:
+    - decision_only
+    - always_static
+    - 'off'
+    default: decision_only
+    ui_control: select
+  model_aliases:
+    type: mapping
+    key: alias_name
+    value_schema_ref: schemas.ModelAlias
+    used_by_modes:
+    - model_map
+    - manual
+state_schema:
+  AppState:
+    fields:
+      version: string
+      package_version: string|null
+      config_dir: path
+      model_router_config_path: path
+      routing_proxy_config_path: path
+      settings_url: url
+      proxy_endpoint: url
+      platform: string
+      python_version: string
+  ProxyState:
+    fields:
+      state: 'enum: stopped|running|starting|stopping|error|unknown'
+      pid: integer|null
+      host: string
+      port: integer
+      endpoint: url
+      log_path: path|null
+      config_exists: boolean
+      config_valid: boolean
+      config_error: string|null
+      api_key_configured: boolean
+      routing_profile: 'enum: fast|balanced|quality|private|safe'
+      routing_mode: 'enum: decision|manual|model_map|passthrough'
+      decision_layer_enabled: boolean
+      default_backend: string|null
+      default_model: string|null
+      respect_client_model: boolean
+      unknown_model_behavior: 'enum: fallback_to_default|reject_404'
+      safety_gate_mode: 'enum: decision_only|always_static|off'
+      headers_preview: map[string,string|null]
+      restart_recommended: boolean
+  RouteRow:
+    fields:
+      route_id: string
+      route_class: string
+      target_engine: string|null
+      backend: string|null
+      model: string|null
+      provider: string|null
+      runtime_kind: 'enum: lmstudio|ollama|mlx_lm|llamacpp|localai|openai_compatible|hosted|custom|unknown|null'
+      latency_tier: 'enum: low|medium|high|manual|unknown'
+      cost_tier: 'enum: none|free|low|medium|paid|high|unknown'
+      privacy: 'enum: local|hosted|human|mixed|unknown'
+      tools: 'enum: yes|no|limited|unknown'
+      fallback_chain: list[string]
+      enabled: boolean
+      available: boolean|null
+      last_selected_at: datetime|null
+      last_status: string|null
+      purpose: string
+      disabled_reason: string|null
+  ModelAlias:
+    fields:
+      alias: string
+      backend: string
+      model: string
+      description: string
+      route_hint: string|null
+      capabilities: list[string]
+      enabled: boolean
+      source: 'enum: config|generated|runtime'
+      validation_status: 'enum: valid|invalid|unknown'
+      validation_detail: string|null
+  BackendState:
+    fields:
+      name: string
+      base_url: url
+      provider: string
+      runtime_kind: 'enum: lmstudio|ollama|mlx_lm|llamacpp|localai|openai_compatible|hosted|custom|unknown'
+      model: string|null
+      timeout_seconds: number
+      api_key_configured: boolean
+      strip_tools: boolean
+      enabled: boolean
+      reachable: boolean|null
+      health_detail: string|null
+      managed: boolean
+      runtime: RuntimeProcessState
+      capabilities: BackendCapabilities
+      loaded_models: list[LoadedModel]
+      disabled_actions: map[action_id,string]
+  RuntimeProcessState:
+    fields:
+      enabled: boolean
+      command: list[string]
+      readiness_url: url|null
+      readiness_timeout_seconds: number|null
+      idle_timeout_seconds: number|null
+      shutdown_timeout_seconds: number|null
+      log_path: path|null
+      process_state: 'enum: stopped|running|external|unknown|error'
+  BackendCapabilities:
+    fields:
+      chat: boolean|null
+      responses: boolean|null
+      completions: boolean|null
+      embeddings: boolean|null
+      anthropic_messages: boolean|null
+      streaming: boolean|null
+      tool_calling: boolean|null
+      structured_output: boolean|null
+      vision: boolean|null
+      image_generation: boolean|null
+      audio: boolean|null
+      load_model: boolean|null
+      unload_model: boolean|null
+      download_model: boolean|null
+      list_loaded: boolean|null
+      ttl: boolean|null
+      max_concurrent_requests: integer|null
+      context_length: integer|null
+  LoadedModel:
+    fields:
+      model_id: string
+      display_name: string
+      identifier: string|null
+      context_length: integer|null
+      quantization: string|null
+      size_label: string|null
+      memory_estimate_gb: number|null
+      loaded: boolean
+      load_source: 'enum: runtime|config|scan|unknown'
+  InstalledModel:
+    fields:
+      model_id: string
+      display_name: string
+      path: path|null
+      source: 'enum: lmstudio|ollama|huggingface_cache|modelrouter|llamacpp|mlx_lm|manual|unknown'
+      runtime_compatibility: list[string]
+      roles: list[string]
+      size_bytes: integer|null
+      quantization: string|null
+      context_length: integer|null
+      license: string|null
+      local: boolean
+      loaded: boolean|null
+      assigned_routes: list[string]
+      score: ModelScore|null
+      warnings: list[string]
+  DiscoverState:
+    fields:
+      query: string
+      source: 'enum: curated_catalog|huggingface|local_only'
+      filters: DiscoverFilters
+      results: list[DiscoverResult]
+      error: string|null
+      external_search_enabled: boolean
+      external_search_maturity: 'enum: planned|experimental|beta|stable'
+  DiscoverFilters:
+    fields:
+      route: string|null
+      runtime_kind: string|null
+      quantization: string|null
+      max_size_gb: number|null
+      license: string|null
+      local_only: boolean
+  DiscoverResult:
+    fields:
+      model_id: string
+      display_name: string
+      provider: string
+      route_fit: list[string]
+      runtime_kind: string|null
+      estimated_size_gb: number|null
+      min_memory_gb: number|null
+      recommended_memory_gb: number|null
+      license: string|null
+      download_supported: boolean
+      score_label: string|null
+      score_reasons: list[string]
+      warnings: list[string]
+  DownloadState:
+    fields:
+      download_id: string
+      model_id: string
+      route: string|null
+      status: 'enum: planned|queued|running|completed|failed|cancelled|confirmation_required'
+      command: list[string]
+      local_dir: path
+      progress_percent: number|null
+      bytes_downloaded: integer|null
+      total_bytes: integer|null
+      error: string|null
+      retryable: boolean
+  ModelLibraryState:
+    fields:
+      installed: list[InstalledModel]
+      discover: DiscoverState
+      downloads: list[DownloadState]
+      recommended: list[DiscoverResult]
+      assignments: list[RouteRow]
+  InstallerState:
+    fields:
+      install_method: 'enum: editable|uv_tool|pipx|pip|unknown'
+      python_version: string
+      package_version: string|null
+      optional_dependencies: map[string,boolean]
+      path_status: map[string,boolean]
+      ports: map[string,boolean]
+      detected_runtimes: map[string,boolean]
+      recommended_next_actions: list[string]
+      warnings: list[string]
+  TelemetryState:
+    fields:
+      enabled: boolean
+      prompt_capture: 'enum: off|hash_only|redacted_preview|full'
+      events_path: path|null
+      feedback_path: path|null
+      events_count: integer
+      feedback_labels_count: integer
+      selected_engine_counts: map[string,integer]
+      backend_counts: map[string,integer]
+      status_counts: map[string,integer]
+      fallback_count: integer
+      expected_mismatch_count: integer
+      unlabeled_replayable_count: integer
+      recent_request_ids: list[string]
+      recent_events: list[TelemetryEvent]
+  TelemetryEvent:
+    fields:
+      request_id: string
+      timestamp: datetime
+      routing_mode: string
+      decision_layer_enabled: boolean
+      selected_engine: string|null
+      backend: string|null
+      model: string|null
+      status: string
+      route_latency_ms: number|null
+      total_latency_ms: number|null
+      fallback_used: boolean
+      prompt_preview: string|null
+      prompt_hash: string|null
+  LatestReceiptState:
+    fields:
+      request_id: string|null
+      routing_mode: string|null
+      decision_layer_enabled: boolean|null
+      summary: string|null
+      selected_engine: string|null
+      selected_backend: string|null
+      selected_model: string|null
+      reason_codes: list[string]
+      rejected_routes: list[string]
+      fallback_used: boolean|null
+      policy_explanation: string|null
+      safety_explanation: string|null
+      privacy_explanation: string|null
+      wrong_route_next_action: string|null
+      receipt_json: object|null
+  LogState:
+    fields:
+      proxy_log_path: path|null
+      settings_log_path: path|null
+      runtime_logs: list[RuntimeLogState]
+  RuntimeLogState:
+    fields:
+      backend: string
+      path: path
+      exists: boolean
+      tail_preview: list[string]
+      error: string|null
+  AdminState:
+    fields:
+      app: AppState
+      proxy: ProxyState
+      routes: list[RouteRow]
+      model_aliases: list[ModelAlias]
+      backends: list[BackendState]
+      model_library: ModelLibraryState
+      installer: InstallerState
+      telemetry: TelemetryState
+      latest_receipt: LatestReceiptState
+      logs: LogState
+      actions: list[ActionDescriptor]
+      maturity: map[string,string]
+  ActionDescriptor:
+    fields:
+      id: string
+      label: string
+      description: string
+      mutating: boolean
+      confirmation_required: boolean
+      enabled: boolean
+      disabled_reason: string|null
+      input_schema: object|null
+      result_schema: object|null
+  ActionResult:
+    fields:
+      ok: boolean
+      action_id: string
+      message: string
+      error: string|null
+      restart_recommended: boolean|null
+      refreshed_state: boolean
+      payload: object|null
+required_actions:
+- id: proxy.start
+  label: Start proxy
+  mutating: true
+  confirmation_required: true
+  enabled_when: config_valid and proxy is stopped
+  state_after_success: proxy.state becomes running or starting
+- id: proxy.stop
+  label: Stop proxy
+  mutating: true
+  confirmation_required: true
+  enabled_when: proxy is running or starting
+  state_after_success: proxy.state becomes stopped
+- id: proxy.restart
+  label: Restart proxy
+  mutating: true
+  confirmation_required: true
+  enabled_when: config exists and is valid
+  state_after_success: proxy process restarted and state refreshed
+- id: config.save_proxy_patch
+  label: Save proxy config
+  mutating: true
+  confirmation_required: true
+  input:
+  - patch
+  - confirm
+  result_payload:
+  - config_path
+  - backup_path
+  - changed_fields
+  - restart_recommended
+- id: config.set_routing_mode
+  label: Set routing mode
+  mutating: true
+  confirmation_required: true
+  input:
+  - routing_mode
+  - default_backend
+  - default_model
+  - unknown_model_behavior
+  - safety_gate_mode
+  - confirm
+- id: model.scan
+  label: Scan local models
+  mutating: false
+  confirmation_required: false
+- id: model.discover
+  label: Discover models
+  mutating: false
+  confirmation_required: false
+- id: model.download.plan
+  label: Plan download
+  mutating: false
+  confirmation_required: false
+- id: model.download.run
+  label: Download model
+  mutating: true
+  confirmation_required: true
+- id: model.assign_route
+  label: Assign model to route
+  mutating: true
+  confirmation_required: true
+- id: runtime.load_model
+  label: Load model
+  mutating: true
+  confirmation_required: true
+- id: runtime.unload_model
+  label: Unload model
+  mutating: true
+  confirmation_required: true
+- id: doctor.run
+  label: Run doctor
+  mutating: false
+  confirmation_required: false
+- id: benchmark.plan
+  label: Plan benchmark
+  mutating: false
+  confirmation_required: false
+- id: benchmark.run
+  label: Run benchmark
+  mutating: true
+  confirmation_required: true
+- id: telemetry.feedback.write
+  label: Label wrong route
+  mutating: true
+  confirmation_required: true
+- id: catalog.diff
+  label: Preview catalog update
+  mutating: false
+  confirmation_required: false
+- id: catalog.apply
+  label: Apply catalog update
+  mutating: true
+  confirmation_required: true
+api_shapes:
+  GET /api/state:
+    returns: AdminState
+  POST /api/action:
+    request:
+      action_id: string
+      confirm: boolean
+      payload: object
+    returns: ActionResult
+  POST /api/scan:
+    legacy_alias_for: model.scan
+  POST /api/save-config:
+    legacy_alias_for: config.save_proxy_patch
+  POST /api/proxy/start:
+    legacy_alias_for: proxy.start
+  POST /api/proxy/stop:
+    legacy_alias_for: proxy.stop
+  POST /api/proxy/restart:
+    legacy_alias_for: proxy.restart
+render_bindings:
+  dashboard:
+    endpoint: proxy.endpoint
+    proxy_status: proxy.state + proxy.pid
+    routing_mode_cards: proxy.routing_mode + proxy.decision_layer_enabled
+    latest_receipt: latest_receipt
+    health_table: backends
+    doctor_button: actions[doctor.run]
+    restart_button: actions[proxy.restart]
+  models_tab:
+    installed_rows: model_library.installed
+    discover_results: model_library.discover.results
+    recommended_rows: model_library.recommended
+    download_rows: model_library.downloads
+    assignment_rows: routes + model_aliases
+    scan_button: actions[model.scan]
+    download_button: actions[model.download.run]
+    assign_button: actions[model.assign_route]
+  routing_tab_decision_mode:
+    routing_mode_select: proxy.routing_mode
+    profile_select: proxy.routing_profile
+    route_map: routes
+    dry_route_preview: read-only route preview action; must not call upstream
+  routing_tab_basic_mode:
+    routing_mode_select: proxy.routing_mode
+    default_backend_select: proxy.default_backend + backends
+    default_model_select: proxy.default_model + backends.loaded_models + model_library.installed
+    respect_client_model_switch: proxy.respect_client_model
+    unknown_model_behavior_select: proxy.unknown_model_behavior
+    safety_gate_select: proxy.safety_gate_mode
+    aliases_table: model_aliases
+  runtimes_tab:
+    runtime_rows: backends
+    capability_details: backends.capabilities
+    load_unload_buttons: runtime.load_model/runtime.unload_model actions enabled by
+      capabilities
+  tui:
+    status_header: proxy.endpoint + proxy.state + proxy.routing_mode + proxy.routing_profile
+    tabs:
+    - Status
+    - Models
+    - Routing
+    - Runtimes
+    - Telemetry
+    - Logs
+    - Settings
+    actions: same action ids as web UI
+validation_rules:
+- routing_mode defaults to decision when missing.
+- manual mode requires default_backend unless a clear validation error is returned.
+- model_map mode requires at least one enabled model_alias or returns a clear validation
+  warning/error depending on startup path.
+- passthrough mode requires default_backend.
+- unknown_model_behavior must be fallback_to_default or reject_404.
+- safety_gate_mode must be decision_only, always_static, or off.
+- model_alias backend references must exist in configured backends.
+- All mutating action endpoints must reject confirm=false.
+- UI and TUI must render unsupported actions disabled with disabled_reason, not hidden
+  unless irrelevant.
+test_requirements:
+- Unit test build_admin_state with no config, valid config, invalid config, decision
+  mode, manual mode, model_map mode.
+- Unit test run_admin_action confirmation enforcement for every mutating action.
+- Proxy tests verify route_fast is not called in non-decision modes.
+- Proxy tests verify X-ModelRouter-Mode and X-ModelRouter-Decision-Layer headers.
+- UI render tests verify no fake placeholder rows are present.
+- TUI render tests verify empty states and populated states use shared state.

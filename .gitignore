@@ -4,6 +4,7 @@ __pycache__/
 .ruff_cache/
 *.py[cod]
 *.egg-info/
+.DS_Store
 uv.lock
 configs/model_router.local.yaml
 models/

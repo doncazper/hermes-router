@@ -566,6 +566,13 @@ chat transcript, does not display literal API keys, does not display raw prompt
 text, and requires explicit Save/Download/Start/Restart clicks before changing
 files or processes.
 
+Productization planning now lives in
+[`docs/codex/productization-roadmap.md`](docs/codex/productization-roadmap.md),
+with the shared admin state/action contract in
+[`docs/codex/admin-state-contract.yaml`](docs/codex/admin-state-contract.yaml).
+The key next direction is a shared admin control plane, followed by optional
+"decision layer off" routing modes for basic gateway usage.
+
 ### Known-Good Local Setups
 
 LM Studio:
