@@ -101,6 +101,7 @@ fields and add deterministic product fields for normal operator review:
 
 - `summary`
 - `reason_codes`
+- `delegation_suitability`
 - `selected_route_explanation`
 - `policy_explanation`
 - `rejection_explanation`
@@ -113,6 +114,12 @@ Reason codes are additive and stable enough for tests, dashboards, and
 release-note comparisons. Existing reason strings remain present for
 compatibility. Use `model-router decide --explain` for a concise human-readable
 view, and use JSON receipts for scripts.
+
+`delegation_suitability` is diagnostic only. It exposes deterministic signals
+such as mechanical work, judgment-heavy work, verification-heavy work,
+repo-wide scope, risky/external actions, and ambiguity sensitivity so host
+agents can make their own delegation choices. ModelRouter does not spawn
+workers or delegate tasks.
 
 Receipts are diagnostic artifacts, not the production hot path.
 `route_fast(...)` still returns only an engine string and does not build
@@ -250,6 +257,26 @@ responses so operators can label a bad route while it is fresh:
 metadata-only and must not include raw prompts, request bodies, API keys, or
 secrets. On shutdown, the proxy prints a best-effort session summary with route
 counts and the telemetry summary command for follow-up review.
+
+Cost and outcome telemetry must stay outside routing decisions. `route_fast(...)`
+and `route(...)` use configured route/backend metadata such as `cost_tier` and
+provider policy; they must not fetch live prices, scrape provider pages, or call
+pricing APIs. The proxy can record actual upstream usage fields when a response
+already includes them, and later estimate cost only from a local versioned
+pricing catalog. Outcome labels are explicit user/operator feedback, not
+inferred success claims.
+
+Future cost/outcome telemetry fields should distinguish route identity
+(`selected_engine`, `routing_profile`, `selected_backend`, `selected_model`,
+`backend`, `backend_model`), latency (`route_latency_ms`,
+`diagnostic_latency_ms`, `upstream_latency_ms`, `total_latency_ms`), usage
+(`usage_prompt_tokens`, `usage_completion_tokens`, `usage_total_tokens`,
+`usage_cached_input_tokens`, `upstream_model`), configured cost metadata
+(`configured_cost_tier`, `configured_latency_tier`), estimated cost
+(`estimated_cost`, `estimated_cost_currency`, `pricing_catalog_version`,
+`pricing_source`, `pricing_effective_date`, `pricing_match`), and feedback
+(`outcome_label`, `feedback_label`, `expected_engine`). Missing usage or pricing
+catalog matches should produce no exact estimate rather than an invented value.
 
 Optional classifier-based routing is not part of the production path. The
 Milestone 7 audit found no labeled replay mismatches that justify it. Revisit

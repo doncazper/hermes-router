@@ -12,6 +12,13 @@ implemented today.
 
 ModelRouter is a local OpenAI-compatible proxy router and admin control center.
 It is not an agent, not a webchat UI, and not a prompt transcript product.
+It is also not a multi-agent harness: host applications own task execution,
+context management, delegation, monitoring, and final review.
+
+Fusion-like harnesses can sit above ModelRouter. In that shape, ModelRouter is
+the transparent control plane for model/provider policy, route receipts,
+telemetry, fallback behavior, and safety gates, while the harness decides when
+to delegate work or switch execution strategy.
 
 The decision router is ModelRouter's default differentiator, but the product
 should also support an explicit "decision layer off" path. In that mode,
@@ -98,6 +105,7 @@ control-center experience. It should not add:
 
 - A chat prompt box.
 - Agent behavior.
+- Hidden planner/worker orchestration.
 - A prompt transcript surface.
 - Silent model downloads.
 - Silent config or routing-policy mutation.

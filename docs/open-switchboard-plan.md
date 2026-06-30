@@ -7,6 +7,11 @@ lane is the open switchboard: one local OpenAI-compatible endpoint, transparent
 routing, explicit safety gates, user-owned providers, and replayable evidence
 for every routing change.
 
+That lane can still support Fusion-like products. A host harness can use
+ModelRouter as its routing and policy control plane, then keep task execution,
+context management, sidekick delegation, monitoring, and final review in the
+host application where those responsibilities are visible and testable.
+
 The goal of this plan is to take the best product lessons from hosted
 orchestration systems without giving up ModelRouter's core promises:
 
@@ -14,6 +19,7 @@ orchestration systems without giving up ModelRouter's core promises:
 - Local-first operation.
 - User-owned model and provider policy.
 - Receipts and telemetry instead of black-box decisions.
+- Clear separation between routing policy and agent orchestration.
 - Optional execution features outside `route_fast(...)`.
 - Human confirmation for high-risk actions.
 
@@ -23,9 +29,16 @@ local proxy control-center shape: route map, runtime status, receipts, safety
 gates, telemetry, and feedback labeling, without adding chat, agent behavior, or
 silent config changes.
 
+A future session-aware routing extension is sketched in
+`docs/session-aware-routing.md`. It keeps phase-boundary re-routing as an
+optional host-agent control-plane API, not as hidden orchestration in the proxy
+or the `route_fast(...)` hot path.
+
 ## Non-Goals
 
 - Do not add hidden planner-worker-synthesizer behavior to the default proxy.
+- Do not make ModelRouter responsible for task execution, context management,
+  worker delegation, or final agent review.
 - Do not add LLM classification to the production path without the replay gates
   in `docs/advanced-routing.md`.
 - Do not silently enable hosted providers, downloads, benchmarks, or verifier
@@ -224,6 +237,40 @@ Done when:
 - Release notes can report route correctness, route changes, and latency.
 - Replay logs and benchmark fixtures share enough shape to promote real
   wrong-route clusters into tests.
+
+## Track 5A: Cost And Outcome Telemetry
+
+Goal: measure actual usage and user-labeled outcomes without turning pricing
+into a routing dependency.
+
+Status: design direction only. Routing still uses configured cost tiers and
+provider policy. `route_fast(...)`, `route(...)`, and default proxy forwarding
+must not fetch live pricing or scrape provider pages.
+
+Add telemetry support for:
+
+- Upstream usage fields when a provider already returns them.
+- Configured cost and latency tiers for the selected route/backend/model.
+- Optional exact cost estimates only from a future local versioned pricing
+  catalog.
+- Explicit outcome labels supplied by users/operators, not inferred task
+  success.
+
+Implementation notes:
+
+- Keep pricing lookup outside `route_fast(...)` and `route(...)`.
+- Do not buffer streaming responses just to find usage.
+- Treat missing usage or missing catalog entries as "estimate unavailable."
+- Make pricing catalog refresh an explicit status/diff/apply workflow later.
+- Keep old JSONL telemetry readers tolerant of missing cost/outcome fields.
+
+Done when:
+
+- Proxy telemetry can record usage from mocked OpenAI-compatible responses.
+- Feedback/outcome labels are optional and privacy-safe.
+- Cost estimates are clearly marked unavailable until a local catalog exists.
+- Documentation explains cost tiers, actual usage, estimates, and outcomes as
+  separate concepts.
 
 ## Track 6: Catalog Update Workflow
 

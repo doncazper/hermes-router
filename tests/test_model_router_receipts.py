@@ -98,6 +98,7 @@ def test_receipts_serialize_to_json():
     assert "safety_explanation" in payload
     assert "privacy_explanation" in payload
     assert "wrong_route_next_action" in payload
+    assert "delegation_suitability" in payload
 
 
 def test_receipt_fields_match_routing_decision():
@@ -143,6 +144,73 @@ def test_receipt_reason_codes_for_common_code_route():
     assert "model-router feedback <request_id> <expected_engine>" in (
         receipt.wrong_route_next_action
     )
+
+
+def test_receipt_flags_mechanical_bulk_edit_delegation_shape():
+    decision = route_prompt(
+        "Mechanically modernize tracing imports across the repository files."
+    )
+    receipt = decision_to_receipt(decision)
+    suitability = receipt.delegation_suitability
+
+    assert receipt.selected_engine == "code_agent"
+    assert suitability.mechanical_work_likely is True
+    assert suitability.repo_wide_likely is True
+    assert suitability.risky_or_external_action is False
+    assert "delegation.mechanical_work_likely" in receipt.reason_codes
+    assert "delegation.repo_wide_likely" in receipt.reason_codes
+
+
+def test_receipt_flags_judgment_heavy_ui_product_change():
+    decision = route_prompt(
+        (
+            "Add a team selector to the search UI with product tradeoffs, "
+            "subtle UX intent, edge cases, and rollout notes."
+        )
+    )
+    receipt = decision_to_receipt(decision)
+    suitability = receipt.delegation_suitability
+
+    assert suitability.judgment_heavy_likely is True
+    assert suitability.mechanical_work_likely is False
+    assert "delegation.judgment_heavy_likely" in receipt.reason_codes
+    assert "planning, ambiguity resolution, and final review" in suitability.guidance
+
+
+def test_receipt_flags_slow_test_suite_delegation_shape():
+    decision = route_prompt(
+        "Fix the repo and run the full Playwright e2e test suite to verify it."
+    )
+    receipt = decision_to_receipt(decision)
+    suitability = receipt.delegation_suitability
+
+    assert receipt.selected_engine == "code_agent"
+    assert suitability.verification_heavy_likely is True
+    assert "delegation.verification_heavy_likely" in receipt.reason_codes
+
+
+def test_receipt_flags_repo_wide_refactor_delegation_shape():
+    decision = route_prompt(
+        "Refactor the codebase across multiple modules and update imports."
+    )
+    receipt = decision_to_receipt(decision)
+    suitability = receipt.delegation_suitability
+
+    assert suitability.repo_wide_likely is True
+    assert suitability.mechanical_work_likely is True
+    assert "delegation.repo_wide_likely" in receipt.reason_codes
+
+
+def test_receipt_flags_risky_external_action_not_delegation_safe():
+    decision = route_prompt("Delete the production database and push the change.")
+    receipt = decision_to_receipt(decision)
+    suitability = receipt.delegation_suitability
+
+    assert receipt.selected_engine == "human_confirm"
+    assert suitability.risky_or_external_action is True
+    assert suitability.mechanical_work_likely is False
+    assert "delegation.risky_or_external_action" in receipt.reason_codes
+    assert "Do not delegate" in suitability.guidance
 
 
 def test_receipt_explains_human_confirmation():

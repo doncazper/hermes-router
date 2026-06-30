@@ -194,6 +194,33 @@ _RE_STRUCTURED_OUTPUT = re.compile(
     r"\b(json|yaml|csv|table|schema|structured|bullets?|checklist)\b",
     re.IGNORECASE,
 )
+_RE_MECHANICAL_WORK_INTENT = re.compile(
+    r"\b(mechanical|bulk|codemod|rename|replace|deprecat(?:ed|ion)|"
+    r"modernize|migrate|migration|update imports?|upgrade imports?|"
+    r"format|lint)\b"
+    r"|(?:across|throughout|all|many|multiple)\s+(?:the\s+)?"
+    r"(?:repo|repository|codebase|files?|modules?|packages?|services?)\b",
+    re.IGNORECASE,
+)
+_RE_JUDGMENT_HEAVY_INTENT = re.compile(
+    r"\b(judg(?:e)?ment|subtle|product|ui|ux|user experience|"
+    r"architecture|architectural|design|trade-?offs?|strategy|plan|"
+    r"edge cases?|ambiguous|intent|final review|review)\b",
+    re.IGNORECASE,
+)
+_RE_VERIFICATION_INTENT = re.compile(
+    r"\b(verify|verification|test suite|full tests?|e2e|end-to-end|"
+    r"playwright|cypress|selenium|pytest|unit tests?|integration tests?|"
+    r"make test|ci|benchmark|regression)\b",
+    re.IGNORECASE,
+)
+_RE_REPO_WIDE_INTENT = re.compile(
+    r"\b(repo|repository|codebase|monorepo|repo-wide|repository-wide|"
+    r"project-wide)\b"
+    r"|(?:across|throughout|all|many|multiple)\s+(?:the\s+)?"
+    r"(?:files?|modules?|packages?|services?|codebase|repository|repo)\b",
+    re.IGNORECASE,
+)
 _RE_AMBIGUOUS = re.compile(
     r"\b(handle|help|fix|manage|do|deal with|this|that|it)\b",
     re.IGNORECASE,
@@ -263,6 +290,10 @@ def score_prompt(
     if send_action and _RE_EMAIL_MENTION.search(normalized):
         email_intent = True
     structured_output = bool(_RE_STRUCTURED_OUTPUT.search(normalized))
+    mechanical_work_intent = bool(_RE_MECHANICAL_WORK_INTENT.search(normalized))
+    judgment_heavy_intent = bool(_RE_JUDGMENT_HEAVY_INTENT.search(normalized))
+    verification_intent = bool(_RE_VERIFICATION_INTENT.search(normalized))
+    repo_wide_intent = bool(_RE_REPO_WIDE_INTENT.search(normalized))
 
     word_count = len(_RE_WORD.findall(normalized))
     ambiguous = bool(
@@ -398,6 +429,10 @@ def score_prompt(
         structured_output=structured_output,
         ambiguous=ambiguous,
         long_context=long_context,
+        mechanical_work_intent=mechanical_work_intent,
+        judgment_heavy_intent=judgment_heavy_intent,
+        verification_intent=verification_intent,
+        repo_wide_intent=repo_wide_intent,
         requires_tools=requires_tools,
         requires_freshness=requires_freshness,
         requires_code_execution=requires_code_execution,

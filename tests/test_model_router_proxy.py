@@ -1584,15 +1584,111 @@ def test_proxy_writes_privacy_safe_routing_event(monkeypatch, tmp_path):
     assert row["selected_engine"] == "fast_local"
     assert row["backend"] == "fast"
     assert row["backend_model"] == "fast-model"
+    assert row["upstream_model"] == "fast-model"
     assert row["status"] == "forwarded"
     assert row["complexity_score"] >= 0
     assert "prompt_hash" in row
     assert "prompt" not in row
+    assert "usage_prompt_tokens" not in row
+    assert "usage_completion_tokens" not in row
+    assert "usage_total_tokens" not in row
+    assert "usage_cached_input_tokens" not in row
     assert "secret123" not in serialized
     assert "private_tool" not in serialized
     assert "secret123" not in route_headers
     assert "private_tool" not in route_headers
     assert "api_key" not in route_headers
+
+
+def test_proxy_logs_upstream_usage_from_chat_completion(monkeypatch, tmp_path):
+    log_path = tmp_path / "routing-events.jsonl"
+    with _client(monkeypatch, _config(log_path=log_path)) as client:
+        _FakeAsyncClient.responses = {
+            "fast": [
+                _response(
+                    200,
+                    {
+                        "id": "cmpl-usage",
+                        "object": "chat.completion",
+                        "model": "actual-fast-model",
+                        "choices": [
+                            {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": "ok",
+                                }
+                            }
+                        ],
+                        "usage": {
+                            "prompt_tokens": 11,
+                            "completion_tokens": 7,
+                            "total_tokens": 18,
+                            "prompt_tokens_details": {"cached_tokens": 3},
+                        },
+                    },
+                )
+            ]
+        }
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "model-router",
+                "messages": [{"role": "user", "content": "rewrite this text"}],
+            },
+        )
+
+    row = json.loads(log_path.read_text(encoding="utf-8").strip())
+    assert response.status_code == 200
+    assert row["selected_engine"] == "fast_local"
+    assert row["backend"] == "fast"
+    assert row["backend_model"] == "fast-model"
+    assert row["upstream_model"] == "actual-fast-model"
+    assert row["usage_prompt_tokens"] == 11
+    assert row["usage_completion_tokens"] == 7
+    assert row["usage_total_tokens"] == 18
+    assert row["usage_cached_input_tokens"] == 3
+
+
+def test_proxy_logs_responses_usage_shape(monkeypatch, tmp_path):
+    log_path = tmp_path / "routing-events.jsonl"
+    with _client(monkeypatch, _config(log_path=log_path)) as client:
+        _FakeAsyncClient.responses = {
+            "fast": [
+                _response(
+                    200,
+                    {
+                        "id": "resp-usage",
+                        "object": "response",
+                        "model": "actual-response-model",
+                        "output": [],
+                        "usage": {
+                            "input_tokens": 12,
+                            "output_tokens": 5,
+                            "total_tokens": 17,
+                            "input_tokens_details": {"cached_tokens": 4},
+                        },
+                    },
+                )
+            ]
+        }
+        response = client.post(
+            "/v1/responses",
+            json={
+                "model": "model-router",
+                "input": "rewrite this text",
+            },
+        )
+
+    row = json.loads(log_path.read_text(encoding="utf-8").strip())
+    assert response.status_code == 200
+    assert row["selected_engine"] == "fast_local"
+    assert row["backend"] == "fast"
+    assert row["backend_model"] == "fast-model"
+    assert row["upstream_model"] == "actual-response-model"
+    assert row["usage_prompt_tokens"] == 12
+    assert row["usage_completion_tokens"] == 5
+    assert row["usage_total_tokens"] == 17
+    assert row["usage_cached_input_tokens"] == 4
 
 
 def test_proxy_verifier_default_is_disabled(monkeypatch, tmp_path):
@@ -1743,6 +1839,11 @@ def test_proxy_verifier_streaming_logs_skipped_without_buffering(monkeypatch, tm
     assert response.status_code == 200
     assert body == b"data: chunk\n\n"
     assert row["verification_status"] == "skipped_streaming"
+    assert "upstream_model" not in row
+    assert "usage_prompt_tokens" not in row
+    assert "usage_completion_tokens" not in row
+    assert "usage_total_tokens" not in row
+    assert "usage_cached_input_tokens" not in row
     assert [request["backend"] for request in _FakeAsyncClient.requests] == ["fast"]
 
 

@@ -104,7 +104,12 @@ def test_routing_event_schema_is_json_safe(tmp_path):
         router_version="test",
         backend="code",
         backend_model="code-model",
+        upstream_model="actual-code-model",
         status_code=200,
+        usage_prompt_tokens=120,
+        usage_completion_tokens=30,
+        usage_total_tokens=150,
+        usage_cached_input_tokens=12,
         decision=decision,
     )
     path = tmp_path / "events.jsonl"
@@ -120,6 +125,11 @@ def test_routing_event_schema_is_json_safe(tmp_path):
     assert rows[0]["receipt_summary"].startswith("Selected code_agent")
     assert "route.coding" in rows[0]["reason_codes"]
     assert rows[0]["wrong_route_next_action"].startswith("If this route was wrong")
+    assert rows[0]["upstream_model"] == "actual-code-model"
+    assert rows[0]["usage_prompt_tokens"] == 120
+    assert rows[0]["usage_completion_tokens"] == 30
+    assert rows[0]["usage_total_tokens"] == 150
+    assert rows[0]["usage_cached_input_tokens"] == 12
     assert json.dumps(rows[0])
 
 

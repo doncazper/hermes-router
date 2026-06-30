@@ -983,6 +983,10 @@ class PromptFeatures:
     structured_output: bool = False
     ambiguous: bool = False
     long_context: bool = False
+    mechanical_work_intent: bool = False
+    judgment_heavy_intent: bool = False
+    verification_intent: bool = False
+    repo_wide_intent: bool = False
     requires_tools: bool = False
     requires_freshness: bool = False
     requires_code_execution: bool = False
@@ -1085,6 +1089,30 @@ class RoutingDecision:
 
 
 @dataclass(frozen=True)
+class DelegationSuitability:
+    mechanical_work_likely: bool = False
+    judgment_heavy_likely: bool = False
+    verification_heavy_likely: bool = False
+    repo_wide_likely: bool = False
+    risky_or_external_action: bool = False
+    ambiguity_sensitive: bool = False
+    reasons: tuple[str, ...] = field(default_factory=tuple)
+    guidance: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "mechanical_work_likely": self.mechanical_work_likely,
+            "judgment_heavy_likely": self.judgment_heavy_likely,
+            "verification_heavy_likely": self.verification_heavy_likely,
+            "repo_wide_likely": self.repo_wide_likely,
+            "risky_or_external_action": self.risky_or_external_action,
+            "ambiguity_sensitive": self.ambiguity_sensitive,
+            "reasons": list(self.reasons),
+            "guidance": self.guidance,
+        }
+
+
+@dataclass(frozen=True)
 class RoutingReceipt:
     selected_engine: str
     routing_profile: RoutingProfile
@@ -1115,6 +1143,9 @@ class RoutingReceipt:
     safety_explanation: str = ""
     privacy_explanation: str = ""
     wrong_route_next_action: str = ""
+    delegation_suitability: DelegationSuitability = field(
+        default_factory=DelegationSuitability
+    )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1144,6 +1175,7 @@ class RoutingReceipt:
             "fallback_used": self.fallback_used,
             "summary": self.summary,
             "reason_codes": list(self.reason_codes),
+            "delegation_suitability": self.delegation_suitability.to_dict(),
             "selected_route_explanation": self.selected_route_explanation,
             "policy_explanation": self.policy_explanation,
             "rejection_explanation": self.rejection_explanation,

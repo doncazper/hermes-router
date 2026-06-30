@@ -20,6 +20,10 @@ feature flags, backend, fallback status, latency, prompt hash, prompt length,
 estimated tokens, and a redacted preview. It does not log raw prompts unless
 `prompt_capture: full` or `MODEL_ROUTER_LOG_PROMPTS=1` is explicitly enabled.
 
+Routing decisions use configured route/backend metadata such as `cost_tier` and
+`latency_tier`. They do not fetch live pricing, and future cost telemetry must
+not change `route_fast(...)`, `route(...)`, or proxy forwarding decisions.
+
 When provider policy rejects an engine, the diagnostic receipt includes the
 policy reason and rejected engine without raw prompt text. When proxy backend
 policy rejects forwarding, the event status is `backend_policy_rejected`, the
@@ -39,6 +43,42 @@ configs keep verification `off`.
 
 Telemetry inspection commands do not print raw prompt text. Feedback notes are
 hidden by default because they may contain private context.
+
+## Cost And Outcome Direction
+
+Cost and outcome telemetry should separate four concepts:
+
+- **Cost tiers**: configured metadata such as `cost_tier`, `latency_tier`,
+  selected engine, selected backend, selected model, backend model, routing
+  profile, and policy constraints. These are stable enough for routing policy.
+- **Actual usage**: upstream response metadata when a provider already returns
+  it, such as prompt tokens, completion tokens, total tokens, cached input
+  tokens, and upstream model id. The proxy should record these when available
+  without buffering streaming responses or making provider-specific follow-up
+  calls.
+- **Estimated cost**: best-effort dollar estimates only when a later local
+  versioned pricing catalog has a matching provider/model entry and usage
+  counts are present. Missing price or missing usage means no estimate.
+- **Outcome labels**: explicit user/operator feedback such as `success`,
+  `partial`, `failed`, `wrong_route`, `too_expensive`, or `too_slow`. The router
+  must not infer task success from status codes, route choice, or verifier
+  status.
+
+Recommended future routing event fields:
+
+| Group | Fields |
+| --- | --- |
+| Route identity | `selected_engine`, `routing_profile`, `selected_backend`, `selected_model`, `backend`, `backend_model`, `status`, `status_code`, `fallback_used` |
+| Latency | `route_latency_ms`, `diagnostic_latency_ms`, `upstream_latency_ms`, `total_latency_ms` |
+| Usage | `usage_prompt_tokens`, `usage_completion_tokens`, `usage_total_tokens`, `usage_cached_input_tokens`, `upstream_model` |
+| Cost tier | `configured_cost_tier`, `configured_latency_tier`, `cost_estimate_available` |
+| Estimated cost | `estimated_cost`, `estimated_cost_currency`, `pricing_catalog_version`, `pricing_source`, `pricing_effective_date`, `pricing_match`, `pricing_unavailable_reason` |
+| Outcomes | `outcome_label`, `feedback_label`, `expected_engine`, `feedback_notes_present` |
+
+Pricing catalog metadata should be local and versioned. Refreshing it should be
+an explicit operator action, similar to catalog maintenance: status/diff/apply,
+preview changes, require confirmation, and never run during routing or default
+proxy forwarding.
 
 ## Identify Routes Live
 

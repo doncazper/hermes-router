@@ -9,6 +9,11 @@ models, fresh research to research tools, repo work to code-capable backends,
 screenshots to vision/OCR, image requests to image generation, and risky
 actions to human confirmation.
 
+ModelRouter is the routing/control layer, not the agent harness. A
+Fusion-like multi-agent system can use it for model and provider policy,
+receipts, telemetry, and safety gates, while the host agent remains responsible
+for task execution, context management, delegation, and final review.
+
 ## Use With Your Agent In 3 Minutes
 
 Install the proxy extra:
@@ -113,10 +118,11 @@ The command runs pip through the current Python executable, so inside the repo
 venv it installs into `.venv` rather than Homebrew's externally managed Python.
 
 The router core is intentionally a decision router only. It does not execute
-prompts, browse the web, run shell commands, send messages, delete files, or
-purchase anything. The optional proxy forwards OpenAI-compatible requests to
-configured upstreams; when explicitly configured with managed local runtimes, it
-can start and stop only those configured local model-server processes.
+prompts, browse the web, run shell commands, send messages, delete files,
+purchase anything, spawn workers, or review delegated work. The optional proxy
+forwards OpenAI-compatible requests to configured upstreams; when explicitly
+configured with managed local runtimes, it can start and stop only those
+configured local model-server processes.
 
 ## At a Glance
 
@@ -392,7 +398,10 @@ keeps the original audit fields and adds deterministic product fields:
 
 - `summary`: concise human-readable route outcome.
 - `reason_codes`: stable lowercase codes such as `route.coding`,
-  `policy.local_only`, `rejection.provider_denied`, or `fallback.used`.
+  `policy.local_only`, `rejection.provider_denied`,
+  `delegation.mechanical_work_likely`, or `fallback.used`.
+- `delegation_suitability`: diagnostic task-shape signals for external agents
+  considering sidekick-style delegation; ModelRouter still does not delegate.
 - `selected_route_explanation`: why the selected engine matched the request.
 - `policy_explanation`: profile/provider constraints that mattered.
 - `rejection_explanation`: rejected engines/providers and the reason.
@@ -844,6 +853,13 @@ scores, feature flags, backend, fallback status, and latencies. Raw prompts are
 not stored unless `prompt_capture: full` or `MODEL_ROUTER_LOG_PROMPTS=1` is set.
 Use full capture only during deliberate calibration runs.
 
+Cost and outcome telemetry follows the same privacy-first boundary. Routing uses
+configured `cost_tier` metadata and provider policy; `route_fast(...)` and
+`route(...)` do not fetch live prices. Future proxy telemetry should record
+upstream token usage when providers return it, accept explicit outcome labels
+from users/operators, and estimate exact cost only from a local versioned pricing
+catalog. Missing usage or pricing metadata means no exact estimate.
+
 When a route is wrong, copy `X-ModelRouter-Request-ID` from the response and
 label it:
 
@@ -961,9 +977,24 @@ revisiting optional advanced routing.
     "route.coding",
     "requirement.tools",
     "requirement.code_execution",
+    "delegation.verification_heavy_likely",
+    "delegation.repo_wide_likely",
     "fallback.configured",
     "safety.no_confirmation_required"
   ],
+  "delegation_suitability": {
+    "mechanical_work_likely": false,
+    "judgment_heavy_likely": false,
+    "verification_heavy_likely": true,
+    "repo_wide_likely": true,
+    "risky_or_external_action": false,
+    "ambiguity_sensitive": false,
+    "reasons": [
+      "Verification or test-running cost is likely.",
+      "Repository-wide or multi-file scope is likely."
+    ],
+    "guidance": "Candidate for sidekick-style delegation when host policy and provider constraints allow it."
+  },
   "selected_route_explanation": "Selected code_agent for coding or repository work.",
   "policy_explanation": "Profile: routing profile balanced uses default deterministic routing.",
   "fallback_explanation": "No fallback was used; reasoning_local remains the configured fallback.",

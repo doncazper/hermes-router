@@ -708,6 +708,7 @@ def create_app(config: RoutingProxyConfig):
             )
         upstream_latency_ms = (time.perf_counter() - upstream_started) * 1000
         used_model = _model_for_used_backend(backend, selected_model, used_backend)
+        usage_metadata = _upstream_usage_metadata(response)
         verification = await _verify_response_if_configured(
             config,
             clients,
@@ -742,6 +743,7 @@ def create_app(config: RoutingProxyConfig):
                 stats=session_stats,
                 verification=verification,
                 route_api=route_api,
+                usage_metadata=usage_metadata,
             )
             runtime_manager.touch(used_backend.name)
             return JSONResponse(
@@ -779,6 +781,7 @@ def create_app(config: RoutingProxyConfig):
             stats=session_stats,
             verification=verification,
             route_api=route_api,
+            usage_metadata=usage_metadata,
         )
         runtime_manager.touch(used_backend.name)
         LOG.info(
@@ -1739,6 +1742,7 @@ def _write_proxy_event(
     stats: ProxySessionStats | None = None,
     verification: dict[str, Any] | None = None,
     route_api: str = "route_fast",
+    usage_metadata: dict[str, Any] | None = None,
 ) -> None:
     if stats is not None:
         stats.record(
@@ -1765,7 +1769,21 @@ def _write_proxy_event(
             fallback_used=fallback_used,
             backend=backend,
             backend_model=backend_model,
+            upstream_model=_metadata_string(usage_metadata, "upstream_model"),
             status_code=status_code,
+            usage_prompt_tokens=_metadata_int(
+                usage_metadata,
+                "usage_prompt_tokens",
+            ),
+            usage_completion_tokens=_metadata_int(
+                usage_metadata,
+                "usage_completion_tokens",
+            ),
+            usage_total_tokens=_metadata_int(usage_metadata, "usage_total_tokens"),
+            usage_cached_input_tokens=_metadata_int(
+                usage_metadata,
+                "usage_cached_input_tokens",
+            ),
             decision=decision,
             prompt_capture=config.observability.prompt_capture,
             verification=verification,
@@ -1775,6 +1793,94 @@ def _write_proxy_event(
             selected_model=backend_model,
         )
     )
+
+
+def _upstream_usage_metadata(response: Any) -> dict[str, Any]:
+    payload = _response_json_object(response)
+    if not payload:
+        return {}
+
+    metadata: dict[str, Any] = {}
+    upstream_model = _safe_metadata_string(payload.get("model"))
+    if upstream_model is not None:
+        metadata["upstream_model"] = upstream_model
+
+    usage = payload.get("usage")
+    if not isinstance(usage, dict):
+        return metadata
+
+    prompt_tokens = _first_int(
+        _metadata_int(usage, "prompt_tokens"),
+        _metadata_int(usage, "input_tokens"),
+    )
+    completion_tokens = _first_int(
+        _metadata_int(usage, "completion_tokens"),
+        _metadata_int(usage, "output_tokens"),
+    )
+    total_tokens = _metadata_int(usage, "total_tokens")
+    cached_input_tokens = _first_int(
+        _metadata_int(usage, "cached_input_tokens"),
+        _metadata_int(usage, "cache_read_input_tokens"),
+        _nested_metadata_int(usage, "prompt_tokens_details", "cached_tokens"),
+        _nested_metadata_int(usage, "input_tokens_details", "cached_tokens"),
+    )
+
+    if prompt_tokens is not None:
+        metadata["usage_prompt_tokens"] = prompt_tokens
+    if completion_tokens is not None:
+        metadata["usage_completion_tokens"] = completion_tokens
+    if total_tokens is not None:
+        metadata["usage_total_tokens"] = total_tokens
+    if cached_input_tokens is not None:
+        metadata["usage_cached_input_tokens"] = cached_input_tokens
+
+    return metadata
+
+
+def _response_json_object(response: Any) -> dict[str, Any]:
+    try:
+        payload = json.loads(response.content)
+    except (TypeError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _metadata_int(data: dict[str, Any] | None, key: str) -> int | None:
+    if not data:
+        return None
+    value = data.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _nested_metadata_int(
+    data: dict[str, Any],
+    parent_key: str,
+    child_key: str,
+) -> int | None:
+    child = data.get(parent_key)
+    return _metadata_int(child, child_key) if isinstance(child, dict) else None
+
+
+def _metadata_string(data: dict[str, Any] | None, key: str) -> str | None:
+    if not data:
+        return None
+    return _safe_metadata_string(data.get(key))
+
+
+def _safe_metadata_string(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _first_int(*values: int | None) -> int | None:
+    for value in values:
+        if value is not None:
+            return value
+    return None
 
 
 def _format_proxy_session_summary(

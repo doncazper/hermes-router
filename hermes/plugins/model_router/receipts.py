@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import json
 
-from hermes.plugins.model_router.models import EngineRejection, RoutingDecision, RoutingReceipt
+from hermes.plugins.model_router.models import (
+    DelegationSuitability,
+    EngineRejection,
+    RoutingDecision,
+    RoutingReceipt,
+)
 
 
 LOCAL_PROVIDER_SET = {"local", "human"}
 
 
 def decision_to_receipt(decision: RoutingDecision) -> RoutingReceipt:
+    delegation_suitability = _delegation_suitability(decision)
     return RoutingReceipt(
         selected_engine=decision.selected_engine,
         routing_profile=decision.routing_profile,
@@ -33,7 +39,7 @@ def decision_to_receipt(decision: RoutingDecision) -> RoutingReceipt:
         alternatives=decision.alternatives,
         fallback_used=decision.fallback_used,
         summary=_receipt_summary(decision),
-        reason_codes=_receipt_reason_codes(decision),
+        reason_codes=_receipt_reason_codes(decision, delegation_suitability),
         selected_route_explanation=_selected_route_explanation(decision),
         policy_explanation=_policy_explanation(decision),
         rejection_explanation=_rejection_explanation(decision.rejected_engines),
@@ -41,6 +47,7 @@ def decision_to_receipt(decision: RoutingDecision) -> RoutingReceipt:
         safety_explanation=_safety_explanation(decision),
         privacy_explanation=_privacy_explanation(decision),
         wrong_route_next_action=_wrong_route_next_action(decision),
+        delegation_suitability=delegation_suitability,
     )
 
 
@@ -69,7 +76,10 @@ def _receipt_summary(decision: RoutingDecision) -> str:
     )
 
 
-def _receipt_reason_codes(decision: RoutingDecision) -> tuple[str, ...]:
+def _receipt_reason_codes(
+    decision: RoutingDecision,
+    delegation_suitability: DelegationSuitability,
+) -> tuple[str, ...]:
     codes: list[str] = [f"profile.{decision.routing_profile.value}"]
     if not decision.config_valid:
         codes.append("config.invalid")
@@ -79,6 +89,7 @@ def _receipt_reason_codes(decision: RoutingDecision) -> tuple[str, ...]:
     codes.append(_selected_route_code(decision))
     codes.extend(_requirement_codes(decision))
     codes.extend(_policy_codes(decision))
+    codes.extend(_delegation_codes(delegation_suitability))
     codes.extend(_reason_string_codes(decision.reasons))
     codes.extend(_rejection_codes(decision.rejected_engines))
     if decision.fallback_used:
@@ -90,6 +101,102 @@ def _receipt_reason_codes(decision: RoutingDecision) -> tuple[str, ...]:
     else:
         codes.append("safety.no_confirmation_required")
     return tuple(dict.fromkeys(codes))
+
+
+def _delegation_suitability(decision: RoutingDecision) -> DelegationSuitability:
+    features = decision.features
+    risky_or_external_action = bool(
+        decision.requires_confirmation
+        or features.external_action
+        or features.high_impact_external_action
+        or features.destructive_action
+        or features.send_action
+        or features.purchase_action
+    )
+    ambiguity_sensitive = bool(
+        features.ambiguous
+        or decision.confidence_score < 60
+        or (features.sensitive_domain and decision.confidence_score < 75)
+    )
+    judgment_heavy_likely = bool(
+        features.judgment_heavy_intent
+        or features.multi_step_reasoning
+        or features.long_context
+        or (decision.complexity_score >= 60 and not features.mechanical_work_intent)
+    )
+    mechanical_work_likely = bool(
+        not risky_or_external_action
+        and (
+            features.mechanical_work_intent
+            or (
+                features.coding_intent
+                and features.repo_wide_intent
+                and not judgment_heavy_likely
+            )
+        )
+    )
+    verification_heavy_likely = bool(
+        features.verification_intent
+        or (features.coding_intent and features.shell_intent)
+    )
+    repo_wide_likely = bool(features.repo_wide_intent)
+
+    reasons: list[str] = []
+    if mechanical_work_likely:
+        reasons.append("Mechanical or repetitive code work is likely.")
+    if judgment_heavy_likely:
+        reasons.append("Substantive judgment, planning, or review is likely.")
+    if verification_heavy_likely:
+        reasons.append("Verification or test-running cost is likely.")
+    if repo_wide_likely:
+        reasons.append("Repository-wide or multi-file scope is likely.")
+    if risky_or_external_action:
+        reasons.append("Risky or external action policy applies.")
+    if ambiguity_sensitive:
+        reasons.append("Ambiguity or sensitivity should stay on a stronger path.")
+
+    if risky_or_external_action:
+        guidance = "Do not delegate without satisfying human-confirmation policy."
+    elif judgment_heavy_likely or ambiguity_sensitive:
+        guidance = (
+            "Keep planning, ambiguity resolution, and final review on a stronger "
+            "route; delegate only narrow implementation or verification work."
+        )
+    elif mechanical_work_likely or verification_heavy_likely:
+        guidance = (
+            "Candidate for sidekick-style delegation when host policy and provider "
+            "constraints allow it."
+        )
+    else:
+        guidance = "No strong sidekick-delegation signal in this receipt."
+
+    return DelegationSuitability(
+        mechanical_work_likely=mechanical_work_likely,
+        judgment_heavy_likely=judgment_heavy_likely,
+        verification_heavy_likely=verification_heavy_likely,
+        repo_wide_likely=repo_wide_likely,
+        risky_or_external_action=risky_or_external_action,
+        ambiguity_sensitive=ambiguity_sensitive,
+        reasons=tuple(reasons),
+        guidance=guidance,
+    )
+
+
+def _delegation_codes(suitability: DelegationSuitability) -> tuple[str, ...]:
+    codes: list[str] = []
+    if suitability.mechanical_work_likely:
+        codes.append("delegation.mechanical_work_likely")
+    if suitability.judgment_heavy_likely:
+        codes.append("delegation.judgment_heavy_likely")
+    if suitability.verification_heavy_likely:
+        codes.append("delegation.verification_heavy_likely")
+    if suitability.repo_wide_likely:
+        codes.append("delegation.repo_wide_likely")
+    if suitability.risky_or_external_action:
+        codes.append("delegation.risky_or_external_action")
+    if suitability.ambiguity_sensitive:
+        codes.append("delegation.ambiguity_sensitive")
+    return tuple(codes)
 
 
 def _selected_route_code(decision: RoutingDecision) -> str:

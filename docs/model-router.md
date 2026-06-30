@@ -10,12 +10,22 @@ This milestone does not execute prompts, call model providers, perform web
 research, run code, send messages, delete files, purchase anything, or dispatch
 to an agent. It only decides.
 
+That makes ModelRouter a control layer for host agents, not a replacement for
+them. A Fusion-like multi-agent harness could call ModelRouter for model and
+provider policy, route receipts, telemetry, and safety gates, but the host
+harness owns task execution, persistent context, worker delegation, monitoring,
+and final review.
+
 ## Product Truth
 
 ModelRouter's current product north star is a local proxy control center, not a
 chat UI or agent workspace. The admin surface should make routing policy,
 runtime status, safety gates, route receipts, telemetry, model/runtime controls,
 and wrong-route feedback visible while preserving privacy-safe defaults.
+
+The product should stay transparent about that boundary: it can make routing
+decisions observable and enforce provider/safety policy for external agents, but
+it should not hide a planner-worker system inside the proxy.
 
 See `docs/product-north-star.md` for the canonical north-star screenshot and
 the implemented/in-progress/future split.
