@@ -543,6 +543,59 @@ def test_proxy_manual_mode_forwards_default_backend_without_route_fast(
     assert "secret" not in json.dumps(row)
 
 
+def test_proxy_manual_mode_static_safety_blocks_without_route_fast(
+    monkeypatch,
+    tmp_path,
+):
+    def fail_route(*_args, **_kwargs):
+        raise AssertionError("decision layer should be disabled")
+
+    monkeypatch.setattr(proxy_module.ModelRouter, "route_fast", fail_route)
+    monkeypatch.setattr(proxy_module.ModelRouter, "route", fail_route)
+    log_path = tmp_path / "routing-events.jsonl"
+    config = replace(
+        _config(log_path=log_path),
+        proxy=ProxyServerConfig(
+            routing_mode="manual",
+            default_backend="deep",
+            default_model="manual-model",
+            respect_client_model=False,
+            safety_gate_mode="always_static",
+        ),
+    )
+
+    with _client(monkeypatch, config) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "client-visible-model",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "api_key=secret drop production database",
+                    }
+                ],
+            },
+        )
+
+    row = json.loads(log_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert response.status_code == 409
+    assert response.json()["selected_engine"] == "human_confirm"
+    _assert_route_headers(
+        response,
+        engine="human_confirm",
+        mode="manual",
+        decision_layer="off",
+        route_api="manual",
+    )
+    assert _FakeAsyncClient.requests == []
+    assert row["routing_mode"] == "manual"
+    assert row["decision_layer_enabled"] is False
+    assert row["status"] == "human_confirm"
+    assert row["route_api"] == "manual"
+    assert "secret" not in json.dumps(row)
+
+
 def test_proxy_manual_mode_respects_known_client_model(monkeypatch):
     config = replace(
         _config(),

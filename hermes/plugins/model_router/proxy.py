@@ -32,6 +32,7 @@ from hermes.plugins.model_router.routing_log import (
     redact_text,
 )
 from hermes.plugins.model_router.receipts import decision_to_receipt
+from hermes.plugins.model_router.scorer import score_prompt
 
 
 LOG = logging.getLogger("model-router-proxy")
@@ -250,51 +251,56 @@ def create_app(config: RoutingProxyConfig):
             route_api = "manual"
             route_started = time.perf_counter()
             engine = "manual"
+            if config.proxy.safety_gate_mode == "always_static":
+                prompt = prompt_from_body(body)
+                if _manual_static_confirmation_required(prompt):
+                    engine = FAIL_CLOSED_ENGINE
             route_latency_ms = (time.perf_counter() - route_started) * 1000
-            try:
-                manual_selection = _manual_routing_selection(config, body)
-            except ManualRoutingError as exc:
-                _write_proxy_event(
-                    event_writer,
-                    request_id=request_id,
-                    prompt="",
-                    selected_engine=engine,
-                    status=exc.status,
-                    route_latency_ms=route_latency_ms,
-                    diagnostic_latency_ms=None,
-                    total_latency_ms=(time.perf_counter() - started) * 1000,
-                    config=config,
-                    decision=None,
-                    backend=exc.backend,
-                    backend_model=exc.model,
-                    fallback_used=False,
-                    status_code=exc.status_code,
-                    stats=session_stats,
-                    route_api=route_api,
-                )
-                return JSONResponse(
-                    status_code=exc.status_code,
-                    headers=_route_headers(
+            if engine != FAIL_CLOSED_ENGINE:
+                try:
+                    manual_selection = _manual_routing_selection(config, body)
+                except ManualRoutingError as exc:
+                    _write_proxy_event(
+                        event_writer,
                         request_id=request_id,
-                        engine=engine,
+                        prompt="",
+                        selected_engine=engine,
+                        status=exc.status,
+                        route_latency_ms=route_latency_ms,
+                        diagnostic_latency_ms=None,
+                        total_latency_ms=(time.perf_counter() - started) * 1000,
+                        config=config,
+                        decision=None,
                         backend=exc.backend,
-                        model=exc.model,
+                        backend_model=exc.model,
                         fallback_used=False,
-                        profile=config.proxy.routing_profile,
-                        routing_mode=config.proxy.routing_mode,
-                        decision_layer_enabled=False,
+                        status_code=exc.status_code,
+                        stats=session_stats,
                         route_api=route_api,
-                    ),
-                    content={
-                        "error": {
-                            "message": str(exc),
-                            "type": exc.error_type,
+                    )
+                    return JSONResponse(
+                        status_code=exc.status_code,
+                        headers=_route_headers(
+                            request_id=request_id,
+                            engine=engine,
+                            backend=exc.backend,
+                            model=exc.model,
+                            fallback_used=False,
+                            profile=config.proxy.routing_profile,
+                            routing_mode=config.proxy.routing_mode,
+                            decision_layer_enabled=False,
+                            route_api=route_api,
+                        ),
+                        content={
+                            "error": {
+                                "message": str(exc),
+                                "type": exc.error_type,
+                            },
+                            "selected_engine": engine,
                         },
-                        "selected_engine": engine,
-                    },
-                )
-            backend = manual_selection.backend
-            selected_model = manual_selection.model
+                    )
+                backend = manual_selection.backend
+                selected_model = manual_selection.model
         else:
             prompt = prompt_from_body(body)
             route_hints = {"profile": config.proxy.routing_profile}
@@ -1011,6 +1017,12 @@ def _manual_routing_selection(
                 model=model,
             )
     return ManualRoutingSelection(backend=backend, model=model)
+
+
+def _manual_static_confirmation_required(prompt: str) -> bool:
+    if not prompt:
+        return False
+    return score_prompt(prompt).features.requires_confirmation
 
 
 def _manual_model_allowed(
