@@ -430,13 +430,19 @@ def _assert_route_headers(
     *,
     engine: str,
     backend: str | None = None,
+    model: str | None = None,
     fallback: str = "false",
     profile: str = "balanced",
+    mode: str = "decision",
+    decision_layer: str = "on",
+    route_api: str = "route_fast",
 ) -> None:
     assert response.headers["x-modelrouter-request-id"]
     assert response.headers["x-modelrouter-engine"] == engine
+    assert response.headers["x-modelrouter-mode"] == mode
+    assert response.headers["x-modelrouter-decision-layer"] == decision_layer
     assert response.headers["x-modelrouter-profile"] == profile
-    assert response.headers["x-modelrouter-route-api"] == "route_fast"
+    assert response.headers["x-modelrouter-route-api"] == route_api
     assert response.headers["x-modelrouter-fallback"] == fallback
     assert response.headers["x-request-id"] == response.headers[
         "x-modelrouter-request-id"
@@ -448,6 +454,8 @@ def _assert_route_headers(
     else:
         assert response.headers["x-modelrouter-backend"] == backend
         assert response.headers["x-routed-backend"] == backend
+    if model is not None:
+        assert response.headers["x-modelrouter-model"] == model
 
 
 def _serialized_route_headers(response) -> str:
@@ -476,7 +484,166 @@ def test_proxy_routes_to_backend_and_overrides_model(monkeypatch):
     _assert_route_headers(response, engine="fast_local", backend="fast")
     assert response.headers["x-routed-engine"] == "fast_local"
     assert response.headers["x-routed-backend"] == "fast"
+    assert response.headers["x-modelrouter-model"] == "fast-model"
     assert _FakeAsyncClient.requests[0]["body"]["model"] == "fast-model"
+
+
+def test_proxy_manual_mode_forwards_default_backend_without_route_fast(
+    monkeypatch,
+    tmp_path,
+):
+    def fail_route(*_args, **_kwargs):
+        raise AssertionError("decision layer should be disabled")
+
+    monkeypatch.setattr(proxy_module.ModelRouter, "route_fast", fail_route)
+    monkeypatch.setattr(proxy_module.ModelRouter, "route", fail_route)
+    log_path = tmp_path / "routing-events.jsonl"
+    config = replace(
+        _config(log_path=log_path),
+        proxy=ProxyServerConfig(
+            routing_mode="manual",
+            default_backend="deep",
+            default_model="manual-model",
+            respect_client_model=False,
+        ),
+    )
+
+    with _client(monkeypatch, config) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "client-visible-model",
+                "messages": [
+                    {"role": "user", "content": "api_key=secret route this"}
+                ],
+            },
+        )
+
+    row = json.loads(log_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert response.status_code == 200
+    _assert_route_headers(
+        response,
+        engine="manual",
+        backend="deep",
+        model="manual-model",
+        mode="manual",
+        decision_layer="off",
+        route_api="manual",
+    )
+    assert _FakeAsyncClient.requests[0]["backend"] == "deep"
+    assert _FakeAsyncClient.requests[0]["body"]["model"] == "manual-model"
+    assert row["routing_mode"] == "manual"
+    assert row["decision_layer_enabled"] is False
+    assert row["selected_engine"] == "manual"
+    assert row["selected_backend"] == "deep"
+    assert row["selected_model"] == "manual-model"
+    assert row["route_api"] == "manual"
+    assert row["prompt_length"] == 0
+    assert row["receipt_summary"].startswith("Manual routing selected deep")
+    assert "secret" not in json.dumps(row)
+
+
+def test_proxy_manual_mode_respects_known_client_model(monkeypatch):
+    config = replace(
+        _config(),
+        proxy=ProxyServerConfig(
+            routing_mode="manual",
+            default_backend="deep",
+            default_model="manual-model",
+            respect_client_model=True,
+        ),
+    )
+
+    with _client(monkeypatch, config) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "deep-model",
+                "messages": [{"role": "user", "content": "rewrite this text"}],
+            },
+        )
+
+    assert response.status_code == 200
+    _assert_route_headers(
+        response,
+        engine="manual",
+        backend="deep",
+        model="deep-model",
+        mode="manual",
+        decision_layer="off",
+        route_api="manual",
+    )
+    assert _FakeAsyncClient.requests[0]["body"]["model"] == "deep-model"
+
+
+def test_proxy_manual_mode_does_not_forward_public_proxy_model_id(monkeypatch):
+    config = replace(
+        _config(),
+        proxy=ProxyServerConfig(
+            routing_mode="manual",
+            default_backend="deep",
+            default_model="manual-model",
+            model_ids=("model-router",),
+            respect_client_model=True,
+            unknown_model_behavior="fallback_to_default",
+        ),
+    )
+
+    with _client(monkeypatch, config) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "model-router",
+                "messages": [{"role": "user", "content": "rewrite this text"}],
+            },
+        )
+
+    assert response.status_code == 200
+    _assert_route_headers(
+        response,
+        engine="manual",
+        backend="deep",
+        model="manual-model",
+        mode="manual",
+        decision_layer="off",
+        route_api="manual",
+    )
+    assert _FakeAsyncClient.requests[0]["body"]["model"] == "manual-model"
+
+
+def test_proxy_manual_mode_rejects_unknown_client_model_when_configured(monkeypatch):
+    config = replace(
+        _config(),
+        proxy=ProxyServerConfig(
+            routing_mode="manual",
+            default_backend="deep",
+            default_model="manual-model",
+            respect_client_model=True,
+            unknown_model_behavior="reject_404",
+        ),
+    )
+
+    with _client(monkeypatch, config) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "unknown-client-model",
+                "messages": [{"role": "user", "content": "rewrite this text"}],
+            },
+        )
+
+    assert response.status_code == 404
+    _assert_route_headers(
+        response,
+        engine="manual",
+        backend="deep",
+        model="manual-model",
+        mode="manual",
+        decision_layer="off",
+        route_api="manual",
+    )
+    assert response.json()["error"]["type"] == "unknown_model"
+    assert _FakeAsyncClient.requests == []
 
 
 def test_proxy_applies_configured_routing_profile(monkeypatch):
@@ -765,7 +932,7 @@ def test_proxy_backend_denylist_blocks_forwarding(monkeypatch, tmp_path):
     assert response.status_code == 502
     assert response.json()["error"]["type"] == "backend_policy_rejected"
     assert "backend fast denied by backend policy" in response.json()["error"]["message"]
-    _assert_route_headers(response, engine="fast_local")
+    _assert_route_headers(response, engine="fast_local", backend="fast")
     assert row["status"] == "backend_policy_rejected"
     assert row["backend"] == "fast"
     assert row["receipt_summary"].startswith("Selected fast_local")

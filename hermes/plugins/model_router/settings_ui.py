@@ -452,6 +452,24 @@ def render_settings_page(state: Mapping[str, Any]) -> str:
     proxy_log_path = escape(str(proxy_process.get("log_path") or ""))
     proxy_host = escape(str(proxy.get("host") or "127.0.0.1"))
     proxy_port = escape(str(proxy.get("port") or DEFAULT_PROXY_PORT))
+    routing_mode_options = _options(
+        ["decision", "manual"],
+        selected=proxy.get("routing_mode") or "decision",
+    )
+    default_backend_options = _backend_options(
+        state.get("backends", []),
+        selected=proxy.get("default_backend"),
+    )
+    default_model = escape(str(proxy.get("default_model") or ""))
+    respect_client_model_options = _bool_options(proxy.get("respect_client_model"))
+    unknown_model_behavior_options = _options(
+        ["fallback_to_default", "reject_404"],
+        selected=proxy.get("unknown_model_behavior") or "fallback_to_default",
+    )
+    safety_gate_mode_options = _options(
+        ["decision_only", "always_static", "off"],
+        selected=proxy.get("safety_gate_mode") or "decision_only",
+    )
     observability_enabled = _bool_options(observability.get("enabled"))
     prompt_capture_options = _options(
         state["prompt_capture_modes"],
@@ -649,6 +667,30 @@ def render_settings_page(state: Mapping[str, Any]) -> str:
             <input id="proxy-port" type="number" min="1" value="{proxy_port}">
           </div>
           <div class="field">
+            <label for="routing-mode">Routing mode</label>
+            <select id="routing-mode">{routing_mode_options}</select>
+          </div>
+          <div class="field">
+            <label for="default-backend">Manual default backend</label>
+            <select id="default-backend">{default_backend_options}</select>
+          </div>
+          <div class="field">
+            <label for="default-model">Manual default model</label>
+            <input id="default-model" value="{default_model}">
+          </div>
+          <div class="field">
+            <label for="respect-client-model">Respect client model</label>
+            <select id="respect-client-model">{respect_client_model_options}</select>
+          </div>
+          <div class="field">
+            <label for="unknown-model-behavior">Unknown model behavior</label>
+            <select id="unknown-model-behavior">{unknown_model_behavior_options}</select>
+          </div>
+          <div class="field">
+            <label for="safety-gate-mode">Safety gate mode</label>
+            <select id="safety-gate-mode">{safety_gate_mode_options}</select>
+          </div>
+          <div class="field">
             <label for="observability-enabled">Observability</label>
             <select id="observability-enabled">
               {observability_enabled}
@@ -804,7 +846,13 @@ def render_settings_page(state: Mapping[str, Any]) -> str:
       const payload = {{
         proxy: {{
           host: document.getElementById('proxy-host').value,
-          port: document.getElementById('proxy-port').value
+          port: document.getElementById('proxy-port').value,
+          routing_mode: document.getElementById('routing-mode').value,
+          default_backend: document.getElementById('default-backend').value,
+          default_model: document.getElementById('default-model').value,
+          respect_client_model: document.getElementById('respect-client-model').value === 'true',
+          unknown_model_behavior: document.getElementById('unknown-model-behavior').value,
+          safety_gate_mode: document.getElementById('safety-gate-mode').value
         }},
         observability: {{
           enabled: document.getElementById('observability-enabled').value === 'true',
@@ -1768,7 +1816,13 @@ async function saveConfig() {
   const payload = {
     proxy: {
       host: document.getElementById('proxy-host').value,
-      port: document.getElementById('proxy-port').value
+      port: document.getElementById('proxy-port').value,
+      routing_mode: document.getElementById('routing-mode').value,
+      default_backend: document.getElementById('default-backend').value,
+      default_model: document.getElementById('default-model').value,
+      respect_client_model: document.getElementById('respect-client-model').value === 'true',
+      unknown_model_behavior: document.getElementById('unknown-model-behavior').value,
+      safety_gate_mode: document.getElementById('safety-gate-mode').value
     },
     observability: {
       enabled: document.getElementById('observability-enabled').value === 'true',
@@ -2410,6 +2464,7 @@ def _settings_follow_through_panel(state: Mapping[str, Any]) -> str:
     observability = state.get("observability", {})
     backend_policy = state.get("backend_policy", {})
     model_options = state.get("model_options") if isinstance(state.get("model_options"), list) else []
+    backends = state.get("backends") if isinstance(state.get("backends"), list) else []
     datalist = "\n".join(
         f'<option value="{escape(str(item.get("value") or ""))}">{escape(str(item.get("label") or ""))}</option>'
         for item in model_options
@@ -2417,7 +2472,7 @@ def _settings_follow_through_panel(state: Mapping[str, Any]) -> str:
     )
     backend_rows = "\n".join(
         _dashboard_backend_row(backend)
-        for backend in state.get("backends", [])
+        for backend in backends
         if isinstance(backend, dict)
     )
     if not backend_rows:
@@ -2436,6 +2491,24 @@ def _settings_follow_through_panel(state: Mapping[str, Any]) -> str:
         </label>
         <label>Proxy port
           <input id="proxy-port" value="{escape(str(proxy.get("port") or DEFAULT_PROXY_PORT))}">
+        </label>
+        <label>Routing mode
+          <select id="routing-mode">{_options(["decision", "manual"], selected=proxy.get("routing_mode") or "decision")}</select>
+        </label>
+        <label>Manual default backend
+          <select id="default-backend">{_backend_options(backends, selected=proxy.get("default_backend"))}</select>
+        </label>
+        <label>Manual default model
+          <input id="default-model" value="{escape(str(proxy.get("default_model") or ""))}" placeholder="model id">
+        </label>
+        <label>Respect client model
+          <select id="respect-client-model">{_bool_options(proxy.get("respect_client_model"))}</select>
+        </label>
+        <label>Unknown model behavior
+          <select id="unknown-model-behavior">{_options(["fallback_to_default", "reject_404"], selected=proxy.get("unknown_model_behavior") or "fallback_to_default")}</select>
+        </label>
+        <label>Safety gate mode
+          <select id="safety-gate-mode">{_options(["decision_only", "always_static", "off"], selected=proxy.get("safety_gate_mode") or "decision_only")}</select>
         </label>
         <label>Observability
           <select id="observability-enabled">{_bool_options(observability.get("enabled"))}</select>
@@ -3963,6 +4036,15 @@ def _options(values: list[str] | tuple[str, ...], *, selected: Any) -> str:
         + f'value="{escape(value)}">{escape(value)}</option>'
         for value in values
     )
+
+
+def _backend_options(backends: Any, *, selected: Any) -> str:
+    values = [
+        str(backend.get("name"))
+        for backend in backends
+        if isinstance(backend, Mapping) and backend.get("name")
+    ]
+    return '<option value="">not set</option>' + _options(values, selected=selected)
 
 
 def _bool_options(selected: Any) -> str:

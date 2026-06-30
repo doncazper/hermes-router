@@ -231,10 +231,29 @@ proxy:
   host: 127.0.0.1
   port: 8082
   routing_profile: balanced
+  routing_mode: decision
 ```
 
 The settings UI also exposes the default proxy profile. Profiles never bypass
 `human_confirm`, and `private` does not silently enable or call hosted providers.
+
+The proxy can also run with the decision layer off:
+
+```yaml
+proxy:
+  routing_mode: manual
+  default_backend: fast
+  default_model: local-fast-model
+  respect_client_model: false
+  unknown_model_behavior: fallback_to_default
+```
+
+`decision` is the default and preserves the current prompt-classifying router.
+`manual` does not call `route_fast(...)` or inspect prompts for routing; it
+forwards to `proxy.default_backend` and uses `proxy.default_model` unless
+`respect_client_model` is enabled and the inbound model matches the manual
+default model or selected backend model. Deferred modes such as `model_map` and
+`passthrough` fail validation until they are implemented.
 
 ## Provider And Backend Policies
 
@@ -495,8 +514,11 @@ LM Studio, llama.cpp server, LocalAI, or a frontier gateway. `human_confirm`
 returns HTTP `409` and is never forwarded. Tools are preserved by default and
 can be stripped per backend for small local models.
 
-The configured `proxy.routing_profile` is applied to every routed proxy request
-and is reported in `/health` plus the `X-ModelRouter-Profile` response header.
+The configured `proxy.routing_profile` is applied to every decision-mode proxy
+request and is reported in `/health` plus the `X-ModelRouter-Profile` response
+header. Routing mode is reported in `/health`, telemetry, and response headers
+such as `X-ModelRouter-Mode`, `X-ModelRouter-Decision-Layer`,
+`X-ModelRouter-Backend`, and `X-ModelRouter-Model`.
 
 Managed local runtimes are opt-in per backend. A backend can declare an argv-only
 `runtime.command`, readiness URL, idle timeout, shutdown timeout, and log path.

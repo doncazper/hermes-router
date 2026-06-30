@@ -367,7 +367,16 @@ def test_save_config_patches_structured_fields_and_validates(tmp_path, monkeypat
         "/api/save-config",
         json={
             "confirm": True,
-            "proxy": {"host": "127.0.0.1", "port": "9099"},
+            "proxy": {
+                "host": "127.0.0.1",
+                "port": "9099",
+                "routing_mode": "manual",
+                "default_backend": "fast",
+                "default_model": "new-fast-model",
+                "respect_client_model": True,
+                "unknown_model_behavior": "reject_404",
+                "safety_gate_mode": "always_static",
+            },
             "observability": {
                 "enabled": True,
                 "prompt_capture": "off",
@@ -387,6 +396,12 @@ def test_save_config_patches_structured_fields_and_validates(tmp_path, monkeypat
     assert payload["ok"] is True
     config = load_proxy_config(tmp_path / "routing_proxy.yaml")
     assert config.proxy.port == 9099
+    assert config.proxy.routing_mode == "manual"
+    assert config.proxy.default_backend == "fast"
+    assert config.proxy.default_model == "new-fast-model"
+    assert config.proxy.respect_client_model is True
+    assert config.proxy.unknown_model_behavior == "reject_404"
+    assert config.proxy.safety_gate_mode == "always_static"
     assert config.backends["fast"].model == "new-fast-model"
     assert config.backends["fast"].base_url == "http://127.0.0.1:9999/v1"
     assert config.observability.prompt_capture == "off"

@@ -101,6 +101,14 @@ models can either fall back or return `404` by config.
 Escape hatch: ship only `decision` and `manual` first, and reject the other
 modes with clear validation errors.
 
+Current implementation note: the first M1 slice ships `decision` and `manual`.
+`decision` remains the default. `manual` selects `proxy.default_backend` and
+`proxy.default_model` without calling `route_fast(...)` or `route(...)`, emits
+mode/model/backend headers, and records privacy-safe telemetry fields for
+`routing_mode`, `decision_layer_enabled`, `selected_backend`, and
+`selected_model`. `model_map` and `passthrough` are still deferred and fail
+config validation with clear "not implemented" errors.
+
 ### M2: Installer v1
 
 Add `model-router install` as deterministic onboarding. It should detect install

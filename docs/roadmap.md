@@ -584,6 +584,11 @@ Recommended sequence:
 7. M6: expand endpoint compatibility through capability-driven forwarding.
 8. M7: add maturity labels, dogfood checks, release gates, and rollback docs.
 
+Status: M0 is implemented. M1 now includes `decision` and `manual` routing
+modes, with `decision` as the default. Manual mode forwards to an explicit
+backend/model without calling the decision layer; `model_map` and `passthrough`
+remain deferred until alias/capability work is ready.
+
 Guardrails:
 
 - No UI or TUI surface should invent its own control plane.

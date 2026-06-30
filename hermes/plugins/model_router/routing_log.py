@@ -43,6 +43,10 @@ class RoutingEvent:
     request_id: str
     route_api: str
     selected_engine: str
+    routing_mode: str | None
+    decision_layer_enabled: bool | None
+    selected_backend: str | None
+    selected_model: str | None
     routing_profile: str | None
     status: str
     route_latency_ms: float
@@ -212,6 +216,10 @@ def build_routing_event(
     decision: RoutingDecision | None = None,
     prompt_capture: str = PROMPT_CAPTURE_REDACTED,
     verification: dict[str, Any] | None = None,
+    routing_mode: str | None = None,
+    decision_layer_enabled: bool | None = None,
+    selected_backend: str | None = None,
+    selected_model: str | None = None,
 ) -> RoutingEvent:
     prompt_data = prompt_fields(prompt, capture=prompt_capture)
     receipt = None
@@ -219,12 +227,25 @@ def build_routing_event(
         from hermes.plugins.model_router.receipts import decision_to_receipt
 
         receipt = decision_to_receipt(decision)
+    manual_receipt = (
+        _manual_receipt_fields(
+            backend=selected_backend or backend,
+            model=selected_model or backend_model,
+            fallback_used=fallback_used,
+        )
+        if receipt is None and routing_mode == "manual"
+        else {}
+    )
     return RoutingEvent(
         event_type="routing_event",
         timestamp=now_iso(),
         request_id=request_id,
         route_api=route_api,
         selected_engine=selected_engine,
+        routing_mode=routing_mode,
+        decision_layer_enabled=decision_layer_enabled,
+        selected_backend=selected_backend,
+        selected_model=selected_model,
         routing_profile=decision.routing_profile.value if decision else None,
         status=status,
         route_latency_ms=round(route_latency_ms, 4),
@@ -249,13 +270,23 @@ def build_routing_event(
         features=decision.features.to_dict() if decision else None,
         reasons=decision.reasons if decision else (),
         requirements=decision.requirements.to_dict() if decision else None,
-        receipt_summary=receipt.summary if receipt else None,
-        reason_codes=receipt.reason_codes if receipt else (),
-        policy_explanation=receipt.policy_explanation if receipt else None,
-        fallback_explanation=receipt.fallback_explanation if receipt else None,
-        safety_explanation=receipt.safety_explanation if receipt else None,
-        privacy_explanation=receipt.privacy_explanation if receipt else None,
-        wrong_route_next_action=receipt.wrong_route_next_action if receipt else None,
+        receipt_summary=receipt.summary if receipt else manual_receipt.get("summary"),
+        reason_codes=receipt.reason_codes if receipt else manual_receipt.get("reason_codes", ()),
+        policy_explanation=receipt.policy_explanation
+        if receipt
+        else manual_receipt.get("policy_explanation"),
+        fallback_explanation=receipt.fallback_explanation
+        if receipt
+        else manual_receipt.get("fallback_explanation"),
+        safety_explanation=receipt.safety_explanation
+        if receipt
+        else manual_receipt.get("safety_explanation"),
+        privacy_explanation=receipt.privacy_explanation
+        if receipt
+        else manual_receipt.get("privacy_explanation"),
+        wrong_route_next_action=receipt.wrong_route_next_action
+        if receipt
+        else manual_receipt.get("wrong_route_next_action"),
         verification_mode=_verification_string(verification, "mode"),
         verification_status=_verification_string(verification, "status"),
         verification_backend=_verification_string(verification, "backend"),
@@ -264,6 +295,47 @@ def build_routing_event(
         verification_error=_verification_string(verification, "error"),
         **prompt_data,
     )
+
+
+def _manual_receipt_fields(
+    *,
+    backend: str | None,
+    model: str | None,
+    fallback_used: bool,
+) -> dict[str, Any]:
+    backend_text = backend or "unassigned backend"
+    model_text = model or "unassigned model"
+    return {
+        "summary": (
+            f"Manual routing selected {backend_text} with {model_text}; "
+            "decision layer disabled."
+        ),
+        "reason_codes": (
+            "mode.manual",
+            "decision_layer.off",
+            "route.manual",
+            "fallback.used" if fallback_used else "fallback.not_used",
+        ),
+        "policy_explanation": (
+            "Manual mode uses proxy.default_backend and proxy.default_model; "
+            "prompt classification is disabled."
+        ),
+        "fallback_explanation": (
+            "Fallback handling was used."
+            if fallback_used
+            else "No fallback was used for this manual route."
+        ),
+        "safety_explanation": (
+            "Manual mode does not run deterministic safety classification; "
+            "use static upstream and client controls for this mode."
+        ),
+        "privacy_explanation": (
+            "Manual mode telemetry does not inspect or store raw prompt text by default."
+        ),
+        "wrong_route_next_action": (
+            "Adjust proxy.default_backend/default_model or disable manual mode."
+        ),
+    }
 
 
 def _verification_string(data: dict[str, Any] | None, key: str) -> str | None:

@@ -25,6 +25,10 @@ DEFAULT_PROXY_CONFIG_SOURCE = (
     f"resource://{DEFAULT_PROXY_CONFIG_PACKAGE}/{DEFAULT_PROXY_CONFIG_NAME}"
 )
 RUNTIME_KINDS = ("llama-server", "mlx-lm", "generic")
+ROUTING_MODES = ("decision", "manual")
+DEFERRED_ROUTING_MODES = ("model_map", "passthrough")
+UNKNOWN_MODEL_BEHAVIORS = ("fallback_to_default", "reject_404")
+SAFETY_GATE_MODES = ("decision_only", "always_static", "off")
 VERIFIER_MODES = ("off", "receipt-only", "sampled", "always-for-risky-output")
 VERIFIER_FAILURE_BEHAVIORS = ("log_only", "fail_closed")
 DEFAULT_VERIFIER_PROMPT_TEMPLATE = (
@@ -43,6 +47,12 @@ class ProxyServerConfig:
     host: str = "127.0.0.1"
     port: int = 8082
     routing_profile: str = "balanced"
+    routing_mode: str = "decision"
+    default_backend: str | None = None
+    default_model: str | None = None
+    respect_client_model: bool = False
+    unknown_model_behavior: str = "fallback_to_default"
+    safety_gate_mode: str = "decision_only"
     api_key: str | None = None
     api_key_env: str | None = None
     model_ids: tuple[str, ...] = (DEFAULT_PROXY_MODEL_ID,)
@@ -225,6 +235,7 @@ def load_proxy_config(config_path: str | Path | None = None) -> RoutingProxyConf
     health = _load_health(data.get("health"))
     router_config = _optional_string(data, "router_config")
     backends = _load_backends(data.get("backends"))
+    _validate_proxy_mode_config(proxy, backends)
     backend_policy = _load_backend_policy(data.get("backend_policy"), backends)
     verifier = _load_verifier(data.get("verifier"), backends)
     _validate_resolved_env_secrets(proxy, backends)
@@ -256,10 +267,31 @@ def _load_proxy_server(data: Any) -> ProxyServerConfig:
     if api_key and api_key_env:
         raise ProxyConfigError("proxy may define api_key or api_key_env, not both")
     model_ids = _string_tuple(data, "model_ids", default=(DEFAULT_PROXY_MODEL_ID,))
+    routing_mode = _routing_mode(data)
     return ProxyServerConfig(
         host=_string(data, "host", default="127.0.0.1"),
         port=_positive_int(data, "port", default=8082),
         routing_profile=_routing_profile(data),
+        routing_mode=routing_mode,
+        default_backend=_optional_string(data, "default_backend"),
+        default_model=_optional_string(data, "default_model"),
+        respect_client_model=_bool(
+            data,
+            "respect_client_model",
+            default=routing_mode != "decision",
+        ),
+        unknown_model_behavior=_enum_string(
+            data,
+            "unknown_model_behavior",
+            values=UNKNOWN_MODEL_BEHAVIORS,
+            default="fallback_to_default",
+        ),
+        safety_gate_mode=_enum_string(
+            data,
+            "safety_gate_mode",
+            values=SAFETY_GATE_MODES,
+            default="decision_only",
+        ),
         api_key=api_key,
         api_key_env=api_key_env,
         model_ids=model_ids,
@@ -584,6 +616,39 @@ def _routing_profile(data: dict[str, Any]) -> str:
         raise ProxyConfigError(str(exc)) from exc
 
 
+def _routing_mode(data: dict[str, Any]) -> str:
+    value = data.get("routing_mode", "decision")
+    if not isinstance(value, str) or not value.strip():
+        raise ProxyConfigError("routing_mode must be a non-empty string")
+    mode = value.strip()
+    if mode in DEFERRED_ROUTING_MODES:
+        raise ProxyConfigError(
+            f"routing_mode {mode!r} is not implemented; supported modes: "
+            + ", ".join(ROUTING_MODES)
+        )
+    if mode not in ROUTING_MODES:
+        raise ProxyConfigError(
+            "routing_mode must be one of: " + ", ".join(ROUTING_MODES)
+        )
+    return mode
+
+
+def _validate_proxy_mode_config(
+    proxy: ProxyServerConfig,
+    backends: dict[str, ProxyBackendConfig],
+) -> None:
+    if proxy.routing_mode != "manual":
+        return
+    if not proxy.default_backend:
+        raise ProxyConfigError("manual routing mode requires proxy.default_backend")
+    if not proxy.default_model:
+        raise ProxyConfigError("manual routing mode requires proxy.default_model")
+    if proxy.default_backend not in backends:
+        raise ProxyConfigError(
+            f"proxy.default_backend references undefined backend {proxy.default_backend!r}"
+        )
+
+
 def _positive_int(data: dict[str, Any], key: str, default: int) -> int:
     value = data.get(key, default)
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
@@ -628,6 +693,22 @@ def _bool(data: dict[str, Any], key: str, default: bool) -> bool:
     if not isinstance(value, bool):
         raise ProxyConfigError(f"{key} must be a boolean")
     return value
+
+
+def _enum_string(
+    data: dict[str, Any],
+    key: str,
+    *,
+    values: tuple[str, ...],
+    default: str,
+) -> str:
+    value = data.get(key, default)
+    if not isinstance(value, str) or not value.strip():
+        raise ProxyConfigError(f"{key} must be a non-empty string")
+    normalized = value.strip()
+    if normalized not in values:
+        raise ProxyConfigError(f"{key} must be one of: " + ", ".join(values))
+    return normalized
 
 
 def _string_tuple(

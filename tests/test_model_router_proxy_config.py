@@ -59,6 +59,12 @@ def test_load_proxy_config_accepts_valid_yaml(tmp_path, monkeypatch):
     assert config.proxy.host == "127.0.0.1"
     assert config.proxy.port == 8082
     assert config.proxy.routing_profile == "balanced"
+    assert config.proxy.routing_mode == "decision"
+    assert config.proxy.default_backend is None
+    assert config.proxy.default_model is None
+    assert config.proxy.respect_client_model is False
+    assert config.proxy.unknown_model_behavior == "fallback_to_default"
+    assert config.proxy.safety_gate_mode == "decision_only"
     assert config.proxy.resolved_api_key == "proxy-secret"
     assert config.backends["fast"].strip_tools is True
     assert config.backends["deep"].resolved_api_key == "deep-secret"
@@ -82,6 +88,74 @@ def test_load_proxy_config_accepts_routing_profile(tmp_path, monkeypatch):
     config = load_proxy_config(_write_config(tmp_path, data))
 
     assert config.proxy.routing_profile == "private"
+
+
+def test_load_proxy_config_accepts_manual_routing_mode(tmp_path, monkeypatch):
+    monkeypatch.setenv("MODEL_ROUTER_PROXY_API_KEY", "proxy-secret")
+    monkeypatch.setenv("DEEP_API_KEY", "deep-secret")
+    data = _valid_config()
+    data["proxy"].update(
+        {
+            "routing_mode": "manual",
+            "default_backend": "deep",
+            "default_model": "manual-model",
+            "respect_client_model": True,
+            "unknown_model_behavior": "reject_404",
+            "safety_gate_mode": "always_static",
+        }
+    )
+
+    config = load_proxy_config(_write_config(tmp_path, data))
+
+    assert config.proxy.routing_mode == "manual"
+    assert config.proxy.default_backend == "deep"
+    assert config.proxy.default_model == "manual-model"
+    assert config.proxy.respect_client_model is True
+    assert config.proxy.unknown_model_behavior == "reject_404"
+    assert config.proxy.safety_gate_mode == "always_static"
+
+
+def test_load_proxy_config_decision_mode_ignores_unused_manual_default_backend(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("MODEL_ROUTER_PROXY_API_KEY", "proxy-secret")
+    monkeypatch.setenv("DEEP_API_KEY", "deep-secret")
+    data = _valid_config()
+    data["proxy"]["default_backend"] = "missing"
+
+    config = load_proxy_config(_write_config(tmp_path, data))
+
+    assert config.proxy.routing_mode == "decision"
+    assert config.proxy.default_backend == "missing"
+
+
+def test_load_proxy_config_rejects_incomplete_manual_routing_mode(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("MODEL_ROUTER_PROXY_API_KEY", "proxy-secret")
+    monkeypatch.setenv("DEEP_API_KEY", "deep-secret")
+    data = _valid_config()
+    data["proxy"]["routing_mode"] = "manual"
+
+    with pytest.raises(ProxyConfigError, match="default_backend"):
+        load_proxy_config(_write_config(tmp_path, data))
+
+    data["proxy"]["default_backend"] = "missing"
+    data["proxy"]["default_model"] = "manual-model"
+    with pytest.raises(ProxyConfigError, match="undefined backend"):
+        load_proxy_config(_write_config(tmp_path, data))
+
+
+def test_load_proxy_config_rejects_deferred_routing_modes(tmp_path, monkeypatch):
+    monkeypatch.setenv("MODEL_ROUTER_PROXY_API_KEY", "proxy-secret")
+    monkeypatch.setenv("DEEP_API_KEY", "deep-secret")
+    data = _valid_config()
+    data["proxy"]["routing_mode"] = "model_map"
+
+    with pytest.raises(ProxyConfigError, match="not implemented"):
+        load_proxy_config(_write_config(tmp_path, data))
 
 
 def test_load_proxy_config_accepts_backend_policy(tmp_path, monkeypatch):

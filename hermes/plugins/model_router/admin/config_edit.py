@@ -158,6 +158,12 @@ def _patch_proxy_config_data(data: dict[str, Any], payload: Mapping[str, Any]) -
         _patch_string(proxy, proxy_patch, "host")
         _patch_int(proxy, proxy_patch, "port")
         _patch_string(proxy, proxy_patch, "routing_profile")
+        _patch_string(proxy, proxy_patch, "routing_mode")
+        _patch_string(proxy, proxy_patch, "default_backend")
+        _patch_string(proxy, proxy_patch, "default_model")
+        _patch_bool(proxy, proxy_patch, "respect_client_model")
+        _patch_string(proxy, proxy_patch, "unknown_model_behavior")
+        _patch_string(proxy, proxy_patch, "safety_gate_mode")
         if "model_ids" in proxy_patch:
             proxy["model_ids"] = _string_list(proxy_patch["model_ids"])
 

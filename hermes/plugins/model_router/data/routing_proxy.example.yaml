@@ -2,6 +2,12 @@ proxy:
   host: 127.0.0.1
   port: 8082
   routing_profile: balanced
+  routing_mode: decision
+  default_backend: null
+  default_model: null
+  respect_client_model: false
+  unknown_model_behavior: fallback_to_default
+  safety_gate_mode: decision_only
   model_ids:
     - model-router
   # Optional local proxy auth. Leave unset for localhost-only development.

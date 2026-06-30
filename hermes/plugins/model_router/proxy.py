@@ -54,6 +54,33 @@ class UnsupportedUpstreamAPIError(RuntimeError):
     """Raised when a backend cannot support the requested upstream API."""
 
 
+class ManualRoutingError(RuntimeError):
+    """Raised when manual routing cannot select a safe backend/model."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_type: str,
+        status: str,
+        status_code: int,
+        backend: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.error_type = error_type
+        self.status = status
+        self.status_code = status_code
+        self.backend = backend
+        self.model = model
+
+
+@dataclass(frozen=True)
+class ManualRoutingSelection:
+    backend: ProxyBackendConfig
+    model: str
+
+
 @dataclass
 class ProxySessionStats:
     """Privacy-safe per-process route counters for shutdown summaries."""
@@ -213,25 +240,98 @@ def create_app(config: RoutingProxyConfig):
                 },
         )
 
-        prompt = prompt_from_body(body)
-        route_hints = {"profile": config.proxy.routing_profile}
-        route_started = time.perf_counter()
-        engine = (
-            router.route_fast(prompt, hints=route_hints)
-            if prompt
-            else FAIL_CLOSED_ENGINE
-        )
-        route_latency_ms = (time.perf_counter() - route_started) * 1000
+        route_api = "route_fast"
+        prompt = ""
         diagnostic_decision = None
         diagnostic_latency_ms = None
-        if event_writer is not None:
-            diagnostic_started = time.perf_counter()
-            diagnostic_decision = router.route(
-                prompt,
-                hints=route_hints,
-                include_alternatives=False,
+        selected_model: str | None = None
+        if config.proxy.routing_mode == "manual":
+            route_api = "manual"
+            route_started = time.perf_counter()
+            engine = "manual"
+            route_latency_ms = (time.perf_counter() - route_started) * 1000
+            try:
+                manual_selection = _manual_routing_selection(config, body)
+            except ManualRoutingError as exc:
+                _write_proxy_event(
+                    event_writer,
+                    request_id=request_id,
+                    prompt="",
+                    selected_engine=engine,
+                    status=exc.status,
+                    route_latency_ms=route_latency_ms,
+                    diagnostic_latency_ms=None,
+                    total_latency_ms=(time.perf_counter() - started) * 1000,
+                    config=config,
+                    decision=None,
+                    backend=exc.backend,
+                    backend_model=exc.model,
+                    fallback_used=False,
+                    status_code=exc.status_code,
+                    stats=session_stats,
+                    route_api=route_api,
+                )
+                return JSONResponse(
+                    status_code=exc.status_code,
+                    headers=_route_headers(
+                        request_id=request_id,
+                        engine=engine,
+                        backend=exc.backend,
+                        model=exc.model,
+                        fallback_used=False,
+                        profile=config.proxy.routing_profile,
+                        routing_mode=config.proxy.routing_mode,
+                        decision_layer_enabled=False,
+                        route_api=route_api,
+                    ),
+                    content={
+                        "error": {
+                            "message": str(exc),
+                            "type": exc.error_type,
+                        },
+                        "selected_engine": engine,
+                    },
+                )
+            backend = manual_selection.backend
+            selected_model = manual_selection.model
+        else:
+            prompt = prompt_from_body(body)
+            route_hints = {"profile": config.proxy.routing_profile}
+            route_started = time.perf_counter()
+            engine = (
+                router.route_fast(prompt, hints=route_hints)
+                if prompt
+                else FAIL_CLOSED_ENGINE
             )
-            diagnostic_latency_ms = (time.perf_counter() - diagnostic_started) * 1000
+            route_latency_ms = (time.perf_counter() - route_started) * 1000
+            if event_writer is not None:
+                diagnostic_started = time.perf_counter()
+                diagnostic_decision = router.route(
+                    prompt,
+                    hints=route_hints,
+                    include_alternatives=False,
+                )
+                diagnostic_latency_ms = (time.perf_counter() - diagnostic_started) * 1000
+
+        def route_headers(
+            *,
+            engine: str,
+            backend: str | None = None,
+            model: str | None = None,
+            fallback_used: bool | None = None,
+        ) -> dict[str, str]:
+            return _route_headers(
+                request_id=request_id,
+                engine=engine,
+                backend=backend,
+                model=model,
+                fallback_used=fallback_used,
+                profile=config.proxy.routing_profile,
+                routing_mode=config.proxy.routing_mode,
+                decision_layer_enabled=config.proxy.routing_mode == "decision",
+                route_api=route_api,
+            )
+
         if engine == FAIL_CLOSED_ENGINE:
             _write_proxy_event(
                 event_writer,
@@ -246,14 +346,13 @@ def create_app(config: RoutingProxyConfig):
                 decision=diagnostic_decision,
                 status_code=409,
                 stats=session_stats,
+                route_api=route_api,
             )
             return JSONResponse(
                 status_code=409,
-                headers=_route_headers(
-                    request_id=request_id,
+                headers=route_headers(
                     engine=engine,
                     fallback_used=False,
-                    profile=config.proxy.routing_profile,
                 ),
                 content={
                     "error": {
@@ -264,75 +363,76 @@ def create_app(config: RoutingProxyConfig):
                 },
             )
 
-        backend_name = config.engine_backends.get(engine)
-        backend_policy_reason = config.backend_policy_rejection_reason(backend_name)
-        if backend_policy_reason is not None:
-            _write_proxy_event(
-                event_writer,
-                request_id=request_id,
-                prompt=prompt,
-                selected_engine=engine,
-                status="backend_policy_rejected",
-                route_latency_ms=route_latency_ms,
-                diagnostic_latency_ms=diagnostic_latency_ms,
-                total_latency_ms=(time.perf_counter() - started) * 1000,
-                config=config,
-                decision=diagnostic_decision,
-                backend=backend_name,
-                status_code=502,
-                stats=session_stats,
-            )
-            return JSONResponse(
-                status_code=502,
-                headers=_route_headers(
+        if config.proxy.routing_mode == "decision":
+            backend_name = config.engine_backends.get(engine)
+            backend_policy_reason = config.backend_policy_rejection_reason(backend_name)
+            if backend_policy_reason is not None:
+                _write_proxy_event(
+                    event_writer,
                     request_id=request_id,
-                    engine=engine,
-                    fallback_used=False,
-                    profile=config.proxy.routing_profile,
-                ),
-                content={
-                    "error": {
-                        "message": backend_policy_reason,
-                        "type": "backend_policy_rejected",
+                    prompt=prompt,
+                    selected_engine=engine,
+                    status="backend_policy_rejected",
+                    route_latency_ms=route_latency_ms,
+                    diagnostic_latency_ms=diagnostic_latency_ms,
+                    total_latency_ms=(time.perf_counter() - started) * 1000,
+                    config=config,
+                    decision=diagnostic_decision,
+                    backend=backend_name,
+                    status_code=502,
+                    stats=session_stats,
+                    route_api=route_api,
+                )
+                return JSONResponse(
+                    status_code=502,
+                    headers=route_headers(
+                        engine=engine,
+                        backend=backend_name,
+                        fallback_used=False,
+                    ),
+                    content={
+                        "error": {
+                            "message": backend_policy_reason,
+                            "type": "backend_policy_rejected",
+                        },
+                        "selected_engine": engine,
                     },
-                    "selected_engine": engine,
-                },
-            )
+                )
 
-        backend = config.backend_for_engine(engine)
-        if backend is None:
-            _write_proxy_event(
-                event_writer,
-                request_id=request_id,
-                prompt=prompt,
-                selected_engine=engine,
-                status="routing_backend_missing",
-                route_latency_ms=route_latency_ms,
-                diagnostic_latency_ms=diagnostic_latency_ms,
-                total_latency_ms=(time.perf_counter() - started) * 1000,
-                config=config,
-                decision=diagnostic_decision,
-                status_code=502,
-                stats=session_stats,
-            )
-            return JSONResponse(
-                status_code=502,
-                headers=_route_headers(
+            backend = config.backend_for_engine(engine)
+            if backend is None:
+                _write_proxy_event(
+                    event_writer,
                     request_id=request_id,
-                    engine=engine,
-                    fallback_used=False,
-                    profile=config.proxy.routing_profile,
-                ),
-                content={
-                    "error": {
-                        "message": f"No backend configured for selected engine {engine}.",
-                        "type": "routing_backend_missing",
+                    prompt=prompt,
+                    selected_engine=engine,
+                    status="routing_backend_missing",
+                    route_latency_ms=route_latency_ms,
+                    diagnostic_latency_ms=diagnostic_latency_ms,
+                    total_latency_ms=(time.perf_counter() - started) * 1000,
+                    config=config,
+                    decision=diagnostic_decision,
+                    status_code=502,
+                    stats=session_stats,
+                    route_api=route_api,
+                )
+                return JSONResponse(
+                    status_code=502,
+                    headers=route_headers(
+                        engine=engine,
+                        fallback_used=False,
+                    ),
+                    content={
+                        "error": {
+                            "message": f"No backend configured for selected engine {engine}.",
+                            "type": "routing_backend_missing",
+                        },
+                        "selected_engine": engine,
                     },
-                    "selected_engine": engine,
-                },
-            )
+                )
+            selected_model = backend.model
 
-        payload = _payload_for_backend(body, backend)
+        payload = _payload_for_backend(body, backend, model=selected_model)
         if bool(body.get("stream", False)):
             try:
                 (
@@ -362,18 +462,18 @@ def create_app(config: RoutingProxyConfig):
                     config=config,
                     decision=diagnostic_decision,
                     backend=backend.name,
-                    backend_model=backend.model,
+                    backend_model=selected_model,
                     status_code=502,
                     stats=session_stats,
+                    route_api=route_api,
                 )
                 return JSONResponse(
                     status_code=502,
-                    headers=_route_headers(
-                        request_id=request_id,
+                    headers=route_headers(
                         engine=engine,
                         backend=backend.name,
+                        model=selected_model,
                         fallback_used=False,
-                        profile=config.proxy.routing_profile,
                     ),
                     content={
                         "error": {
@@ -396,18 +496,18 @@ def create_app(config: RoutingProxyConfig):
                     config=config,
                     decision=diagnostic_decision,
                     backend=backend.name,
-                    backend_model=backend.model,
+                    backend_model=selected_model,
                     status_code=502,
                     stats=session_stats,
+                    route_api=route_api,
                 )
                 return JSONResponse(
                     status_code=502,
-                    headers=_route_headers(
-                        request_id=request_id,
+                    headers=route_headers(
                         engine=engine,
                         backend=backend.name,
+                        model=selected_model,
                         fallback_used=False,
-                        profile=config.proxy.routing_profile,
                     ),
                     content={
                         "error": {
@@ -430,18 +530,18 @@ def create_app(config: RoutingProxyConfig):
                     config=config,
                     decision=diagnostic_decision,
                     backend=backend.name,
-                    backend_model=backend.model,
+                    backend_model=selected_model,
                     status_code=502,
                     stats=session_stats,
+                    route_api=route_api,
                 )
                 return JSONResponse(
                     status_code=502,
-                    headers=_route_headers(
-                        request_id=request_id,
+                    headers=route_headers(
                         engine=engine,
                         backend=backend.name,
+                        model=selected_model,
                         fallback_used=False,
-                        profile=config.proxy.routing_profile,
                     ),
                     content={
                         "error": {
@@ -451,6 +551,7 @@ def create_app(config: RoutingProxyConfig):
                         "selected_engine": engine,
                     },
                 )
+            used_model = _model_for_used_backend(backend, selected_model, used_backend)
             return StreamingResponse(
                 _stream_response_bytes(
                     stream_context,
@@ -469,18 +570,19 @@ def create_app(config: RoutingProxyConfig):
                     session_stats,
                     runtime_manager,
                     _streaming_verification_result(config, diagnostic_decision),
+                    selected_model=used_model,
+                    route_api=route_api,
                 ),
                 status_code=upstream_response.status_code,
                 media_type=upstream_response.headers.get(
                     "content-type",
                     "text/event-stream",
                 ),
-                headers=_route_headers(
-                    request_id=request_id,
+                headers=route_headers(
                     engine=engine,
                     backend=used_backend.name,
+                    model=used_model,
                     fallback_used=fallback_used,
-                    profile=config.proxy.routing_profile,
                 ),
             )
 
@@ -508,18 +610,18 @@ def create_app(config: RoutingProxyConfig):
                 config=config,
                 decision=diagnostic_decision,
                 backend=backend.name,
-                backend_model=backend.model,
+                backend_model=selected_model,
                 status_code=502,
                 stats=session_stats,
+                route_api=route_api,
             )
             return JSONResponse(
                 status_code=502,
-                headers=_route_headers(
-                    request_id=request_id,
+                headers=route_headers(
                     engine=engine,
                     backend=backend.name,
+                    model=selected_model,
                     fallback_used=False,
-                    profile=config.proxy.routing_profile,
                 ),
                 content={
                     "error": {
@@ -542,18 +644,18 @@ def create_app(config: RoutingProxyConfig):
                 config=config,
                 decision=diagnostic_decision,
                 backend=backend.name,
-                backend_model=backend.model,
+                backend_model=selected_model,
                 status_code=502,
                 stats=session_stats,
+                route_api=route_api,
             )
             return JSONResponse(
                 status_code=502,
-                headers=_route_headers(
-                    request_id=request_id,
+                headers=route_headers(
                     engine=engine,
                     backend=backend.name,
+                    model=selected_model,
                     fallback_used=False,
-                    profile=config.proxy.routing_profile,
                 ),
                 content={
                     "error": {
@@ -576,18 +678,18 @@ def create_app(config: RoutingProxyConfig):
                 config=config,
                 decision=diagnostic_decision,
                 backend=backend.name,
-                backend_model=backend.model,
+                backend_model=selected_model,
                 status_code=502,
                 stats=session_stats,
+                route_api=route_api,
             )
             return JSONResponse(
                 status_code=502,
-                headers=_route_headers(
-                    request_id=request_id,
+                headers=route_headers(
                     engine=engine,
                     backend=backend.name,
+                    model=selected_model,
                     fallback_used=False,
-                    profile=config.proxy.routing_profile,
                 ),
                 content={
                     "error": {
@@ -598,6 +700,7 @@ def create_app(config: RoutingProxyConfig):
                 },
             )
         upstream_latency_ms = (time.perf_counter() - upstream_started) * 1000
+        used_model = _model_for_used_backend(backend, selected_model, used_backend)
         verification = await _verify_response_if_configured(
             config,
             clients,
@@ -626,21 +729,21 @@ def create_app(config: RoutingProxyConfig):
                 config=config,
                 decision=diagnostic_decision,
                 backend=used_backend.name,
-                backend_model=used_backend.model,
+                backend_model=used_model,
                 fallback_used=fallback_used,
                 status_code=502,
                 stats=session_stats,
                 verification=verification,
+                route_api=route_api,
             )
             runtime_manager.touch(used_backend.name)
             return JSONResponse(
                 status_code=502,
-                headers=_route_headers(
-                    request_id=request_id,
+                headers=route_headers(
                     engine=engine,
                     backend=used_backend.name,
+                    model=used_model,
                     fallback_used=fallback_used,
-                    profile=config.proxy.routing_profile,
                 ),
                 content={
                     "error": {
@@ -663,11 +766,12 @@ def create_app(config: RoutingProxyConfig):
             config=config,
             decision=diagnostic_decision,
             backend=used_backend.name,
-            backend_model=used_backend.model,
+            backend_model=used_model,
             fallback_used=fallback_used,
             status_code=response.status_code,
             stats=session_stats,
             verification=verification,
+            route_api=route_api,
         )
         runtime_manager.touch(used_backend.name)
         LOG.info(
@@ -683,12 +787,11 @@ def create_app(config: RoutingProxyConfig):
             content=response.content,
             status_code=response.status_code,
             media_type=response.headers.get("content-type", "application/json"),
-            headers=_route_headers(
-                request_id=request_id,
+            headers=route_headers(
                 engine=engine,
                 backend=used_backend.name,
+                model=used_model,
                 fallback_used=fallback_used,
-                profile=config.proxy.routing_profile,
             ),
         )
 
@@ -757,6 +860,13 @@ def create_app(config: RoutingProxyConfig):
             "backend_health": backend_health,
             "engine_backends": dict(sorted(config.engine_backends.items())),
             "routing_profile": config.proxy.routing_profile,
+            "routing_mode": config.proxy.routing_mode,
+            "decision_layer_enabled": config.proxy.routing_mode == "decision",
+            "default_backend": config.proxy.default_backend,
+            "default_model": config.proxy.default_model,
+            "respect_client_model": config.proxy.respect_client_model,
+            "unknown_model_behavior": config.proxy.unknown_model_behavior,
+            "safety_gate_mode": config.proxy.safety_gate_mode,
             "backend_policy": config.backend_policy.to_dict(),
             "verifier": config.verifier.to_dict(),
             "observability": {
@@ -800,18 +910,112 @@ def _backend_headers(backend: ProxyBackendConfig) -> dict[str, str]:
     return headers
 
 
+def _manual_routing_selection(
+    config: RoutingProxyConfig,
+    body: dict[str, Any],
+) -> ManualRoutingSelection:
+    backend_name = config.proxy.default_backend
+    model = config.proxy.default_model
+    if not backend_name or not model:
+        raise ManualRoutingError(
+            "Manual routing mode requires proxy.default_backend and proxy.default_model.",
+            error_type="manual_config_invalid",
+            status="manual_config_invalid",
+            status_code=500,
+            backend=backend_name,
+            model=model,
+        )
+    backend_policy_reason = config.backend_policy_rejection_reason(backend_name)
+    if backend_policy_reason is not None:
+        raise ManualRoutingError(
+            backend_policy_reason,
+            error_type="backend_policy_rejected",
+            status="backend_policy_rejected",
+            status_code=502,
+            backend=backend_name,
+            model=model,
+        )
+    backend = config.backends.get(backend_name)
+    if backend is None:
+        raise ManualRoutingError(
+            f"Manual routing backend {backend_name!r} is not configured.",
+            error_type="manual_backend_missing",
+            status="manual_backend_missing",
+            status_code=502,
+            backend=backend_name,
+            model=model,
+        )
+    client_model = body.get("model")
+    if (
+        config.proxy.respect_client_model
+        and isinstance(client_model, str)
+        and client_model.strip()
+    ):
+        requested_model = client_model.strip()
+        if _manual_model_allowed(
+            backend=backend,
+            default_model=config.proxy.default_model,
+            requested_model=requested_model,
+        ):
+            model = requested_model
+        elif config.proxy.unknown_model_behavior == "reject_404":
+            raise ManualRoutingError(
+                f"Model {requested_model!r} is not allowed by manual routing config.",
+                error_type="unknown_model",
+                status="unknown_model",
+                status_code=404,
+                backend=backend_name,
+                model=model,
+            )
+    return ManualRoutingSelection(backend=backend, model=model)
+
+
+def _manual_model_allowed(
+    *,
+    backend: ProxyBackendConfig,
+    default_model: str | None,
+    requested_model: str,
+) -> bool:
+    allowed_models = {
+        item
+        for item in (
+            default_model,
+            backend.model,
+        )
+        if isinstance(item, str) and item.strip()
+    }
+    return requested_model in allowed_models
+
+
+def _model_for_used_backend(
+    primary_backend: ProxyBackendConfig,
+    primary_model: str | None,
+    used_backend: ProxyBackendConfig,
+) -> str:
+    if used_backend.name == primary_backend.name and primary_model:
+        return primary_model
+    return used_backend.model
+
+
 def _route_headers(
     *,
     request_id: str,
     engine: str,
     backend: str | None = None,
+    model: str | None = None,
     fallback_used: bool | None = None,
     profile: str = "balanced",
+    routing_mode: str = "decision",
+    decision_layer_enabled: bool = True,
     route_api: str = "route_fast",
 ) -> dict[str, str]:
     headers = {
         "X-ModelRouter-Request-ID": _safe_header_value(request_id),
         "X-ModelRouter-Engine": _safe_header_value(engine),
+        "X-ModelRouter-Mode": _safe_header_value(routing_mode),
+        "X-ModelRouter-Decision-Layer": (
+            "on" if decision_layer_enabled else "off"
+        ),
         "X-ModelRouter-Profile": _safe_header_value(profile),
         "X-ModelRouter-Route-API": _safe_header_value(route_api),
         # Kept for compatibility with the earlier proxy header names.
@@ -822,6 +1026,8 @@ def _route_headers(
         safe_backend = _safe_header_value(backend)
         headers["X-ModelRouter-Backend"] = safe_backend
         headers["X-Routed-Backend"] = safe_backend
+    if model:
+        headers["X-ModelRouter-Model"] = _safe_header_value(model)
     if fallback_used is not None:
         headers["X-ModelRouter-Fallback"] = "true" if fallback_used else "false"
     return headers
@@ -963,9 +1169,14 @@ def _responses_content_text(content: Any) -> str:
     return ""
 
 
-def _payload_for_backend(body: dict[str, Any], backend: ProxyBackendConfig) -> bytes:
+def _payload_for_backend(
+    body: dict[str, Any],
+    backend: ProxyBackendConfig,
+    *,
+    model: str | None = None,
+) -> bytes:
     payload = dict(body)
-    payload["model"] = backend.model
+    payload["model"] = model or backend.model
     if backend.strip_tools:
         payload.pop("tools", None)
         payload.pop("tool_choice", None)
@@ -1234,6 +1445,8 @@ async def _stream_response_bytes(
     session_stats: ProxySessionStats | None = None,
     runtime_manager: ManagedRuntimeManager | None = None,
     verification: dict[str, Any] | None = None,
+    selected_model: str | None = None,
+    route_api: str = "route_fast",
 ):
     status = "forwarded"
     exc_info: tuple[type[BaseException] | None, BaseException | None, Any] = (
@@ -1275,11 +1488,12 @@ async def _stream_response_bytes(
             config=config,
             decision=decision,
             backend=backend.name,
-            backend_model=backend.model,
+            backend_model=selected_model or backend.model,
             fallback_used=fallback_used,
             status_code=response.status_code,
             stats=session_stats,
             verification=verification,
+            route_api=route_api,
         )
         if runtime_manager is not None:
             runtime_manager.end_request(backend.name)
@@ -1314,6 +1528,7 @@ def _write_proxy_event(
     status_code: int | None = None,
     stats: ProxySessionStats | None = None,
     verification: dict[str, Any] | None = None,
+    route_api: str = "route_fast",
 ) -> None:
     if stats is not None:
         stats.record(
@@ -1327,7 +1542,7 @@ def _write_proxy_event(
     writer.write(
         build_routing_event(
             request_id=request_id,
-            route_api="route_fast",
+            route_api=route_api,
             selected_engine=selected_engine,
             status=status,
             prompt=prompt,
@@ -1344,6 +1559,10 @@ def _write_proxy_event(
             decision=decision,
             prompt_capture=config.observability.prompt_capture,
             verification=verification,
+            routing_mode=config.proxy.routing_mode,
+            decision_layer_enabled=config.proxy.routing_mode == "decision",
+            selected_backend=backend,
+            selected_model=backend_model,
         )
     )
 
