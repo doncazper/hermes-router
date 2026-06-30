@@ -18,6 +18,10 @@ from hermes.plugins.model_router.catalog_update import (
 )
 from hermes.plugins.model_router.config import RouterConfigError, load_router_config
 from hermes.plugins.model_router.dispatch import build_dispatch_plan, dispatch_plan_to_json
+from hermes.plugins.model_router.installer import (
+    build_install_plan,
+    options_from_namespace,
+)
 from hermes.plugins.model_router.models import ModelEngine, RouterConfig
 from hermes.plugins.model_router.model_benchmark import (
     DEFAULT_BENCHMARK_PATH,
@@ -186,6 +190,48 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
     )
     init.add_argument("--json", action="store_true", help="Emit JSON output")
     init.set_defaults(func=_cmd_init)
+
+    install = subparsers.add_parser(
+        "install",
+        help="Plan deterministic first-run onboarding",
+    )
+    install.add_argument(
+        "--config-dir",
+        type=Path,
+        default=Path(DEFAULT_CONFIG_DIR),
+        help="Directory for ModelRouter configs and local telemetry",
+    )
+    install.add_argument(
+        "--quick",
+        action="store_true",
+        help="Prefer the shortest safe onboarding path",
+    )
+    install.add_argument(
+        "--auto",
+        action="store_true",
+        help="Choose a preset from local runtime signals",
+    )
+    install.add_argument(
+        "--local-only",
+        action="store_true",
+        help="Keep recommendations local-only; do not enable hosted providers",
+    )
+    install.add_argument("--lmstudio", action="store_true", help="Prefer LM Studio")
+    install.add_argument("--ollama", action="store_true", help="Prefer Ollama")
+    install.add_argument("--mlx-lm", action="store_true", help="Prefer MLX-LM")
+    install.add_argument("--llamacpp", action="store_true", help="Prefer llama.cpp")
+    install.add_argument(
+        "--developer",
+        action="store_true",
+        help="Include developer setup/check commands",
+    )
+    install.add_argument("--json", action="store_true", help="Emit JSON output")
+    install.add_argument(
+        "--yes",
+        action="store_true",
+        help="Record confirmation intent; M2 still prints a plan only",
+    )
+    install.set_defaults(func=_cmd_install)
 
     decide = subparsers.add_parser("decide", help="Score and route a prompt")
     decide.add_argument(
@@ -870,6 +916,19 @@ def _cmd_init(args: argparse.Namespace) -> int:
             for path in result.skipped:
                 print(f"- {path}")
     return 0 if result.ok else 1
+
+
+def _cmd_install(args: argparse.Namespace) -> int:
+    try:
+        plan = build_install_plan(options_from_namespace(args))
+    except ValueError as exc:
+        print(f"Install planning failed: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(plan.to_dict(), indent=2, sort_keys=True))
+    else:
+        _print_install_plan(plan.to_dict())
+    return 0 if plan.ok else 1
 
 
 def _cmd_dispatch_plan(args: argparse.Namespace) -> int:
@@ -2147,6 +2206,51 @@ def _print_prereq_result(result) -> None:
         print("- none")
     for note in result.notes:
         print(f"- {note}")
+
+
+def _print_install_plan(plan: dict[str, Any]) -> None:
+    installer = plan.get("installer") if isinstance(plan.get("installer"), dict) else {}
+    print("ModelRouter installer plan")
+    print(f"Config dir: {plan.get('config_dir')}")
+    print(f"Selected preset: {plan.get('selected_preset')} ({plan.get('preset_reason')})")
+    print(f"Package version: {installer.get('package_version') or 'unknown'}")
+    print(f"Install method: {installer.get('install_method') or 'unknown'}")
+    print(f"Python: {installer.get('python_version') or 'unknown'}")
+    print("")
+    print("Detected:")
+    runtimes = installer.get("detected_runtimes")
+    if isinstance(runtimes, dict) and runtimes:
+        for key, value in sorted(runtimes.items()):
+            print(f"- {key}: {value}")
+    else:
+        print("- none")
+    print("")
+    if plan.get("existing_config"):
+        print("Existing config detected; no overwrite is planned.")
+    else:
+        print("No routing_proxy.yaml detected; init is planned as an explicit command.")
+    warnings = plan.get("warnings") if isinstance(plan.get("warnings"), list) else []
+    if warnings:
+        print("")
+        print("Warnings:")
+        for warning in warnings:
+            print(f"- {warning}")
+    print("")
+    print("Next commands:")
+    for command in plan.get("next_commands", []):
+        if not isinstance(command, dict):
+            continue
+        status = "" if command.get("available", True) else " (not available)"
+        command_text = " ".join(str(part) for part in command.get("command", []))
+        print(f"- {command.get('label')}{status}: {command_text}")
+        if command.get("reason"):
+            print(f"  {command['reason']}")
+    notes = plan.get("notes") if isinstance(plan.get("notes"), list) else []
+    if notes:
+        print("")
+        print("Notes:")
+        for note in notes:
+            print(f"- {note}")
 
 
 def _print_dispatch_plan(plan) -> None:

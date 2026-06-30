@@ -35,6 +35,7 @@ from hermes.plugins.model_router.admin.supervisor import (
 )
 from hermes.plugins.model_router.catalog_update import catalog_status
 from hermes.plugins.model_router.config import RouterConfigError, load_router_config
+from hermes.plugins.model_router.installer import build_installer_state
 from hermes.plugins.model_router.product import (
     DEFAULT_CONFIG_DIR,
     DEFAULT_PROXY_PORT,
@@ -362,6 +363,7 @@ def _build_settings_state_impl(
         "discovery": discovery.to_dict(),
         "recommendation": recommendation.to_dict(),
         "download_plan": download_plan.to_dict(),
+        "installer": build_installer_state(paths, discovery=discovery),
         "benchmarks": benchmark_summary(paths["benchmarks"]),
         "workflow_benchmarks": _workflow_benchmark_state(paths),
         "telemetry": _telemetry_state(paths, config),

@@ -587,7 +587,10 @@ Recommended sequence:
 Status: M0 is implemented. M1 now includes `decision` and `manual` routing
 modes, with `decision` as the default. Manual mode forwards to an explicit
 backend/model without calling the decision layer; `model_map` and `passthrough`
-remain deferred until alias/capability work is ready.
+remain deferred until alias/capability work is ready. M2 now adds
+`model-router install` as deterministic, plan-only onboarding that reports local
+install/config/runtime state and prints explicit next commands without
+mutating files.
 
 Guardrails:
 

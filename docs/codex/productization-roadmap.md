@@ -120,6 +120,14 @@ Done when `model-router install --json` is deterministic and tested, existing
 configs are not overwritten by default, and output tells the user exactly what
 to run next.
 
+Current implementation note: M2 adds `model-router install` as a plan-only
+onboarding command. It uses the shared admin state/action layer, exposes an
+`installer` state block, detects install method, package/Python versions,
+commands, optional dependencies, config files, port status, and local runtime
+signals, then prints explicit next commands for prerequisites, init, doctor,
+settings, proxy, downloads, telemetry, and TUI availability. It does not mutate
+files or execute downloads/services.
+
 ### M3: Model Library And Discover UI
 
 Add real model-management surfaces in the existing settings UI style:

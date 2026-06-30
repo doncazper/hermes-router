@@ -236,6 +236,22 @@ can run `hf download` only for recommended models you selected, and only after
 it asks for a separate download confirmation. Downloads can also be run through
 the explicit `setup download --execute` path.
 
+Installer plan:
+
+```bash
+model-router install --quick
+model-router install --auto --json
+model-router install --local-only --mlx-lm
+```
+
+`model-router install` is deterministic onboarding, not a background daemon or
+silent setup script. It detects the install method, package version, Python,
+command availability, optional dependencies, existing config files, port status,
+and local runtime signals. It prints the next explicit commands for prereqs,
+`init`, `doctor`, settings, proxy startup, downloads, telemetry, and TUI when
+available. It does not download models, install services, enable hosted
+providers, overwrite configs, or start runtimes.
+
 Scan:
 
 ```bash

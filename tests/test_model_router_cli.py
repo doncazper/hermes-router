@@ -202,6 +202,28 @@ def test_settings_cli_help_exposes_local_admin_command():
     assert "--port" in result.stdout
 
 
+def test_install_cli_json_is_parseable_plan_only(tmp_path):
+    config_dir = tmp_path / "install"
+    result = _run_cli(
+        "install",
+        "--config-dir",
+        str(config_dir),
+        "--quick",
+        "--json",
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["dry_run"] is True
+    assert payload["existing_config"] is False
+    assert not config_dir.exists()
+    command_ids = {command["id"] for command in payload["next_commands"]}
+    assert "init" in command_ids
+    assert "doctor" in command_ids
+    assert "settings" in command_ids
+    assert "proxy" in command_ids
+
+
 def test_telemetry_summary_cli_groups_mismatches_without_prompt_text(tmp_path):
     events = tmp_path / "events.jsonl"
     feedback = tmp_path / "feedback.jsonl"

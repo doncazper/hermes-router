@@ -17,6 +17,19 @@ Install the proxy extra:
 pip install "hermes-router[proxy]"
 ```
 
+Plan deterministic onboarding:
+
+```bash
+model-router install --quick
+model-router install --quick --json
+```
+
+The installer command is plan-only in v1. It detects package/install method,
+Python, command availability, optional proxy/runtime dependencies, config files,
+ports, and local runtime signals, then prints the next explicit commands. It
+does not download models, install services, enable hosted providers, overwrite
+configs, or start runtimes.
+
 Create first-run configs:
 
 ```bash
@@ -1042,6 +1055,18 @@ target when that target is enabled, available, and compatible.
 ## Setup Assistant
 
 The setup assistant can create a local config without guessing what you want.
+
+For normal onboarding, start with the deterministic installer plan:
+
+```bash
+model-router install --quick
+model-router install --auto --json
+model-router install --local-only --mlx-lm
+```
+
+Use the generated next commands for prerequisites, `init`, `doctor`, settings,
+proxy startup, download planning, and telemetry. Config writes and downloads
+remain explicit follow-up commands.
 
 Scan your machine:
 
