@@ -97,6 +97,10 @@ version is read-only: Status, Models, Routing, Runtimes, Telemetry, Logs, and
 Settings tabs show real config/runtime/telemetry state, while mutating actions
 remain confirmation-gated in the shared action layer.
 
+Before tagging a release, use the maturity and dogfood gates in
+[Release checklist](docs/release-checklist.md). Upgrade, rollback, and
+uninstall notes live in [Upgrade and uninstall](docs/upgrade-uninstall.md).
+
 If you are testing from a local checkout or setting up managed runtimes, install
 prerequisites into the active Python environment:
 
@@ -1382,6 +1386,8 @@ integration point.
 - [Model router details](docs/model-router.md)
 - [Product north star](docs/product-north-star.md)
 - [Production readiness](docs/production-readiness.md)
+- [Release checklist](docs/release-checklist.md)
+- [Upgrade and uninstall](docs/upgrade-uninstall.md)
 - [Host adapter contract](docs/adapter-contract.md)
 - [Open switchboard robustness plan](docs/open-switchboard-plan.md)
 - [Roadmap](docs/roadmap.md)

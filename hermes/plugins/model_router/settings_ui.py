@@ -51,6 +51,7 @@ from hermes.plugins.model_router.model_benchmark import (
     benchmark_summary,
     load_benchmark_results,
 )
+from hermes.plugins.model_router.maturity import feature_maturity_state
 from hermes.plugins.model_router.proxy_config import (
     ProxyConfigError,
     RoutingProxyConfig,
@@ -381,6 +382,7 @@ def _build_settings_state_impl(
         "installer": build_installer_state(paths, discovery=discovery),
         "benchmarks": benchmark_summary(paths["benchmarks"]),
         "workflow_benchmarks": _workflow_benchmark_state(paths),
+        "maturity": feature_maturity_state(),
         "telemetry": _telemetry_state(paths, config),
         "proxy_process": proxy_process,
         "route_map": _route_map_state(config, latest_event),
@@ -1053,6 +1055,7 @@ def render_dashboard_page(state: Mapping[str, Any]) -> str:
         <aside class="inspector-column" aria-label="Inspectors">
           {_route_receipt_panel(state)}
           {_safety_panel()}
+          {_maturity_panel(state)}
           {_benchmark_status_panel(state)}
           {_review_panel(state)}
           {_catalog_panel(state)}
@@ -2813,6 +2816,45 @@ def _safety_panel() -> str:
       </div>
       <div class="protected-note">{_icon("lock")} Protected defaults: safer by design.</div>
     </section>"""
+
+
+def _maturity_panel(state: Mapping[str, Any]) -> str:
+    maturity = state.get("maturity") if isinstance(state.get("maturity"), dict) else {}
+    features = maturity.get("features") if isinstance(maturity.get("features"), list) else []
+    rows = []
+    for feature in features:
+        if not isinstance(feature, Mapping):
+            continue
+        level = str(feature.get("maturity") or "unknown")
+        rows.append(
+            f"""<div class="review-item">
+          <strong>{escape(str(feature.get("label") or feature.get("feature_id") or "Feature"))}</strong>
+          <span class="pill {escape(_maturity_pill_class(level))}">{escape(level)}</span>
+          <p class="muted">{escape(str(feature.get("release_gate") or ""))}</p>
+        </div>"""
+        )
+    if not rows:
+        rows.append('<div class="review-item muted">No maturity metadata loaded.</div>')
+    status = escape(str(maturity.get("status") or "unknown"))
+    return f"""<section class="inspector-card" id="maturity" aria-labelledby="maturity-title">
+      <header>
+        <h2 id="maturity-title">{_icon("shield")} Maturity</h2>
+        <span class="muted">{status}</span>
+      </header>
+      <div class="review-list">
+        {"".join(rows)}
+      </div>
+    </section>"""
+
+
+def _maturity_pill_class(level: str) -> str:
+    if level == "stable":
+        return "green"
+    if level == "experimental":
+        return "yellow"
+    if level == "beta":
+        return "blue"
+    return "gray"
 
 
 def _settings_follow_through_panel(state: Mapping[str, Any]) -> str:

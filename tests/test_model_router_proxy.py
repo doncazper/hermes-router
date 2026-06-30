@@ -1010,6 +1010,29 @@ def test_proxy_messages_returns_shaped_unsupported_error(monkeypatch):
     assert _FakeAsyncClient.requests == []
 
 
+def test_proxy_experimental_endpoint_failure_does_not_break_decision_chat(monkeypatch):
+    with _client(monkeypatch, _config()) as client:
+        unsupported = client.post(
+            "/v1/messages",
+            json={"model": "model-router", "messages": []},
+        )
+        chat = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "model-router",
+                "messages": [{"role": "user", "content": "rewrite this text"}],
+            },
+        )
+
+    assert unsupported.status_code == 501
+    assert unsupported.json()["error"]["type"] == "unsupported_endpoint"
+    assert chat.status_code == 200
+    _assert_route_headers(chat, engine="fast_local", backend="fast")
+    assert [request["path"] for request in _FakeAsyncClient.requests] == [
+        "/chat/completions"
+    ]
+
+
 def test_proxy_unknown_v1_endpoint_returns_shaped_unsupported_error(monkeypatch):
     with _client(monkeypatch, _config()) as client:
         response = client.post(

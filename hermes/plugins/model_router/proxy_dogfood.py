@@ -16,6 +16,8 @@ from hermes.plugins.model_router.proxy_config import RoutingProxyConfig, load_pr
 DOGFOOD_CHECKS = (
     "health",
     "models",
+    "decision_mode",
+    "manual_mode",
     "chat_completions",
     "chat_streaming",
     "responses",
@@ -190,6 +192,8 @@ def run_proxy_dogfood(
             success_detail="/v1/models responded with configured proxy model ids.",
         )
     )
+    checks.append(_decision_mode_check(config, health_payload))
+    checks.append(_manual_mode_check(config, health_payload))
     checks.append(
         _request_check(
             runner,
@@ -523,6 +527,72 @@ def _fallback_check(
         "Fallback chain is configured but was not exercised by the healthy primary.",
         response.status_code,
     )
+
+
+def _decision_mode_check(
+    config: RoutingProxyConfig,
+    health_payload: dict[str, Any],
+) -> DogfoodCheckResult:
+    mode = _routing_mode_from_health(config, health_payload)
+    if mode != "decision":
+        return DogfoodCheckResult(
+            "decision_mode",
+            "skipped",
+            f"Active proxy mode is {mode}; decision-mode gate needs decision config.",
+        )
+    if health_payload.get("decision_layer_enabled") is False:
+        return DogfoodCheckResult(
+            "decision_mode",
+            "failed",
+            "Health reported decision mode with the decision layer disabled.",
+        )
+    return DogfoodCheckResult(
+        "decision_mode",
+        "passed",
+        "Decision-mode proxy routing is active.",
+    )
+
+
+def _manual_mode_check(
+    config: RoutingProxyConfig,
+    health_payload: dict[str, Any],
+) -> DogfoodCheckResult:
+    mode = _routing_mode_from_health(config, health_payload)
+    if mode != "manual":
+        return DogfoodCheckResult(
+            "manual_mode",
+            "skipped",
+            f"Active proxy mode is {mode}; manual/basic gate needs manual config.",
+        )
+    if health_payload.get("decision_layer_enabled") is not False:
+        return DogfoodCheckResult(
+            "manual_mode",
+            "failed",
+            "Manual/basic mode must report decision_layer_enabled=false.",
+        )
+    default_backend = health_payload.get("default_backend") or config.proxy.default_backend
+    default_model = health_payload.get("default_model") or config.proxy.default_model
+    if not default_backend or not default_model:
+        return DogfoodCheckResult(
+            "manual_mode",
+            "failed",
+            "Manual/basic mode requires default_backend and default_model.",
+        )
+    return DogfoodCheckResult(
+        "manual_mode",
+        "passed",
+        "Manual/basic mode is active with an explicit default backend/model.",
+    )
+
+
+def _routing_mode_from_health(
+    config: RoutingProxyConfig,
+    health_payload: dict[str, Any],
+) -> str:
+    mode = health_payload.get("routing_mode")
+    if isinstance(mode, str) and mode:
+        return mode
+    return config.proxy.routing_mode
 
 
 def _verifier_check(health_payload: dict[str, Any]) -> DogfoodCheckResult:

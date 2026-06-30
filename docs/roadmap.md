@@ -599,7 +599,10 @@ without crashing when local runtimes are unavailable. M5 now adds
 state, with Status, Models, Routing, Runtimes, Telemetry, Logs, and Settings
 tabs and a clean `hermes-router[tui]` install hint when Textual is missing. M6
 now adds `/v1/embeddings` and `/v1/completions` forwarding, shaped
-`/v1/messages` unsupported responses, and `/v1/models` capability hints.
+`/v1/messages` unsupported responses, and `/v1/models` capability hints. M7 now
+adds shared maturity metadata, doctor/settings/TUI maturity displays,
+decision/manual dogfood release gates, upgrade/uninstall notes, and a reusable
+release checklist.
 
 Guardrails:
 

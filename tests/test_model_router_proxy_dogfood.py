@@ -15,11 +15,12 @@ from hermes.plugins.model_router.proxy_dogfood import (
 def _write_proxy_config(
     tmp_path: Path,
     *,
+    routing_mode: str = "decision",
     backend_denylist: list[str] | None = None,
     fallback: bool = False,
 ) -> Path:
     config = {
-        "proxy": {"host": "127.0.0.1", "port": 8082},
+        "proxy": {"host": "127.0.0.1", "port": 8082, "routing_mode": routing_mode},
         "backends": {
             "fast": {
                 "base_url": "http://127.0.0.1:1234/v1",
@@ -43,6 +44,10 @@ def _write_proxy_config(
             "version": 1,
             "backend_denylist": backend_denylist,
         }
+    if routing_mode == "manual":
+        config["proxy"]["default_backend"] = "deep"
+        config["proxy"]["default_model"] = "manual-model"
+        config["proxy"]["respect_client_model"] = False
     if fallback:
         config["fallback_backends"] = {"fast": ["deep"]}
     path = tmp_path / "routing_proxy.yaml"
@@ -62,7 +67,14 @@ def _response(
     )
 
 
-def _fake_runner(*, policy_denied: bool = False, verifier_mode: str = "off"):
+def _fake_runner(
+    *,
+    policy_denied: bool = False,
+    verifier_mode: str = "off",
+    routing_mode: str = "decision",
+    default_backend: str | None = None,
+    default_model: str | None = None,
+):
     calls: list[tuple[str, str]] = []
 
     def runner(
@@ -84,6 +96,10 @@ def _fake_runner(*, policy_denied: bool = False, verifier_mode: str = "off"):
                         "backend_denylist": ["fast"] if policy_denied else [],
                     },
                     "verifier": {"mode": verifier_mode},
+                    "routing_mode": routing_mode,
+                    "decision_layer_enabled": routing_mode == "decision",
+                    "default_backend": default_backend,
+                    "default_model": default_model,
                 }
             )
         if path == "/v1/models":
@@ -172,6 +188,8 @@ def test_proxy_dogfood_executes_sanitized_local_smoke_checks(tmp_path):
     assert report.ok is True
     assert checks["health"].status == "passed"
     assert checks["models"].status == "passed"
+    assert checks["decision_mode"].status == "passed"
+    assert checks["manual_mode"].status == "skipped"
     assert checks["chat_completions"].status == "passed"
     assert checks["chat_streaming"].status == "passed"
     assert checks["responses"].status == "passed"
@@ -182,6 +200,27 @@ def test_proxy_dogfood_executes_sanitized_local_smoke_checks(tmp_path):
     assert ("GET", "/health") in calls
     assert "Drop the production database." not in json.dumps(report.to_dict())
     assert "Rewrite this text." not in json.dumps(report.to_dict())
+
+
+def test_proxy_dogfood_manual_mode_release_gate(tmp_path):
+    config = _write_proxy_config(tmp_path, routing_mode="manual")
+    _calls, runner = _fake_runner(
+        routing_mode="manual",
+        default_backend="deep",
+        default_model="manual-model",
+    )
+
+    report = run_proxy_dogfood(
+        config_path=config,
+        execute=True,
+        http_runner=runner,
+    )
+
+    checks = {check.name: check for check in report.checks}
+    assert report.ok is True
+    assert checks["decision_mode"].status == "skipped"
+    assert checks["manual_mode"].status == "passed"
+    assert checks["chat_completions"].status == "passed"
 
 
 def test_proxy_dogfood_backend_policy_rejection_is_explicit(tmp_path):

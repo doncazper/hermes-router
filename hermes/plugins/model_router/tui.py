@@ -389,6 +389,8 @@ def _settings_tab(state: Mapping[str, Any]) -> str:
     paths = _mapping(state.get("paths"))
     actions = _list(state.get("actions"))
     proxy = _mapping(state.get("proxy"))
+    maturity = _mapping(state.get("maturity"))
+    maturity_features = _list(maturity.get("features"))
     lines = [
         "TUI v1 is read-only. Mutating shared actions require confirm=true.",
         "No chat surface. No prompt transcript.",
@@ -399,8 +401,22 @@ def _settings_tab(state: Mapping[str, Any]) -> str:
         _pair("Prompt capture", _mapping(state.get("observability")).get("prompt_capture")),
         _pair("Safety gate mode", proxy.get("safety_gate_mode")),
         "",
-        "Shared actions",
+        "Feature maturity",
     ]
+    if maturity_features:
+        for feature in maturity_features:
+            if not isinstance(feature, Mapping):
+                continue
+            label = feature.get("label") or feature.get("feature_id") or "feature"
+            lines.append(_bullet(f"{label}: {feature.get('maturity', 'unknown')}"))
+    else:
+        lines.append(_bullet("No maturity metadata available."))
+    lines.extend(
+        [
+            "",
+            "Shared actions",
+        ]
+    )
     if actions:
         for action in actions:
             if not isinstance(action, Mapping):

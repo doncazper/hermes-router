@@ -199,14 +199,15 @@ adapters, TUI, and compatibility endpoints. Show maturity where useful and add
 dogfood checks, upgrade/uninstall docs, config migration notes, and release
 gates.
 
+Current implementation note: M7 centralizes maturity metadata and shows it in
+`model-router doctor`, `model-router settings`, and `model-router tui`. The
+proxy dogfood harness now includes active decision-mode and manual/basic-mode
+release gates. Upgrade/uninstall guidance and a reusable release checklist live
+in `docs/upgrade-uninstall.md` and `docs/release-checklist.md`.
+
 ## Immediate Next Step
 
-Start with M0. The current dashboard has grown into the control center, but its
-state/action logic still lives largely inside `settings_ui.py`. Extracting the
-shared admin layer first gives the web UI, future TUI, installer, and admin API a
-single control plane. That reduces the risk of implementing basic router mode or
-model management twice.
-
-After M0, implement the smallest stable slice of M1: `decision` plus `manual`
-mode. That gives users the first concrete "decision layer off" path without
-overloading the next release.
+Dogfood the v0.7.0 candidate from `main`: run the release checklist, exercise
+decision mode and manual/basic mode against real local backends, and verify the
+settings UI and TUI maturity labels are visible. Tag v0.7.0 only after those
+checks are boring.

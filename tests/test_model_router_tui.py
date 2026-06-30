@@ -50,6 +50,21 @@ def _empty_state(tmp_path: Path) -> dict:
             "fallback_count": 0,
         },
         "recent_events": [],
+        "maturity": {
+            "status": "release_candidate",
+            "features": [
+                {
+                    "feature_id": "basic_router_mode",
+                    "label": "Basic router mode",
+                    "maturity": "beta",
+                },
+                {
+                    "feature_id": "tui",
+                    "label": "TUI control center",
+                    "maturity": "experimental",
+                },
+            ],
+        },
         "actions": [
             {
                 "id": "doctor.run",
@@ -188,6 +203,8 @@ def test_tui_snapshot_renders_empty_state(tmp_path):
     assert "No routing map" in snapshot
     assert "No backends configured" in snapshot
     assert "Mutating shared actions require confirm=true" in snapshot
+    assert "Basic router mode: beta" in snapshot
+    assert "TUI control center: experimental" in snapshot
     assert "proxy.start: Start proxy (requires confirm)" in snapshot
 
 
@@ -201,6 +218,7 @@ def test_tui_snapshot_renders_populated_state(tmp_path):
     assert "code: llamacpp ready; load=disabled" in snapshot
     assert "Events: 2" in snapshot
     assert "code.log" in snapshot
+    assert "Basic router mode: beta" in snapshot
     assert "No chat surface" in snapshot
 
 

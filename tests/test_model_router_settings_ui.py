@@ -157,6 +157,8 @@ def test_settings_home_page_loads_without_chat_surface(tmp_path, monkeypatch):
     assert "No routing events yet" in response.text
     assert "Settings UI Follow-Through" in response.text
     assert "Telemetry Review" in response.text
+    assert "Maturity" in response.text
+    assert "TUI control center" in response.text
     assert "code_agent" in response.text
     assert response.text.count('id="settings"') == 1
     assert 'id="runtime-detail"' in response.text
@@ -226,6 +228,11 @@ def test_settings_state_api_includes_models_and_downloads(tmp_path, monkeypatch)
     assert "score" in payload["recommendation"]["local_model_recommendations"][0]
     assert "score" in payload["download_plan"]["suggestions"][0]
     assert payload["benchmarks"]["results"] == 0
+    assert payload["maturity"]["status"] == "release_candidate"
+    assert {
+        feature["feature_id"]: feature["maturity"]
+        for feature in payload["maturity"]["features"]
+    }["tui"] == "experimental"
     assert payload["telemetry"]["backend_counts"] == {"code": 1, "fast": 1}
     assert payload["telemetry"]["fallback_count"] == 1
     assert payload["telemetry"]["recent_request_ids"] == ["req-1", "req-2"]

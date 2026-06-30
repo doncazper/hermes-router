@@ -25,6 +25,11 @@ receipt, routing map, provider/runtime panel, recent telemetry, benchmark
 status, and wrong-route feedback all come from local config and telemetry files
 rather than a demo chat surface.
 
+Feature maturity is explicit in `model-router doctor`, `model-router settings`,
+and `model-router tui`. Use `docs/release-checklist.md` for release gates and
+`docs/upgrade-uninstall.md` for upgrade, rollback, uninstall, and config
+migration notes.
+
 ## Architecture
 
 The router is implemented under `hermes/plugins/model_router/`. This is a

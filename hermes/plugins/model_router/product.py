@@ -21,6 +21,7 @@ from hermes.plugins.model_router.config import (
     load_router_config,
 )
 from hermes.plugins.model_router.model_advisor import detect_hardware_profile
+from hermes.plugins.model_router.maturity import feature_maturity_state
 from hermes.plugins.model_router.proxy_config import (
     ProxyBackendConfig,
     ProxyConfigError,
@@ -117,6 +118,7 @@ class DoctorReport:
     proxy_endpoint: str | None = None
     telemetry_log_path: str | None = None
     remediation: tuple[str, ...] = ()
+    maturity: dict[str, Any] = field(default_factory=feature_maturity_state)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -130,6 +132,7 @@ class DoctorReport:
             "proxy_endpoint": self.proxy_endpoint,
             "telemetry_log_path": self.telemetry_log_path,
             "remediation": list(self.remediation),
+            "maturity": self.maturity,
         }
 
 
@@ -830,6 +833,22 @@ def _doctor_remediation(
     router_config_valid: bool,
 ) -> tuple[str, ...]:
     messages: list[str] = []
+    maturity = feature_maturity_state()
+    feature_summary = ", ".join(
+        f"{feature['feature_id']}={feature['maturity']}"
+        for feature in maturity["features"]
+    )
+    messages.append(f"Feature maturity: {feature_summary}.")
+    if config.proxy.routing_mode == "manual":
+        messages.append(
+            "Manual/basic router mode is beta; run decision and manual dogfood "
+            "checks before release."
+        )
+    else:
+        messages.append(
+            "Decision router mode is the stable default; manual/basic mode should "
+            "be dogfooded separately before release."
+        )
     if not router_config_valid:
         messages.append("Fix the router_config path before starting the proxy.")
     backend_by_name = config.backends

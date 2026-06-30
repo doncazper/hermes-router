@@ -1219,6 +1219,17 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
             print(f"Agent endpoint: {report.proxy_endpoint}")
         if report.telemetry_log_path:
             print(f"Telemetry log: {report.telemetry_log_path}")
+        features = payload.get("maturity", {}).get("features", [])
+        if features:
+            print("Feature maturity:")
+            for feature in features:
+                if not isinstance(feature, dict):
+                    continue
+                print(
+                    "- "
+                    f"{feature.get('label', feature.get('feature_id', 'unknown'))}: "
+                    f"{feature.get('maturity', 'unknown')}"
+                )
         if report.errors:
             print("Errors:")
             for error in report.errors:

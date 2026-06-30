@@ -481,6 +481,11 @@ def test_doctor_reports_backend_health(tmp_path, monkeypatch):
     assert report.router_config_valid is True
     assert report.ok is False
     assert any(not backend.reachable for backend in report.backends)
+    assert report.to_dict()["maturity"]["status"] == "release_candidate"
+    assert any(
+        feature["feature_id"] == "basic_router_mode"
+        for feature in report.to_dict()["maturity"]["features"]
+    )
     assert json.dumps(report.to_dict())
 
 
