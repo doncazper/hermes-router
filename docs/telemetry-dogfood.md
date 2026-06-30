@@ -208,10 +208,16 @@ model-router workflow-benchmark --json --fail-on-mismatch
 
 The workflow report has the same privacy posture as telemetry summaries:
 prompt hashes, expected/selected routes, receipt summaries, reason codes,
-policy/fallback/safety explanations, and route-change counts, but no prompt
-bodies. Promote stable wrong-route clusters into workflow fixtures only after
-sanitizing the prompt enough to preserve routing behavior without private
-content.
+delegation suitability signals, policy/fallback/safety explanations, and
+route-change counts, but no prompt bodies. Promote stable wrong-route clusters
+into workflow fixtures only after sanitizing the prompt enough to preserve
+routing behavior without private content.
+
+When proxy responses include upstream usage metadata, telemetry summaries may
+show aggregate prompt, completion, total, and cached-input token counts by
+route, backend, and model. These fields are usage telemetry only: they do not
+include prompt or response text, do not estimate cost without a local pricing
+catalog, and do not imply task success.
 
 ## Maintain Catalogs
 

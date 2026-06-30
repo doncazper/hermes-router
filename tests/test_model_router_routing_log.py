@@ -2,11 +2,14 @@ import json
 import subprocess
 import sys
 
+import pytest
+
 from hermes.plugins.model_router import ModelRouter
 from hermes.plugins.model_router.routing_log import (
     PROMPT_CAPTURE_FULL,
     PROMPT_CAPTURE_REDACTED,
     RoutingLogWriter,
+    build_feedback,
     build_routing_event,
     prompt_fields,
     read_jsonl,
@@ -131,6 +134,30 @@ def test_routing_event_schema_is_json_safe(tmp_path):
     assert rows[0]["usage_total_tokens"] == 150
     assert rows[0]["usage_cached_input_tokens"] == 12
     assert json.dumps(rows[0])
+
+
+def test_feedback_schema_accepts_optional_manual_outcome_label():
+    feedback = build_feedback(
+        request_id="req-1",
+        expected_engine="code_agent",
+        outcome_label="accepted",
+        notes="operator accepted route",
+    ).to_dict()
+
+    assert feedback["event_type"] == "routing_feedback"
+    assert feedback["request_id"] == "req-1"
+    assert feedback["expected_engine"] == "code_agent"
+    assert feedback["outcome_label"] == "accepted"
+    assert feedback["notes"] == "operator accepted route"
+
+
+def test_feedback_schema_rejects_invalid_outcome_label():
+    with pytest.raises(ValueError, match="invalid outcome_label"):
+        build_feedback(
+            request_id="req-1",
+            expected_engine="code_agent",
+            outcome_label="automatic_success",
+        )
 
 
 def test_core_route_fast_does_not_import_routing_log():

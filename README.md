@@ -385,11 +385,11 @@ model-router workflow-benchmark --json --fail-on-mismatch
 
 The benchmark uses checked-in sanitized fixture prompts for simple,
 balanced, coding, research, vision, image generation, safety, private-profile,
-and quality-profile workflows. Reports include expected and selected engines,
-provider, confirmation state, route-change counts, receipt summaries, reason
-codes, and policy/fallback/safety explanations. Reports serialize prompt hashes
-instead of prompt bodies and make no backend, verifier, download, or hosted API
-calls.
+quality-profile, and sidekick-delegation-shaped workflows. Reports include
+expected and selected engines, provider, confirmation state, route-change
+counts, receipt summaries, reason codes, delegation suitability signals, and
+policy/fallback/safety explanations. Reports serialize prompt hashes instead of
+prompt bodies and make no backend, verifier, download, or hosted API calls.
 
 ## Route Receipts
 

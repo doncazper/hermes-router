@@ -201,12 +201,12 @@ model-router workflow-benchmark --json --fail-on-mismatch
 ```
 
 This benchmark uses sanitized fixture prompts for simple, balanced, coding,
-research, vision, image generation, safety, private-profile, and
-quality-profile workflows. It measures route correctness, profile behavior,
-confirmation behavior, route changes, and diagnostic receipt fields. It does
-not call providers, local model servers, optional verifiers, downloads,
-benchmarks, or hosted APIs. Reports serialize prompt hashes rather than prompt
-bodies.
+research, vision, image generation, safety, private-profile, quality-profile,
+and sidekick-delegation-shaped workflows. It measures route correctness, profile
+behavior, confirmation behavior, route changes, diagnostic receipt fields, and
+expected delegation suitability signals. It does not call providers, local model
+servers, optional verifiers, downloads, benchmarks, or hosted APIs. Reports
+serialize prompt hashes rather than prompt bodies.
 
 ## Catalog Update Workflow
 

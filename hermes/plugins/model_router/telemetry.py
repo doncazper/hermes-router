@@ -9,7 +9,20 @@ from time import perf_counter
 from typing import Any
 
 from hermes.plugins.model_router.policy import ModelRouter
-from hermes.plugins.model_router.routing_log import DEFAULT_FEEDBACK_PATH, read_jsonl
+from hermes.plugins.model_router.routing_log import (
+    DEFAULT_FEEDBACK_PATH,
+    OUTCOME_LABEL_SET,
+    read_jsonl,
+    redact_text,
+)
+
+
+USAGE_TOKEN_FIELDS = (
+    "usage_prompt_tokens",
+    "usage_completion_tokens",
+    "usage_total_tokens",
+    "usage_cached_input_tokens",
+)
 
 
 def replay_events(
@@ -42,6 +55,8 @@ def replay_events(
     replayed = 0
     skipped_no_prompt = 0
     labeled_replayable = 0
+    usage_summary = usage_telemetry_summary(routing_events)
+    outcome_label_counts = _outcome_label_counts(feedback.values())
 
     for event in routing_events:
         request_id = str(event.get("request_id", ""))
@@ -139,6 +154,8 @@ def replay_events(
         "confusion_matrix": dict(sorted(confusion.items())),
         "selected_engine_counts": dict(sorted(selected_engine_counts.items())),
         "status_counts": dict(sorted(status_counts.items())),
+        "outcome_label_counts": outcome_label_counts,
+        **usage_summary,
         "historical_route_latency_mean_ms": historical_mean,
         "replay_route_latency_mean_ms": replay_mean,
         "route_latency_delta_mean_ms": (
@@ -162,9 +179,13 @@ def feedback_summary(
 
     labels: list[dict[str, Any]] = []
     expected_engine_counts: Counter[str] = Counter()
+    outcome_label_counts: Counter[str] = Counter()
     for request_id, row in sorted(feedback.items()):
         expected_engine = str(row.get("expected_engine", ""))
         expected_engine_counts[expected_engine] += 1
+        outcome_label = _outcome_label(row.get("outcome_label"))
+        if outcome_label:
+            outcome_label_counts[outcome_label] += 1
         event = event_by_request.get(request_id)
         label: dict[str, Any] = {
             "request_id": request_id,
@@ -173,6 +194,8 @@ def feedback_summary(
             "event_found": event is not None,
             "replayable": bool(event and isinstance(event.get("prompt"), str)),
         }
+        if outcome_label:
+            label["outcome_label"] = outcome_label
         if event is not None:
             label["historical_engine"] = event.get("selected_engine")
             label["status"] = event.get("status")
@@ -183,6 +206,7 @@ def feedback_summary(
     return {
         "feedback_labels": len(feedback),
         "expected_engine_counts": dict(sorted(expected_engine_counts.items())),
+        "outcome_label_counts": dict(sorted(outcome_label_counts.items())),
         "labels": labels[: max(0, max_rows)],
         "truncated": len(labels) > max_rows,
     }
@@ -225,9 +249,12 @@ def review_queue(
             "selected_engine": selected_engine,
             "status": event.get("status"),
             "backend": event.get("backend"),
+            "backend_model": _safe_group_key(event.get("backend_model")),
+            "upstream_model": _safe_group_key(event.get("upstream_model")),
             "routing_profile": event.get("routing_profile"),
             "receipt_summary": event.get("receipt_summary"),
             "reason_codes": _string_list(event.get("reason_codes")),
+            "usage": event_usage_summary(event),
             "replayable": replayable,
             "suggested_feedback_command": (
                 "model-router feedback "
@@ -251,6 +278,64 @@ def review_queue(
     }
 
 
+def usage_telemetry_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
+    totals = _empty_usage_totals()
+    by_engine: dict[str, dict[str, int]] = {}
+    by_backend: dict[str, dict[str, int]] = {}
+    by_model: dict[str, dict[str, int]] = {}
+    upstream_model_counts: Counter[str] = Counter()
+    usage_events = 0
+
+    for event in events:
+        usage = event_usage_summary(event)
+        has_usage = any(usage[field] > 0 for field in USAGE_TOKEN_FIELDS)
+        if not has_usage:
+            continue
+        usage_events += 1
+        _merge_usage_totals(totals, usage)
+
+        engine = _safe_group_key(event.get("selected_engine"))
+        if engine:
+            _merge_usage_totals(_group_totals(by_engine, engine), usage)
+
+        backend = _safe_group_key(event.get("backend") or event.get("selected_backend"))
+        if backend:
+            _merge_usage_totals(_group_totals(by_backend, backend), usage)
+
+        model = _safe_model_key(event)
+        if model:
+            _merge_usage_totals(_group_totals(by_model, model), usage)
+
+        upstream_model = _safe_group_key(event.get("upstream_model"))
+        if upstream_model:
+            upstream_model_counts[upstream_model] += 1
+
+    return {
+        "usage_events": usage_events,
+        "usage_prompt_tokens": totals["usage_prompt_tokens"],
+        "usage_completion_tokens": totals["usage_completion_tokens"],
+        "usage_total_tokens": totals["usage_total_tokens"],
+        "usage_cached_input_tokens": totals["usage_cached_input_tokens"],
+        "usage_by_selected_engine": _sorted_usage_groups(by_engine),
+        "usage_by_backend": _sorted_usage_groups(by_backend),
+        "usage_by_model": _sorted_usage_groups(by_model),
+        "upstream_model_counts": dict(sorted(upstream_model_counts.items())),
+    }
+
+
+def event_usage_summary(event: dict[str, Any]) -> dict[str, Any]:
+    usage = _empty_usage_totals()
+    for field in USAGE_TOKEN_FIELDS:
+        usage[field] = _non_negative_int(event.get(field))
+    upstream_model = _safe_group_key(event.get("upstream_model"))
+    if upstream_model:
+        usage["upstream_model"] = upstream_model
+    backend_model = _safe_group_key(event.get("backend_model"))
+    if backend_model:
+        usage["backend_model"] = backend_model
+    return usage
+
+
 def _feedback_records_by_request(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     feedback: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -259,7 +344,13 @@ def _feedback_records_by_request(rows: list[dict[str, Any]]) -> dict[str, dict[s
         request_id = row.get("request_id")
         expected_engine = row.get("expected_engine")
         if isinstance(request_id, str) and isinstance(expected_engine, str):
-            feedback[request_id] = row
+            normalized = dict(row)
+            outcome_label = _outcome_label(row.get("outcome_label"))
+            if outcome_label:
+                normalized["outcome_label"] = outcome_label
+            else:
+                normalized.pop("outcome_label", None)
+            feedback[request_id] = normalized
     return feedback
 
 
@@ -292,3 +383,78 @@ def _string_list(value: Any) -> list[str]:
     if isinstance(value, list):
         return [item for item in value if isinstance(item, str)]
     return []
+
+
+def _empty_usage_totals() -> dict[str, int]:
+    return {field: 0 for field in USAGE_TOKEN_FIELDS}
+
+
+def _merge_usage_totals(target: dict[str, int], usage: dict[str, Any]) -> None:
+    target["events"] = target.get("events", 0) + 1
+    for field in USAGE_TOKEN_FIELDS:
+        target[field] = target.get(field, 0) + _non_negative_int(usage.get(field))
+
+
+def _group_totals(groups: dict[str, dict[str, int]], key: str) -> dict[str, int]:
+    if key not in groups:
+        groups[key] = {"events": 0, **_empty_usage_totals()}
+    return groups[key]
+
+
+def _sorted_usage_groups(groups: dict[str, dict[str, int]]) -> dict[str, dict[str, int]]:
+    return {
+        key: groups[key]
+        for key in sorted(
+            groups,
+            key=lambda item: (
+                -groups[item].get("usage_total_tokens", 0),
+                -groups[item].get("usage_prompt_tokens", 0),
+                item,
+            ),
+        )
+    }
+
+
+def _safe_model_key(event: dict[str, Any]) -> str:
+    return (
+        _safe_group_key(event.get("upstream_model"))
+        or _safe_group_key(event.get("backend_model"))
+        or _safe_group_key(event.get("selected_model"))
+    )
+
+
+def _safe_group_key(value: Any, *, max_chars: int = 160) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = redact_text(value).strip()
+    if not text:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    return text[: max(0, max_chars - 1)].rstrip() + "…"
+
+
+def _non_negative_int(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return 0
+    return value
+
+
+def _outcome_label(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    label = value.strip()
+    if label in OUTCOME_LABEL_SET:
+        return label
+    return None
+
+
+def _outcome_label_counts(rows: Any) -> dict[str, int]:
+    counts: Counter[str] = Counter()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        label = _outcome_label(row.get("outcome_label"))
+        if label:
+            counts[label] += 1
+    return dict(sorted(counts.items()))

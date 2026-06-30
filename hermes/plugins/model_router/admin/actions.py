@@ -448,20 +448,24 @@ def _feedback_action(
 ) -> dict[str, Any]:
     request_id = str(payload.get("request_id", "")).strip()
     expected_engine = str(payload.get("expected_engine", "")).strip()
+    outcome_label = str(payload.get("outcome_label", "")).strip() or None
     notes = str(payload.get("notes", "")).strip() or None
     if not request_id or not expected_engine:
         raise AdminActionError(
             "request_id and expected_engine are required.",
             status_code=400,
         )
-    writer = RoutingLogWriter(paths["feedback"])
-    if not writer.write(
-        build_feedback(
+    try:
+        feedback = build_feedback(
             request_id=request_id,
             expected_engine=expected_engine,
+            outcome_label=outcome_label,
             notes=notes,
         )
-    ):
+    except ValueError as exc:
+        raise AdminActionError(str(exc), status_code=400) from exc
+    writer = RoutingLogWriter(paths["feedback"])
+    if not writer.write(feedback):
         raise AdminActionError("Failed to write feedback.", status_code=500)
     return {"ok": True, "feedback_path": str(paths["feedback"])}
 

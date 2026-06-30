@@ -9,6 +9,7 @@ from hermes.plugins.model_router.config import REQUIRED_ENGINE_CATEGORIES
 from hermes.plugins.model_router.workflow_benchmark import (
     WorkflowBenchmarkCase,
     run_workflow_benchmarks,
+    workflow_cases_by_name,
 )
 
 
@@ -98,11 +99,12 @@ def test_workflow_benchmark_default_cases_pass_without_serializing_prompts():
     report = run_workflow_benchmarks()
 
     assert report.ok is True
-    assert report.total >= 9
+    assert report.total >= 13
     assert report.route_changes == 0
     payload = json.dumps(report.to_dict())
     assert "routing stays explicit" not in payload
     assert "Deploy this change" not in payload
+    assert "deprecated tracing imports" not in payload
     assert "prompt_hash" in payload
     private_case = next(
         result for result in report.results if result.name == "private_current_information"
@@ -115,6 +117,85 @@ def test_workflow_benchmark_default_cases_pass_without_serializing_prompts():
     )
     assert safety_case.selected_engine == "human_confirm"
     assert safety_case.requires_confirmation is True
+    assert safety_case.task_shape == "risky external action"
+    assert safety_case.delegation_suitability["risky_or_external_action"] is True
+
+
+def test_workflow_benchmark_sidekick_delegation_cases_capture_expected_signals():
+    report = run_workflow_benchmarks(
+        cases=workflow_cases_by_name(
+            (
+                "mechanical_bulk_edit",
+                "slow_test_suite",
+                "judgment_heavy_ui_product_change",
+                "hard_mechanical_integration",
+            )
+        )
+    )
+
+    assert report.ok is True
+    assert report.total == 4
+    results = {result.name: result for result in report.results}
+
+    mechanical = results["mechanical_bulk_edit"]
+    assert mechanical.category == "sidekick_delegation"
+    assert mechanical.task_shape == "mechanical bulk edit"
+    assert "delegation.mechanical_work_likely" in mechanical.reason_codes
+    assert "delegation.repo_wide_likely" in mechanical.reason_codes
+    assert mechanical.delegation_suitability["mechanical_work_likely"] is True
+    assert mechanical.delegation_suitability["repo_wide_likely"] is True
+    assert mechanical.delegation_considerations
+
+    slow_tests = results["slow_test_suite"]
+    assert slow_tests.task_shape == "slow verification-heavy test suite"
+    assert "delegation.verification_heavy_likely" in slow_tests.reason_codes
+    assert slow_tests.delegation_suitability["verification_heavy_likely"] is True
+    assert slow_tests.delegation_suitability["repo_wide_likely"] is True
+
+    ui_change = results["judgment_heavy_ui_product_change"]
+    assert ui_change.task_shape == "judgment-heavy UI/product change"
+    assert "delegation.judgment_heavy_likely" in ui_change.reason_codes
+    assert ui_change.delegation_suitability["judgment_heavy_likely"] is True
+    assert ui_change.delegation_suitability["mechanical_work_likely"] is False
+
+    integration = results["hard_mechanical_integration"]
+    assert integration.task_shape == "hard but mostly mechanical integration"
+    assert "delegation.mechanical_work_likely" in integration.reason_codes
+    assert "delegation.judgment_heavy_likely" in integration.reason_codes
+    assert "delegation.repo_wide_likely" in integration.reason_codes
+    assert integration.delegation_suitability["mechanical_work_likely"] is True
+    assert integration.delegation_suitability["judgment_heavy_likely"] is True
+
+    for result in report.results:
+        assert result.expected_reason_codes
+        assert result.expected_delegation_signals
+        for code in result.expected_reason_codes:
+            assert code in result.reason_codes
+        for signal, expected in result.expected_delegation_signals.items():
+            assert result.delegation_suitability[signal] is expected
+
+
+def test_workflow_benchmark_detects_missing_expected_delegation_signal():
+    report = run_workflow_benchmarks(
+        cases=(
+            WorkflowBenchmarkCase(
+                name="missing_signal",
+                category="test",
+                prompt="Rewrite this text.",
+                expected_engine="fast_local",
+                expected_delegation_signals={
+                    "verification_heavy_likely": True,
+                },
+            ),
+        )
+    )
+
+    assert report.ok is False
+    assert report.failed == 1
+    assert any(
+        "expected delegation signal verification_heavy_likely=True" in reason
+        for reason in report.results[0].failure_reasons
+    )
 
 
 def test_workflow_benchmark_detects_route_changes():
@@ -183,14 +264,19 @@ def test_workflow_benchmark_private_profile_excludes_hosted_provider(tmp_path):
 
 
 def test_workflow_benchmark_cli_json_is_privacy_safe():
-    result = _run_cli("workflow-benchmark", "--json", "--case", "simple_rewrite")
+    result = _run_cli("workflow-benchmark", "--json", "--case", "mechanical_bulk_edit")
 
     assert result.returncode == 0
     assert "routing stays explicit" not in result.stdout
+    assert "deprecated tracing imports" not in result.stdout
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["total"] == 1
-    assert payload["results"][0]["selected_engine"] == "fast_local"
+    assert payload["results"][0]["selected_engine"] == "code_agent"
+    assert payload["results"][0]["task_shape"] == "mechanical bulk edit"
+    assert payload["results"][0]["delegation_suitability"][
+        "mechanical_work_likely"
+    ] is True
 
 
 def test_workflow_benchmark_cli_readable_report_is_release_friendly():

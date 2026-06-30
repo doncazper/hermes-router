@@ -14,7 +14,7 @@ from hermes.plugins.model_router.policy import ModelRouter
 from hermes.plugins.model_router.receipts import decision_to_receipt
 
 
-WORKFLOW_BENCHMARK_VERSION = 1
+WORKFLOW_BENCHMARK_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -26,6 +26,10 @@ class WorkflowBenchmarkCase:
     hints: Mapping[str, Any] = field(default_factory=dict)
     expected_provider: str | None = None
     expected_requires_confirmation: bool | None = None
+    task_shape: str = ""
+    expected_reason_codes: tuple[str, ...] = field(default_factory=tuple)
+    expected_delegation_signals: Mapping[str, bool] = field(default_factory=dict)
+    delegation_considerations: tuple[str, ...] = field(default_factory=tuple)
 
     @property
     def prompt_hash(self) -> str:
@@ -39,6 +43,10 @@ class WorkflowBenchmarkCase:
             "expected_provider": self.expected_provider,
             "expected_requires_confirmation": self.expected_requires_confirmation,
             "hints": dict(self.hints),
+            "task_shape": self.task_shape,
+            "expected_reason_codes": list(self.expected_reason_codes),
+            "expected_delegation_signals": dict(self.expected_delegation_signals),
+            "delegation_considerations": list(self.delegation_considerations),
             "prompt_hash": self.prompt_hash,
         }
 
@@ -65,6 +73,11 @@ class WorkflowBenchmarkResult:
     fallback_explanation: str = ""
     safety_explanation: str = ""
     privacy_explanation: str = ""
+    task_shape: str = ""
+    expected_reason_codes: tuple[str, ...] = field(default_factory=tuple)
+    delegation_suitability: Mapping[str, Any] = field(default_factory=dict)
+    expected_delegation_signals: Mapping[str, bool] = field(default_factory=dict)
+    delegation_considerations: tuple[str, ...] = field(default_factory=tuple)
     failure_reasons: tuple[str, ...] = field(default_factory=tuple)
 
     @property
@@ -94,6 +107,11 @@ class WorkflowBenchmarkResult:
             "fallback_explanation": self.fallback_explanation,
             "safety_explanation": self.safety_explanation,
             "privacy_explanation": self.privacy_explanation,
+            "task_shape": self.task_shape,
+            "expected_reason_codes": list(self.expected_reason_codes),
+            "delegation_suitability": dict(self.delegation_suitability),
+            "expected_delegation_signals": dict(self.expected_delegation_signals),
+            "delegation_considerations": list(self.delegation_considerations),
             "failure_reasons": list(self.failure_reasons),
         }
 
@@ -193,6 +211,16 @@ DEFAULT_WORKFLOW_CASES: tuple[WorkflowBenchmarkCase, ...] = (
         expected_engine="human_confirm",
         expected_provider="human",
         expected_requires_confirmation=True,
+        task_shape="risky external action",
+        expected_reason_codes=("delegation.risky_or_external_action",),
+        expected_delegation_signals={
+            "risky_or_external_action": True,
+            "mechanical_work_likely": False,
+        },
+        delegation_considerations=(
+            "Sidekick delegation should stop until human-confirmation policy is satisfied.",
+            "External deployment or push behavior belongs to the host agent controls.",
+        ),
     ),
     WorkflowBenchmarkCase(
         name="private_current_information",
@@ -214,6 +242,106 @@ DEFAULT_WORKFLOW_CASES: tuple[WorkflowBenchmarkCase, ...] = (
         hints={"profile": "quality"},
         expected_provider="local",
         expected_requires_confirmation=False,
+    ),
+    WorkflowBenchmarkCase(
+        name="mechanical_bulk_edit",
+        category="sidekick_delegation",
+        prompt=(
+            "Mechanically replace deprecated tracing imports across the repository "
+            "and update call sites without changing behavior."
+        ),
+        expected_engine="code_agent",
+        expected_provider="local",
+        expected_requires_confirmation=False,
+        task_shape="mechanical bulk edit",
+        expected_reason_codes=(
+            "delegation.mechanical_work_likely",
+            "delegation.repo_wide_likely",
+        ),
+        expected_delegation_signals={
+            "mechanical_work_likely": True,
+            "repo_wide_likely": True,
+            "risky_or_external_action": False,
+        },
+        delegation_considerations=(
+            "Sidekick delegation may help with repetitive edits.",
+            "The host agent should retain diff review and verification responsibility.",
+        ),
+    ),
+    WorkflowBenchmarkCase(
+        name="slow_test_suite",
+        category="sidekick_delegation",
+        prompt=(
+            "Fix the failing repo tests and run the full Playwright end-to-end "
+            "test suite plus pytest to verify the regression."
+        ),
+        expected_engine="code_agent",
+        expected_provider="local",
+        expected_requires_confirmation=False,
+        task_shape="slow verification-heavy test suite",
+        expected_reason_codes=(
+            "delegation.verification_heavy_likely",
+            "delegation.repo_wide_likely",
+        ),
+        expected_delegation_signals={
+            "verification_heavy_likely": True,
+            "repo_wide_likely": True,
+            "risky_or_external_action": False,
+        },
+        delegation_considerations=(
+            "Sidekick delegation may help when verification latency dominates.",
+            "The host agent should interpret failures, flakes, and final acceptance.",
+        ),
+    ),
+    WorkflowBenchmarkCase(
+        name="judgment_heavy_ui_product_change",
+        category="sidekick_delegation",
+        prompt=(
+            "Design and implement a team selector in the dashboard UI with product "
+            "tradeoffs, UX edge cases, rollout notes, and final review."
+        ),
+        expected_engine="code_agent",
+        expected_provider="local",
+        expected_requires_confirmation=False,
+        task_shape="judgment-heavy UI/product change",
+        expected_reason_codes=("delegation.judgment_heavy_likely",),
+        expected_delegation_signals={
+            "judgment_heavy_likely": True,
+            "mechanical_work_likely": False,
+            "risky_or_external_action": False,
+        },
+        delegation_considerations=(
+            "Sidekick delegation may hurt if product judgment is delegated.",
+            "The host agent should keep planning, ambiguity resolution, and final review.",
+        ),
+    ),
+    WorkflowBenchmarkCase(
+        name="hard_mechanical_integration",
+        category="sidekick_delegation",
+        prompt=(
+            "Integrate the new telemetry field through the API client, CLI output, "
+            "and tests across multiple modules; the edits are mostly mechanical "
+            "but the compatibility boundary is ambiguous and risky to get wrong."
+        ),
+        expected_engine="code_agent",
+        expected_provider="local",
+        expected_requires_confirmation=False,
+        task_shape="hard but mostly mechanical integration",
+        expected_reason_codes=(
+            "delegation.mechanical_work_likely",
+            "delegation.judgment_heavy_likely",
+            "delegation.repo_wide_likely",
+        ),
+        expected_delegation_signals={
+            "mechanical_work_likely": True,
+            "judgment_heavy_likely": True,
+            "repo_wide_likely": True,
+            "risky_or_external_action": False,
+        },
+        delegation_considerations=(
+            "Sidekick delegation may help with repeated wiring edits.",
+            "Compatibility boundaries and review should stay with the host agent.",
+        ),
     ),
 )
 
@@ -242,6 +370,7 @@ def run_workflow_benchmarks(
         notes=(
             "Offline routing correctness only; no backend requests were made.",
             "Prompt bodies are fixture inputs and are not serialized in reports.",
+            "Delegation suitability fields are diagnostic; no workers are spawned.",
         ),
     )
 
@@ -267,6 +396,7 @@ def _run_case(
     decision = router.route(case.prompt, hints=dict(case.hints))
     route_latency_us = round((perf_counter_ns() - started) / 1000, 3)
     receipt = decision_to_receipt(decision)
+    delegation_suitability = receipt.delegation_suitability.to_dict()
     selected_engine = router.config.get_engine(decision.selected_engine)
     selected_provider = selected_engine.provider if selected_engine else None
     failure_reasons = _failure_reasons(
@@ -274,6 +404,8 @@ def _run_case(
         decision.selected_engine,
         selected_provider,
         decision.requires_confirmation,
+        receipt.reason_codes,
+        delegation_suitability,
     )
     return WorkflowBenchmarkResult(
         name=case.name,
@@ -296,6 +428,11 @@ def _run_case(
         fallback_explanation=receipt.fallback_explanation,
         safety_explanation=receipt.safety_explanation,
         privacy_explanation=receipt.privacy_explanation,
+        task_shape=case.task_shape,
+        expected_reason_codes=case.expected_reason_codes,
+        delegation_suitability=delegation_suitability,
+        expected_delegation_signals=case.expected_delegation_signals,
+        delegation_considerations=case.delegation_considerations,
         failure_reasons=tuple(failure_reasons),
     )
 
@@ -305,6 +442,8 @@ def _failure_reasons(
     selected_engine: str,
     selected_provider: str | None,
     requires_confirmation: bool,
+    reason_codes: tuple[str, ...],
+    delegation_suitability: Mapping[str, Any],
 ) -> list[str]:
     failures: list[str] = []
     if selected_engine != case.expected_engine:
@@ -323,6 +462,16 @@ def _failure_reasons(
             "expected confirmation "
             f"{case.expected_requires_confirmation}, got {requires_confirmation}"
         )
+    actual_reason_codes = set(reason_codes)
+    for expected_code in case.expected_reason_codes:
+        if expected_code not in actual_reason_codes:
+            failures.append(f"missing expected reason code {expected_code}")
+    for signal, expected in sorted(case.expected_delegation_signals.items()):
+        actual = delegation_suitability.get(signal)
+        if actual is not expected:
+            failures.append(
+                f"expected delegation signal {signal}={expected}, got {actual}"
+            )
     return failures
 
 

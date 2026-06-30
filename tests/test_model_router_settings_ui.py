@@ -160,6 +160,8 @@ def test_settings_home_page_loads_without_chat_surface(tmp_path, monkeypatch):
     assert "Maturity" in response.text
     assert "TUI control center" in response.text
     assert "code_agent" in response.text
+    assert 'id="feedback-outcome"' in response.text
+    assert "failed_verification" in response.text
     assert response.text.count('id="settings"') == 1
     assert 'id="runtime-detail"' in response.text
     assert 'id="catalog"' in response.text
@@ -190,10 +192,28 @@ def test_settings_state_api_includes_models_and_downloads(tmp_path, monkeypatch)
                     "request_id": "req-2",
                     "selected_engine": "code_agent",
                     "backend": "code",
+                    "backend_model": "configured-code",
+                    "upstream_model": "actual-code",
                     "status": "forwarded",
                     "fallback_used": True,
+                    "usage_prompt_tokens": 21,
+                    "usage_completion_tokens": 9,
+                    "usage_total_tokens": 30,
+                    "usage_cached_input_tokens": 4,
                 },
             )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "routing-feedback.jsonl").write_text(
+        json.dumps(
+            {
+                "event_type": "routing_feedback",
+                "request_id": "req-2",
+                "expected_engine": "code_agent",
+                "outcome_label": "accepted",
+            }
         )
         + "\n",
         encoding="utf-8",
@@ -235,10 +255,22 @@ def test_settings_state_api_includes_models_and_downloads(tmp_path, monkeypatch)
     }["tui"] == "experimental"
     assert payload["telemetry"]["backend_counts"] == {"code": 1, "fast": 1}
     assert payload["telemetry"]["fallback_count"] == 1
+    assert payload["telemetry"]["feedback_labels"] == 1
+    assert payload["telemetry"]["outcome_label_counts"] == {"accepted": 1}
+    assert payload["telemetry"]["usage_events"] == 1
+    assert payload["telemetry"]["usage_prompt_tokens"] == 21
+    assert payload["telemetry"]["usage_completion_tokens"] == 9
+    assert payload["telemetry"]["usage_total_tokens"] == 30
+    assert payload["telemetry"]["usage_cached_input_tokens"] == 4
+    assert payload["telemetry"]["usage_by_backend"]["code"]["usage_total_tokens"] == 30
+    assert payload["telemetry"]["usage_by_model"]["actual-code"][
+        "usage_total_tokens"
+    ] == 30
     assert payload["telemetry"]["recent_request_ids"] == ["req-1", "req-2"]
     assert payload["route_receipt"]["request_id"] == "req-2"
     assert payload["route_receipt"]["selected"] == "code_agent"
     assert payload["provider_runtime"]["selected_backend"] == "code"
+    assert payload["recent_events"][0]["usage_tokens"] == "p=21 c=9 t=30 cache=4"
     fast_backend = next(row for row in payload["backends"] if row["name"] == "fast")
     fast_adapter = fast_backend["runtime_adapter"]
     assert fast_adapter["provider"] == "lmstudio"
@@ -305,6 +337,11 @@ def test_dashboard_uses_latest_safe_route_receipt_without_prompt_leakage(
                 "fallback_used": False,
                 "backend": "code",
                 "backend_model": "qwen-code-local",
+                "upstream_model": "actual-code-model",
+                "usage_prompt_tokens": 40,
+                "usage_completion_tokens": 12,
+                "usage_total_tokens": 52,
+                "usage_cached_input_tokens": 8,
                 "risk_score": 50,
                 "requirements": {"needs_tools": True},
                 "receipt_summary": (
@@ -341,8 +378,12 @@ def test_dashboard_uses_latest_safe_route_receipt_without_prompt_leakage(
     assert state["route_receipt"]["backend"] == "code"
     assert state["route_receipt"]["privacy"] == "local-only"
     assert state["recent_events"][0]["request_id"] == "req-secret"
+    assert state["recent_events"][0]["usage_tokens"] == "p=40 c=12 t=52 cache=8"
+    assert state["review"]["items"][0]["request_id"] == "req-secret"
+    assert state["review"]["items"][0]["usage_tokens"] == "p=40 c=12 t=52 cache=8"
     assert "route.coding" in html
     assert "req-secret" in html
+    assert "p=40 c=12 t=52 cache=8" in html
     assert "api_key=super-secret" not in serialized
     assert "api_key=super-secret" not in html
     assert "fix this repository" not in serialized
@@ -715,6 +756,7 @@ def test_feedback_api_writes_cli_compatible_jsonl(tmp_path, monkeypatch):
             "confirm": True,
             "request_id": "req-123",
             "expected_engine": "code_agent",
+            "outcome_label": "failed_verification",
             "notes": "should have used code",
         },
     )
@@ -724,7 +766,21 @@ def test_feedback_api_writes_cli_compatible_jsonl(tmp_path, monkeypatch):
     assert row["event_type"] == "routing_feedback"
     assert row["request_id"] == "req-123"
     assert row["expected_engine"] == "code_agent"
+    assert row["outcome_label"] == "failed_verification"
     assert row["notes"] == "should have used code"
+
+    invalid = TestClient(app).post(
+        "/api/feedback",
+        json={
+            "confirm": True,
+            "request_id": "req-124",
+            "expected_engine": "code_agent",
+            "outcome_label": "automatic_success",
+        },
+    )
+
+    assert invalid.status_code == 400
+    assert "invalid outcome_label" in invalid.json()["error"]
 
 
 def test_mutating_admin_actions_require_confirmation(tmp_path, monkeypatch):

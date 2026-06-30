@@ -181,6 +181,8 @@ def test_feedback_cli_appends_jsonl_label(tmp_path):
         str(output),
         "--notes",
         "should have used code",
+        "--outcome",
+        "accepted",
         "req-123",
         "code_agent",
     )
@@ -190,7 +192,24 @@ def test_feedback_cli_appends_jsonl_label(tmp_path):
     assert row["event_type"] == "routing_feedback"
     assert row["request_id"] == "req-123"
     assert row["expected_engine"] == "code_agent"
+    assert row["outcome_label"] == "accepted"
     assert row["notes"] == "should have used code"
+
+
+def test_feedback_cli_rejects_invalid_outcome_label(tmp_path):
+    output = tmp_path / "feedback.jsonl"
+    result = _run_cli(
+        "feedback",
+        "--output",
+        str(output),
+        "--outcome",
+        "automatic_success",
+        "req-123",
+        "code_agent",
+    )
+
+    assert result.returncode != 0
+    assert not output.exists()
 
 
 def test_settings_cli_help_exposes_local_admin_command():
@@ -262,6 +281,7 @@ def test_telemetry_summary_cli_groups_mismatches_without_prompt_text(tmp_path):
                 "event_type": "routing_feedback",
                 "request_id": "secret-prompt",
                 "expected_engine": "fast_local",
+                "outcome_label": "wrong_route",
                 "notes": "token=secret-value",
             }
         ],
@@ -287,6 +307,7 @@ def test_telemetry_summary_cli_groups_mismatches_without_prompt_text(tmp_path):
     assert payload["labeled_replayable"] == 1
     assert payload["expected_mismatch_count"] == 1
     assert payload["mismatch_groups"] == {"fast_local->reasoning_local": 1}
+    assert payload["outcome_label_counts"] == {"wrong_route": 1}
     assert payload["skipped_no_prompt_request_ids"] == ["private"]
 
 
@@ -312,6 +333,7 @@ def test_telemetry_feedback_cli_hides_notes_by_default(tmp_path):
                 "event_type": "routing_feedback",
                 "request_id": "req-1",
                 "expected_engine": "balanced_local",
+                "outcome_label": "too_slow",
                 "notes": "contains private note",
             }
         ],
@@ -332,6 +354,8 @@ def test_telemetry_feedback_cli_hides_notes_by_default(tmp_path):
     payload = json.loads(result.stdout)
     assert payload["feedback_labels"] == 1
     assert payload["labels"][0]["request_id"] == "req-1"
+    assert payload["labels"][0]["outcome_label"] == "too_slow"
+    assert payload["outcome_label_counts"] == {"too_slow": 1}
     assert payload["labels"][0]["replayable"] is True
     assert "notes" not in payload["labels"][0]
 

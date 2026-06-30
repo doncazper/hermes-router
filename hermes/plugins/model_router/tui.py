@@ -336,11 +336,15 @@ def _telemetry_tab(state: Mapping[str, Any]) -> str:
     lines = [
         _pair("Events", telemetry.get("events", 0)),
         _pair("Feedback labels", telemetry.get("feedback_labels", 0)),
+        _pair("Outcome labels", _compact_counts(telemetry.get("outcome_label_counts"))),
         _pair("Unlabeled replayable", telemetry.get("unlabeled_replayable", 0)),
         _pair("Mismatches", telemetry.get("expected_mismatch_count", 0)),
         _pair("Fallbacks", telemetry.get("fallback_count", 0)),
+        _pair("Usage events", telemetry.get("usage_events", 0)),
+        _pair("Usage tokens", _compact_usage(telemetry)),
         _pair("Engines", _compact_counts(telemetry.get("selected_engine_counts"))),
         _pair("Backends", _compact_counts(telemetry.get("backend_counts"))),
+        _pair("Usage by backend", _compact_usage_groups(telemetry.get("usage_by_backend"))),
         "",
         "Recent requests",
     ]
@@ -348,7 +352,8 @@ def _telemetry_tab(state: Mapping[str, Any]) -> str:
         lines.extend(
             _bullet(
                 f"{item.get('request_id')}: {item.get('selected_engine')} -> "
-                f"{item.get('backend')} ({item.get('status')})"
+                f"{item.get('backend')} ({item.get('status')}; "
+                f"tokens={item.get('usage_tokens') or 'none'})"
             )
             for item in recent[:10]
             if isinstance(item, Mapping)
@@ -472,6 +477,38 @@ def _compact_counts(value: Any) -> str:
     if not isinstance(value, Mapping) or not value:
         return "none"
     return ", ".join(f"{key}={count}" for key, count in sorted(value.items()))
+
+
+def _compact_usage(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "none"
+    prompt = _usage_int(value.get("usage_prompt_tokens"))
+    completion = _usage_int(value.get("usage_completion_tokens"))
+    total = _usage_int(value.get("usage_total_tokens"))
+    cached = _usage_int(value.get("usage_cached_input_tokens"))
+    if prompt == completion == total == cached == 0:
+        return "none"
+    parts = [f"prompt={prompt}", f"completion={completion}", f"total={total}"]
+    if cached:
+        parts.append(f"cached_input={cached}")
+    return ", ".join(parts)
+
+
+def _compact_usage_groups(value: Any) -> str:
+    if not isinstance(value, Mapping) or not value:
+        return "none"
+    parts = []
+    for key, usage in sorted(value.items()):
+        formatted = _compact_usage(usage)
+        if formatted != "none":
+            parts.append(f"{key}={formatted}")
+    return "; ".join(parts) if parts else "none"
+
+
+def _usage_int(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return 0
+    return value
 
 
 def _tab_id(tab: str) -> str:

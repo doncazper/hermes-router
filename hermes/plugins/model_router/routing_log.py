@@ -24,6 +24,14 @@ PROMPT_CAPTURE_MODES = (
     PROMPT_CAPTURE_REDACTED,
     PROMPT_CAPTURE_FULL,
 )
+OUTCOME_LABELS = (
+    "accepted",
+    "wrong_route",
+    "too_expensive",
+    "too_slow",
+    "failed_verification",
+)
+OUTCOME_LABEL_SET = frozenset(OUTCOME_LABELS)
 
 _SECRET_PATTERNS = (
     re.compile(
@@ -103,6 +111,7 @@ class RoutingFeedback:
     timestamp: str
     request_id: str
     expected_engine: str
+    outcome_label: str | None = None
     notes: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -382,6 +391,7 @@ def build_feedback(
     *,
     request_id: str,
     expected_engine: str,
+    outcome_label: str | None = None,
     notes: str | None = None,
 ) -> RoutingFeedback:
     return RoutingFeedback(
@@ -389,8 +399,21 @@ def build_feedback(
         timestamp=now_iso(),
         request_id=request_id,
         expected_engine=expected_engine,
+        outcome_label=_normalized_outcome_label(outcome_label),
         notes=notes,
     )
+
+
+def _normalized_outcome_label(value: str | None) -> str | None:
+    if value is None:
+        return None
+    label = value.strip()
+    if not label:
+        return None
+    if label not in OUTCOME_LABEL_SET:
+        choices = ", ".join(OUTCOME_LABELS)
+        raise ValueError(f"invalid outcome_label {value!r}; expected one of: {choices}")
+    return label
 
 
 def read_jsonl(path: str | Path) -> list[dict[str, Any]]:

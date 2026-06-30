@@ -59,6 +59,7 @@ from hermes.plugins.model_router.proxy_config import (
 )
 from hermes.plugins.model_router.profiles import ROUTING_PROFILE_VALUES
 from hermes.plugins.model_router.routing_log import (
+    OUTCOME_LABELS,
     PROMPT_CAPTURE_MODES,
     read_jsonl,
     redact_text,
@@ -70,7 +71,12 @@ from hermes.plugins.model_router.setup_assistant import (
     recommend_setup,
     scan_local_environment,
 )
-from hermes.plugins.model_router.telemetry import feedback_summary, replay_events, review_queue
+from hermes.plugins.model_router.telemetry import (
+    event_usage_summary,
+    feedback_summary,
+    replay_events,
+    review_queue,
+)
 
 
 DEFAULT_SETTINGS_HOST = "127.0.0.1"
@@ -500,9 +506,15 @@ def render_settings_page(state: Mapping[str, Any]) -> str:
     telemetry_unlabeled = escape(str(telemetry.get("unlabeled_replayable", 0)))
     telemetry_mismatches = escape(str(telemetry.get("expected_mismatch_count", 0)))
     telemetry_fallbacks = escape(str(telemetry.get("fallback_count", 0)))
+    telemetry_usage_events = escape(str(telemetry.get("usage_events", 0)))
+    telemetry_usage_tokens = escape(_format_usage_summary(telemetry))
+    telemetry_outcomes = escape(_compact_counts(telemetry.get("outcome_label_counts", {})))
     engine_counts = escape(_compact_counts(telemetry.get("selected_engine_counts", {})))
     backend_counts = escape(_compact_counts(telemetry.get("backend_counts", {})))
     status_counts = escape(_compact_counts(telemetry.get("status_counts", {})))
+    usage_backend_counts = escape(
+        _compact_usage_groups(telemetry.get("usage_by_backend", {}))
+    )
     recent_request_ids = escape(
         ", ".join(telemetry.get("recent_request_ids", [])[:5]) or "none"
     )
@@ -774,8 +786,12 @@ def render_settings_page(state: Mapping[str, Any]) -> str:
           <div><h3>unlabeled replayable</h3><strong>{telemetry_unlabeled}</strong></div>
           <div><h3>mismatches</h3><strong>{telemetry_mismatches}</strong></div>
           <div><h3>fallbacks</h3><strong>{telemetry_fallbacks}</strong></div>
+          <div><h3>usage events</h3><strong>{telemetry_usage_events}</strong></div>
+          <div><h3>tokens</h3><span class="mono">{telemetry_usage_tokens}</span></div>
+          <div><h3>outcomes</h3><span class="mono">{telemetry_outcomes}</span></div>
           <div><h3>engines</h3><span class="mono">{engine_counts}</span></div>
           <div><h3>backends</h3><span class="mono">{backend_counts}</span></div>
+          <div><h3>usage by backend</h3><span class="mono">{usage_backend_counts}</span></div>
           <div><h3>statuses</h3><span class="mono">{status_counts}</span></div>
         </div>
         <p class="muted">Recent request ids: <span class="mono">{recent_request_ids}</span></p>
@@ -790,6 +806,10 @@ def render_settings_page(state: Mapping[str, Any]) -> str:
         <div class="field">
           <label for="feedback-engine">Expected engine</label>
           <input id="feedback-engine" placeholder="code_agent">
+        </div>
+        <div class="field">
+          <label for="feedback-outcome">Outcome label</label>
+          <select id="feedback-outcome">{_outcome_label_options()}</select>
         </div>
         <div class="field">
           <label for="feedback-notes">Notes</label>
@@ -897,6 +917,7 @@ def render_settings_page(state: Mapping[str, Any]) -> str:
         confirm: true,
         request_id: document.getElementById('feedback-request-id').value,
         expected_engine: document.getElementById('feedback-engine').value,
+        outcome_label: document.getElementById('feedback-outcome').value,
         notes: document.getElementById('feedback-notes').value
       }});
     }}
@@ -1894,10 +1915,12 @@ async function applyPreset() {
   await postAction('/api/save-config', {confirm: true, apply_preset: true, preset: preset});
 }
 async function sendFeedback() {
+  const outcome = document.getElementById('feedback-outcome');
   await postAction('/api/feedback', {
     confirm: true,
     request_id: document.getElementById('feedback-request-id').value,
     expected_engine: document.getElementById('feedback-engine').value,
+    outcome_label: outcome ? outcome.value : '',
     notes: document.getElementById('feedback-notes').value
   });
 }
@@ -1958,11 +1981,13 @@ async function copyText(text) {
 async function sendReviewFeedback(requestId) {
   const expected = document.getElementById('expected-' + requestId);
   const notes = document.getElementById('notes-' + requestId);
+  const outcome = document.getElementById('outcome-' + requestId);
   if (!expected || !expected.value) return;
   await postAction('/api/feedback', {
     confirm: true,
     request_id: requestId,
     expected_engine: expected.value,
+    outcome_label: outcome ? outcome.value : '',
     notes: notes ? notes.value : ''
   });
 }
@@ -3037,6 +3062,9 @@ def _review_panel(state: Mapping[str, Any]) -> str:
             <label>Expected route
               <select id="feedback-engine">{_review_engine_options(state)}</select>
             </label>
+            <label>Outcome
+              <select id="feedback-outcome">{_outcome_label_options()}</select>
+            </label>
             <label>Notes
               <input id="feedback-notes" placeholder="optional, privacy-safe note">
             </label>
@@ -3065,12 +3093,16 @@ def _review_item(item: Mapping[str, Any], state: Mapping[str, Any]) -> str:
         <dt>Selected:</dt><dd>{escape(str(item.get("selected_engine") or ""))}</dd>
         <dt>Backend:</dt><dd>{escape(str(item.get("backend") or "unassigned"))}</dd>
         <dt>Status:</dt><dd>{escape(str(item.get("status") or "unknown"))}</dd>
+        <dt>Tokens:</dt><dd class="code">{escape(str(item.get("usage_tokens") or "none"))}</dd>
         <dt>Replayable:</dt><dd>{escape("yes" if item.get("replayable") else "no; private/no full prompt")}</dd>
       </dl>
       <div class="rationale">{reason_html}</div>
       <div class="review-form">
         <label>Expected route
           <select id="expected-{escape(request_id)}">{_review_engine_options(state)}</select>
+        </label>
+        <label>Outcome
+          <select id="outcome-{escape(request_id)}">{_outcome_label_options()}</select>
         </label>
         <label>Notes
           <input id="notes-{escape(request_id)}" placeholder="optional, privacy-safe note">
@@ -3091,6 +3123,15 @@ def _review_engine_options(state: Mapping[str, Any]) -> str:
     if "human_confirm" not in route_ids:
         route_ids.append("human_confirm")
     return _options(tuple(dict.fromkeys(route_ids)), selected="")
+
+
+def _outcome_label_options() -> str:
+    options = ['<option value="">manual outcome optional</option>']
+    options.extend(
+        f'<option value="{escape(label)}">{escape(label)}</option>'
+        for label in OUTCOME_LABELS
+    )
+    return "\n".join(options)
 
 
 def _catalog_panel(state: Mapping[str, Any]) -> str:
@@ -3139,6 +3180,7 @@ def _recent_requests_table(state: Mapping[str, Any]) -> str:
           <td>{escape(str(row.get("backend") or ""))}</td>
           <td><span class="status-line"><i class="dot {escape(str(row.get("dot") or "yellow-dot"))}"></i>{escape(str(row.get("status") or ""))}</span></td>
           <td>{escape(str(row.get("total_latency") or row.get("route_latency") or "n/a"))}</td>
+          <td><span class="mono">{escape(str(row.get("usage_tokens") or "none"))}</span></td>
           <td><button class="text-button" type="button" onclick="copyText({json.dumps(str(row.get("request_id") or ""))})">Copy id</button></td>
           <td><button class="text-button" type="button" data-feedback="{escape(str(row.get("request_id") or ""))}">Wrong route? {_icon("comment")}</button></td>
         </tr>"""
@@ -3146,7 +3188,7 @@ def _recent_requests_table(state: Mapping[str, Any]) -> str:
         if isinstance(row, dict)
     )
     if not body:
-        body = '<tr><td colspan="7" class="muted">No routing telemetry yet. Start the proxy and send a request.</td></tr>'
+        body = '<tr><td colspan="8" class="muted">No routing telemetry yet. Start the proxy and send a request.</td></tr>'
     return f"""<table class="data-table">
       <thead>
         <tr>
@@ -3155,6 +3197,7 @@ def _recent_requests_table(state: Mapping[str, Any]) -> str:
           <th>Backend</th>
           <th>Status</th>
           <th>Latency</th>
+          <th>Tokens</th>
           <th>Request ID</th>
           <th>Details</th>
         </tr>
@@ -3451,8 +3494,16 @@ def _sanitize_telemetry_summary(summary: Mapping[str, Any]) -> dict[str, Any]:
             "status_counts",
             "mismatch_groups",
             "confusion_matrix",
+            "upstream_model_counts",
+            "outcome_label_counts",
         }:
             payload[key] = _safe_count_mapping(value)
+        elif key in {
+            "usage_by_selected_engine",
+            "usage_by_backend",
+            "usage_by_model",
+        }:
+            payload[key] = _safe_usage_group_mapping(value)
         elif key in {
             "unlabeled_replayable_request_ids",
             "skipped_no_prompt_request_ids",
@@ -3481,6 +3532,61 @@ def _safe_count_mapping(value: Any) -> dict[str, int]:
         if key:
             counts[key] += _safe_int(raw_count)
     return dict(sorted(counts.items()))
+
+
+def _safe_usage_group_mapping(value: Any) -> dict[str, dict[str, int]]:
+    if not isinstance(value, Mapping):
+        return {}
+    groups: dict[str, dict[str, int]] = {}
+    for raw_key, raw_usage in value.items():
+        key = _safe_event_string(raw_key, max_chars=160)
+        usage = _safe_usage_summary(raw_usage)
+        if key and _usage_has_tokens(usage):
+            groups[key] = usage
+    return dict(sorted(groups.items()))
+
+
+def _safe_usage_summary(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return _empty_usage_summary()
+    usage = _empty_usage_summary()
+    for field in (
+        "events",
+        "usage_prompt_tokens",
+        "usage_completion_tokens",
+        "usage_total_tokens",
+        "usage_cached_input_tokens",
+    ):
+        usage[field] = _safe_int(value.get(field))
+    upstream_model = _safe_event_string(value.get("upstream_model"), max_chars=160)
+    if upstream_model:
+        usage["upstream_model"] = upstream_model
+    backend_model = _safe_event_string(value.get("backend_model"), max_chars=160)
+    if backend_model:
+        usage["backend_model"] = backend_model
+    return usage
+
+
+def _empty_usage_summary() -> dict[str, Any]:
+    return {
+        "events": 0,
+        "usage_prompt_tokens": 0,
+        "usage_completion_tokens": 0,
+        "usage_total_tokens": 0,
+        "usage_cached_input_tokens": 0,
+    }
+
+
+def _usage_has_tokens(usage: Mapping[str, Any]) -> bool:
+    return any(
+        _safe_int(usage.get(field)) > 0
+        for field in (
+            "usage_prompt_tokens",
+            "usage_completion_tokens",
+            "usage_total_tokens",
+            "usage_cached_input_tokens",
+        )
+    )
 
 
 def _safe_telemetry_rows(value: Any) -> list[dict[str, str]]:
@@ -3513,6 +3619,7 @@ def _recent_routing_events(events_path: Path, *, limit: int = 10) -> list[dict[s
         status = _safe_event_string(row.get("status")) or "unknown"
         backend = _safe_event_string(row.get("backend")) or "unassigned"
         backend_model = _safe_event_string(row.get("backend_model"))
+        usage = _safe_usage_summary(event_usage_summary(row))
         recent.append(
             {
                 "timestamp": _safe_event_string(row.get("timestamp")),
@@ -3524,6 +3631,9 @@ def _recent_routing_events(events_path: Path, *, limit: int = 10) -> list[dict[s
                 "status": status,
                 "backend": backend,
                 "backend_model": backend_model,
+                "upstream_model": _safe_event_string(row.get("upstream_model")),
+                "usage": usage,
+                "usage_tokens": _format_usage_summary(usage),
                 "status_code": row.get("status_code")
                 if isinstance(row.get("status_code"), int)
                 else None,
@@ -3816,6 +3926,10 @@ def _sanitize_review_state(
                 "selected_engine": _safe_event_string(item.get("selected_engine")),
                 "status": _safe_event_string(item.get("status")),
                 "backend": _safe_event_string(item.get("backend")),
+                "backend_model": _safe_event_string(item.get("backend_model")),
+                "upstream_model": _safe_event_string(item.get("upstream_model")),
+                "usage": _safe_usage_summary(item.get("usage")),
+                "usage_tokens": _format_usage_summary(item.get("usage")),
                 "routing_profile": _safe_event_string(item.get("routing_profile")),
                 "receipt_summary": _safe_event_string(item.get("receipt_summary")),
                 "reason_codes": _safe_string_list(item.get("reason_codes"))[:8],
@@ -4433,6 +4547,31 @@ def _compact_counts(value: Any) -> str:
         f"{key}:{count}"
         for key, count in sorted(value.items(), key=lambda item: str(item[0]))
     )
+
+
+def _compact_usage_groups(value: Any) -> str:
+    if not isinstance(value, dict) or not value:
+        return "none"
+    parts: list[str] = []
+    for key, usage in sorted(value.items(), key=lambda item: str(item[0])):
+        formatted = _format_usage_summary(usage)
+        if formatted != "none":
+            parts.append(f"{key}:{formatted}")
+    return ", ".join(parts) if parts else "none"
+
+
+def _format_usage_summary(value: Any) -> str:
+    usage = _safe_usage_summary(value)
+    if not _usage_has_tokens(usage):
+        return "none"
+    parts = [
+        f"p={usage['usage_prompt_tokens']}",
+        f"c={usage['usage_completion_tokens']}",
+        f"t={usage['usage_total_tokens']}",
+    ]
+    if usage["usage_cached_input_tokens"]:
+        parts.append(f"cache={usage['usage_cached_input_tokens']}")
+    return " ".join(parts)
 
 
 def _download_row(item: Mapping[str, Any]) -> str:

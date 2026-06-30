@@ -166,8 +166,23 @@ def _populated_state(tmp_path: Path) -> dict:
                 "unlabeled_replayable": 1,
                 "expected_mismatch_count": 0,
                 "fallback_count": 1,
+                "outcome_label_counts": {"accepted": 1},
                 "selected_engine_counts": {"code_agent": 2},
                 "backend_counts": {"code": 2},
+                "usage_events": 1,
+                "usage_prompt_tokens": 30,
+                "usage_completion_tokens": 10,
+                "usage_total_tokens": 40,
+                "usage_cached_input_tokens": 5,
+                "usage_by_backend": {
+                    "code": {
+                        "events": 1,
+                        "usage_prompt_tokens": 30,
+                        "usage_completion_tokens": 10,
+                        "usage_total_tokens": 40,
+                        "usage_cached_input_tokens": 5,
+                    }
+                },
             },
             "recent_events": [
                 {
@@ -175,6 +190,7 @@ def _populated_state(tmp_path: Path) -> dict:
                     "selected_engine": "code_agent",
                     "backend": "code",
                     "status": "forwarded",
+                    "usage_tokens": "p=30 c=10 t=40 cache=5",
                 }
             ],
         }
@@ -217,6 +233,10 @@ def test_tui_snapshot_renders_populated_state(tmp_path):
     assert "* code_agent: llama.cpp -> Code backend" in snapshot
     assert "code: llamacpp ready; load=disabled" in snapshot
     assert "Events: 2" in snapshot
+    assert "Outcome labels: accepted=1" in snapshot
+    assert "Usage events: 1" in snapshot
+    assert "Usage tokens: prompt=30, completion=10, total=40, cached_input=5" in snapshot
+    assert "tokens=p=30 c=10 t=40 cache=5" in snapshot
     assert "code.log" in snapshot
     assert "Basic router mode: beta" in snapshot
     assert "No chat surface" in snapshot

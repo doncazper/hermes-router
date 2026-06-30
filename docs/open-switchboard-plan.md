@@ -207,9 +207,9 @@ Goal: measure practical routing outcomes, not only router speed.
 Status: implemented for offline workflow correctness benchmarks. The
 `model-router workflow-benchmark` command exercises sanitized fixtures for
 simple, balanced, coding, research, vision, image generation, safety,
-private-profile, and quality-profile routes; emits readable or JSON reports;
-serializes prompt hashes instead of prompt bodies; and performs no backend,
-verifier, download, or hosted API calls.
+private-profile, quality-profile, and sidekick-delegation-shaped routes; emits
+readable or JSON reports; serializes prompt hashes instead of prompt bodies; and
+performs no backend, verifier, download, or hosted API calls.
 
 Add benchmark suites for common workflows:
 
@@ -222,6 +222,8 @@ Add benchmark suites for common workflows:
 - Risky external actions route to `human_confirm`.
 - Private profile excludes hosted APIs.
 - Quality profile can use stronger configured backends.
+- Sidekick-delegation task shapes expose expected mechanical, verification-heavy,
+  judgment-heavy, repo-wide, and risky/external-action receipt signals.
 
 Implementation notes:
 

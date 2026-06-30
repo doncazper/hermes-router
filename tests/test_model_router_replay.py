@@ -1,8 +1,10 @@
 import json
 from pathlib import Path
+import subprocess
+import sys
 
 from scripts.replay_routing_log import replay_events
-from hermes.plugins.model_router.telemetry import feedback_summary
+from hermes.plugins.model_router.telemetry import feedback_summary, review_queue
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -11,6 +13,16 @@ def _write_jsonl(path, rows):
     path.write_text(
         "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
         encoding="utf-8",
+    )
+
+
+def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-m", "hermes.plugins.model_router.cli", *args],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
     )
 
 
@@ -49,6 +61,7 @@ def test_replay_routing_log_reports_changes_and_feedback_mismatches(tmp_path):
                 "event_type": "routing_feedback",
                 "request_id": "changed",
                 "expected_engine": "reasoning_local",
+                "outcome_label": "failed_verification",
             }
         ],
     )
@@ -69,6 +82,168 @@ def test_replay_routing_log_reports_changes_and_feedback_mismatches(tmp_path):
     assert summary["expected_mismatch_count"] == 1
     assert summary["confusion_matrix"] == {"reasoning_local->code_agent": 1}
     assert summary["mismatch_groups"] == {"reasoning_local->code_agent": 1}
+    assert summary["outcome_label_counts"] == {"failed_verification": 1}
+    assert summary["usage_events"] == 0
+    assert summary["usage_by_backend"] == {}
+
+
+def test_replay_routing_log_summarizes_usage_without_prompt_text(tmp_path):
+    events = tmp_path / "events.jsonl"
+    feedback = tmp_path / "feedback.jsonl"
+    _write_jsonl(feedback, [])
+    _write_jsonl(
+        events,
+        [
+            {
+                "event_type": "routing_event",
+                "request_id": "usage-1",
+                "prompt": "rewrite token=secret-value",
+                "selected_engine": "fast_local",
+                "backend": "fast",
+                "backend_model": "configured-fast",
+                "upstream_model": "actual-fast",
+                "status": "forwarded",
+                "usage_prompt_tokens": 10,
+                "usage_completion_tokens": 5,
+                "usage_total_tokens": 15,
+                "usage_cached_input_tokens": 3,
+            },
+            {
+                "event_type": "routing_event",
+                "request_id": "usage-2",
+                "prompt_hash": "private",
+                "selected_engine": "code_agent",
+                "backend": "code",
+                "backend_model": "code-model",
+                "status": "forwarded",
+                "usage_prompt_tokens": 20,
+                "usage_completion_tokens": 8,
+                "usage_total_tokens": 28,
+            },
+            {
+                "event_type": "routing_event",
+                "request_id": "old-row",
+                "prompt": "summarize this",
+                "selected_engine": "balanced_local",
+                "backend": "fast",
+                "status": "forwarded",
+            },
+        ],
+    )
+
+    summary = replay_events(
+        events_path=events,
+        feedback_path=feedback,
+        config_path=None,
+    )
+    serialized = json.dumps(summary, sort_keys=True)
+
+    assert summary["usage_events"] == 2
+    assert summary["usage_prompt_tokens"] == 30
+    assert summary["usage_completion_tokens"] == 13
+    assert summary["usage_total_tokens"] == 43
+    assert summary["usage_cached_input_tokens"] == 3
+    assert summary["usage_by_selected_engine"]["fast_local"][
+        "usage_total_tokens"
+    ] == 15
+    assert summary["usage_by_backend"]["code"]["usage_prompt_tokens"] == 20
+    assert summary["usage_by_model"]["actual-fast"]["usage_total_tokens"] == 15
+    assert summary["usage_by_model"]["code-model"]["usage_total_tokens"] == 28
+    assert summary["upstream_model_counts"] == {"actual-fast": 1}
+    assert "secret-value" not in serialized
+
+
+def test_review_queue_includes_usage_without_prompt_or_response_text(tmp_path):
+    events = tmp_path / "events.jsonl"
+    feedback = tmp_path / "feedback.jsonl"
+    _write_jsonl(feedback, [])
+    _write_jsonl(
+        events,
+        [
+            {
+                "event_type": "routing_event",
+                "request_id": "review-usage",
+                "prompt": "api_key=secret-value fix this",
+                "selected_engine": "code_agent",
+                "backend": "code",
+                "backend_model": "configured-code",
+                "upstream_model": "actual-code",
+                "status": "forwarded",
+                "receipt_summary": "Selected code_agent.",
+                "reason_codes": ["route.coding"],
+                "usage_prompt_tokens": 40,
+                "usage_completion_tokens": 12,
+                "usage_total_tokens": 52,
+                "usage_cached_input_tokens": 7,
+            }
+        ],
+    )
+
+    summary = review_queue(events_path=events, feedback_path=feedback)
+    item = summary["items"][0]
+    serialized = json.dumps(summary, sort_keys=True)
+
+    assert item["usage"]["usage_prompt_tokens"] == 40
+    assert item["usage"]["usage_completion_tokens"] == 12
+    assert item["usage"]["usage_total_tokens"] == 52
+    assert item["usage"]["usage_cached_input_tokens"] == 7
+    assert item["upstream_model"] == "actual-code"
+    assert "api_key" not in serialized
+    assert "secret-value" not in serialized
+    assert "fix this" not in serialized
+
+
+def test_telemetry_cli_summary_and_review_show_usage_without_prompt_text(tmp_path):
+    events = tmp_path / "events.jsonl"
+    feedback = tmp_path / "feedback.jsonl"
+    _write_jsonl(feedback, [])
+    _write_jsonl(
+        events,
+        [
+            {
+                "event_type": "routing_event",
+                "request_id": "cli-usage",
+                "prompt": "api_key=secret-value rewrite this",
+                "selected_engine": "fast_local",
+                "backend": "fast",
+                "backend_model": "configured-fast",
+                "upstream_model": "actual-fast",
+                "status": "forwarded",
+                "usage_prompt_tokens": 14,
+                "usage_completion_tokens": 6,
+                "usage_total_tokens": 20,
+            }
+        ],
+    )
+
+    summary = _run_cli(
+        "telemetry",
+        "summary",
+        "--events",
+        str(events),
+        "--feedback",
+        str(feedback),
+    )
+    review = _run_cli(
+        "telemetry",
+        "review",
+        "--events",
+        str(events),
+        "--feedback",
+        str(feedback),
+    )
+
+    assert summary.returncode == 0
+    assert "Usage events: 1" in summary.stdout
+    assert "Usage tokens: prompt=14, completion=6, total=20" in summary.stdout
+    assert "Usage by backend:" in summary.stdout
+    assert "fast: prompt=14, completion=6, total=20" in summary.stdout
+    assert "secret-value" not in summary.stdout
+    assert "rewrite this" not in summary.stdout
+    assert review.returncode == 0
+    assert "usage: prompt=14, completion=6, total=20" in review.stdout
+    assert "secret-value" not in review.stdout
+    assert "rewrite this" not in review.stdout
 
 
 def test_replay_fixture_corpus_has_no_expected_mismatches():
@@ -123,13 +298,20 @@ def test_feedback_summary_joins_events_without_prompt_text(tmp_path):
                 "event_type": "routing_feedback",
                 "request_id": "labeled",
                 "expected_engine": "balanced_local",
+                "outcome_label": "wrong_route",
                 "notes": "contains private context",
             },
             {
                 "event_type": "routing_feedback",
                 "request_id": "missing",
                 "expected_engine": "code_agent",
+                "outcome_label": "automatic_success",
                 "notes": "missing event",
+            },
+            {
+                "event_type": "routing_feedback",
+                "request_id": "private",
+                "expected_engine": "balanced_local",
             },
         ],
     )
@@ -140,14 +322,19 @@ def test_feedback_summary_joins_events_without_prompt_text(tmp_path):
         include_notes=False,
     )
 
-    assert summary["feedback_labels"] == 2
+    assert summary["feedback_labels"] == 3
     assert summary["expected_engine_counts"] == {
-        "balanced_local": 1,
+        "balanced_local": 2,
         "code_agent": 1,
     }
+    assert summary["outcome_label_counts"] == {"wrong_route": 1}
     assert "notes" not in summary["labels"][0]
     assert summary["labels"][0]["request_id"] == "labeled"
+    assert summary["labels"][0]["outcome_label"] == "wrong_route"
     assert summary["labels"][0]["event_found"] is True
     assert summary["labels"][0]["replayable"] is True
     assert summary["labels"][1]["request_id"] == "missing"
+    assert "outcome_label" not in summary["labels"][1]
     assert summary["labels"][1]["event_found"] is False
+    assert summary["labels"][2]["request_id"] == "private"
+    assert "outcome_label" not in summary["labels"][2]

@@ -46,6 +46,7 @@ from hermes.plugins.model_router.receipts import decision_to_receipt, receipt_to
 from hermes.plugins.model_router.routing_log import (
     DEFAULT_LOG_PATH,
     DEFAULT_FEEDBACK_PATH,
+    OUTCOME_LABELS,
     RoutingLogWriter,
     build_feedback,
 )
@@ -590,6 +591,12 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
         "--notes",
         default=None,
         help="Optional short note explaining the correction",
+    )
+    feedback.add_argument(
+        "--outcome",
+        choices=OUTCOME_LABELS,
+        default=None,
+        help="Optional manually supplied outcome label",
     )
     feedback.add_argument("request_id", help="Request id from routing-events JSONL")
     feedback.add_argument("expected_engine", help="Correct engine for this event")
@@ -1275,6 +1282,7 @@ def _cmd_feedback(args: argparse.Namespace) -> int:
     payload = build_feedback(
         request_id=args.request_id,
         expected_engine=args.expected_engine,
+        outcome_label=args.outcome,
         notes=args.notes,
     )
     if not writer.write(payload):
@@ -2309,8 +2317,20 @@ def _print_telemetry_summary(summary: dict[str, Any]) -> None:
     print(f"Route changes: {summary['route_change_count']}")
     print(f"Expected mismatches: {summary['expected_mismatch_count']}")
     print(f"Replay mean latency: {summary['replay_route_latency_mean_ms']} ms")
+    print(f"Usage events: {summary.get('usage_events', 0)}")
+    print(
+        "Usage tokens: "
+        f"prompt={summary.get('usage_prompt_tokens', 0)}, "
+        f"completion={summary.get('usage_completion_tokens', 0)}, "
+        f"total={summary.get('usage_total_tokens', 0)}, "
+        f"cached_input={summary.get('usage_cached_input_tokens', 0)}"
+    )
+    _print_counter("Outcome labels", summary.get("outcome_label_counts", {}))
     _print_counter("Selected engines", summary["selected_engine_counts"])
     _print_counter("Statuses", summary["status_counts"])
+    _print_usage_groups("Usage by route", summary.get("usage_by_selected_engine"))
+    _print_usage_groups("Usage by backend", summary.get("usage_by_backend"))
+    _print_usage_groups("Usage by model", summary.get("usage_by_model"))
     _print_counter("Mismatch groups", summary["mismatch_groups"])
     _print_id_list(
         "Unlabeled replayable request ids",
@@ -2333,6 +2353,7 @@ def _print_telemetry_summary(summary: dict[str, Any]) -> None:
 def _print_feedback_summary(summary: dict[str, Any], *, include_notes: bool) -> None:
     print(f"Feedback labels: {summary['feedback_labels']}")
     _print_counter("Expected engines", summary["expected_engine_counts"])
+    _print_counter("Outcome labels", summary.get("outcome_label_counts", {}))
     print("Labels:")
     if not summary["labels"]:
         print("- none")
@@ -2340,9 +2361,11 @@ def _print_feedback_summary(summary: dict[str, Any], *, include_notes: bool) -> 
         found = "yes" if label["event_found"] else "no"
         replayable = "yes" if label["replayable"] else "no"
         historical = label.get("historical_engine") or "unknown"
+        outcome = label.get("outcome_label") or "unlabeled"
         print(
             f"- {label['request_id']}: {label['expected_engine']} "
-            f"(event: {found}, replayable: {replayable}, historical: {historical})"
+            f"(outcome: {outcome}, event: {found}, replayable: {replayable}, "
+            f"historical: {historical})"
         )
         if include_notes and label.get("notes"):
             print(f"  notes: {label['notes']}")
@@ -2361,12 +2384,15 @@ def _print_telemetry_review(summary: dict[str, Any]) -> None:
         print("- none")
     for item in summary["items"]:
         reason_codes = ", ".join(item.get("reason_codes") or []) or "none"
+        usage = _format_usage_summary(item.get("usage"))
         print(
             f"- {item['request_id']}: selected={item.get('selected_engine') or 'unknown'} "
             f"status={item.get('status') or 'unknown'} replayable={str(item.get('replayable')).lower()}"
         )
         if item.get("receipt_summary"):
             print(f"  summary: {item['receipt_summary']}")
+        if usage:
+            print(f"  usage: {usage}")
         print(f"  reason codes: {reason_codes}")
         print(f"  feedback: {item['suggested_feedback_command']}")
     if summary["truncated"]:
@@ -2379,6 +2405,44 @@ def _print_counter(title: str, values: dict[str, int]) -> None:
         print("- none")
     for key, value in values.items():
         print(f"- {key}: {value}")
+
+
+def _print_usage_groups(title: str, values: Any) -> None:
+    print(f"{title}:")
+    if not isinstance(values, dict) or not values:
+        print("- none")
+        return
+    for key, usage in values.items():
+        formatted = _format_usage_summary(usage)
+        print(f"- {key}: {formatted or 'no usage'}")
+
+
+def _format_usage_summary(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+    prompt = _safe_usage_int(value.get("usage_prompt_tokens"))
+    completion = _safe_usage_int(value.get("usage_completion_tokens"))
+    total = _safe_usage_int(value.get("usage_total_tokens"))
+    cached = _safe_usage_int(value.get("usage_cached_input_tokens"))
+    if prompt == completion == total == cached == 0:
+        return ""
+    parts = [
+        f"prompt={prompt}",
+        f"completion={completion}",
+        f"total={total}",
+    ]
+    if cached:
+        parts.append(f"cached_input={cached}")
+    upstream_model = value.get("upstream_model")
+    if isinstance(upstream_model, str) and upstream_model:
+        parts.append(f"upstream_model={upstream_model}")
+    return ", ".join(parts)
+
+
+def _safe_usage_int(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return 0
+    return value
 
 
 def _print_id_list(title: str, values: list[str]) -> None:
