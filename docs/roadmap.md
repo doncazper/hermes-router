@@ -590,7 +590,8 @@ backend/model without calling the decision layer; `model_map` and `passthrough`
 remain deferred until alias/capability work is ready. M2 now adds
 `model-router install` as deterministic, plan-only onboarding that reports local
 install/config/runtime state and prints explicit next commands without
-mutating files.
+mutating files. M3 now adds the settings Models section backed by shared state:
+Installed, Discover, Recommended, Downloads, and Assignments.
 
 Guardrails:
 

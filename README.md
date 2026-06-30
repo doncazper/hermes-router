@@ -75,7 +75,9 @@ This opens a localhost-only admin UI, defaulting to
 `http://127.0.0.1:8099`. It is for configuration and operations, not chat: pick
 presets, scan models, edit backend model ids/ports/runtime commands, toggle
 observability, run doctor, start/stop/restart the proxy, inspect telemetry, and
-label wrong routes.
+label wrong routes. The Models section shows installed local models, curated
+discover candidates, hardware-aware recommendations, download plans, and
+route-to-model assignments.
 
 The current product north star is documented in
 [Product north star](docs/product-north-star.md): ModelRouter should feel like a

@@ -136,6 +136,13 @@ Installed, Discover, Recommended, Downloads, and Assignments.
 Done when every row comes from state, downloads require plan/confirmation,
 assignments persist through config actions, and no-model empty states are useful.
 
+Current implementation note: M3 adds a shared model-library state block and a
+settings Models section with Installed, Discover, Recommended, Downloads, and
+Assignments surfaces. Installed rows come from local scan data, Discover uses the
+curated catalog, Recommended uses hardware-aware setup scoring, Downloads are
+plan-first with confirmed execution only, and Assignments save through the
+shared `model.assign_route` action with restart guidance.
+
 ### M4: Runtime Adapters
 
 Add a runtime adapter protocol for health, model discovery, loaded models,

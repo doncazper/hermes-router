@@ -24,7 +24,7 @@ from hermes.plugins.model_router.model_benchmark import (
     plan_backend_benchmarks,
 )
 from hermes.plugins.model_router.product import doctor_proxy_config as _doctor_proxy_config
-from hermes.plugins.model_router.proxy_config import ProxyConfigError
+from hermes.plugins.model_router.proxy_config import ProxyConfigError, load_proxy_config
 from hermes.plugins.model_router.routing_log import RoutingLogWriter, build_feedback
 from hermes.plugins.model_router.setup_assistant import (
     DownloadPlan,
@@ -60,6 +60,8 @@ ACTION_ALIASES = {
     "proxy_restart": "proxy.restart",
     "download_plan": "model.download.plan",
     "download_run": "model.download.run",
+    "assign_route": "model.assign_route",
+    "assign-route": "model.assign_route",
     "benchmark_plan": "benchmark.plan",
     "benchmark_run": "benchmark.run",
     "catalog_diff": "catalog.diff",
@@ -72,6 +74,7 @@ MUTATING_ACTIONS = {
     "catalog.apply",
     "config.save_proxy_patch",
     "model.download.run",
+    "model.assign_route",
     "proxy.restart",
     "proxy.start",
     "proxy.stop",
@@ -83,6 +86,7 @@ CONFIRMATION_ERRORS = {
     "catalog.apply": "Catalog apply requires confirm=true.",
     "config.save_proxy_patch": "Config save requires confirm=true.",
     "model.download.run": "Download execution requires confirm=true.",
+    "model.assign_route": "Route assignment requires confirm=true.",
     "proxy.restart": "Proxy restart requires confirm=true.",
     "proxy.start": "Proxy start requires confirm=true.",
     "proxy.stop": "Proxy stop requires confirm=true.",
@@ -168,6 +172,13 @@ _ACTION_DESCRIPTORS: tuple[dict[str, Any], ...] = (
         "description": "Run an explicitly confirmed model download command.",
     },
     {
+        "id": "model.assign_route",
+        "label": "Assign route model",
+        "mutates": True,
+        "requires_confirm": True,
+        "description": "Assign a model to a configured route/backend.",
+    },
+    {
         "id": "benchmark.plan",
         "label": "Plan benchmark",
         "mutates": False,
@@ -221,6 +232,8 @@ def run_admin_action(
         body = _download_plan_action(paths, action_payload)
     elif normalized == "model.download.run":
         body = _download_run_action(paths, action_payload, download_runner)
+    elif normalized == "model.assign_route":
+        body = _assign_route_action(paths, action_payload)
     elif normalized == "benchmark.plan":
         body = _benchmark_plan_action(paths)
     elif normalized == "benchmark.run":
@@ -343,6 +356,46 @@ def _download_run_action(
         runner=download_runner,
     )
     return {"ok": result.ok, "result": result.to_dict()}
+
+
+def _assign_route_action(
+    paths: Mapping[str, Path],
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    route_id = str(payload.get("route_id", "")).strip()
+    backend_name = str(payload.get("backend", "")).strip()
+    model = str(payload.get("model", "")).strip()
+    if not model:
+        raise AdminActionError("model is required.", status_code=400)
+    try:
+        config = load_proxy_config(paths["proxy_config"])
+    except (OSError, ProxyConfigError) as exc:
+        raise AdminActionError(str(exc), status_code=400) from exc
+    if not backend_name and route_id:
+        backend_name = config.engine_backends.get(route_id, "")
+    if not backend_name:
+        raise AdminActionError("backend or route_id is required.", status_code=400)
+    if backend_name not in config.backends:
+        raise AdminActionError(
+            f"backend {backend_name!r} is not configured.",
+            status_code=400,
+        )
+    result = save_proxy_config_patch(
+        paths["proxy_config"],
+        {
+            "backends": {backend_name: {"model": model}},
+        },
+    )
+    return {
+        "ok": True,
+        "restart_recommended": True,
+        "assignment": {
+            "route_id": route_id,
+            "backend": backend_name,
+            "model": model,
+        },
+        **result,
+    }
 
 
 def _benchmark_plan_action(paths: Mapping[str, Path]) -> dict[str, Any]:

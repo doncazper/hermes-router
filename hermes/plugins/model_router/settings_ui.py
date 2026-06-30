@@ -12,6 +12,7 @@ from collections.abc import Callable, Mapping
 from html import escape
 import json
 from pathlib import Path
+import re
 import shlex
 import tempfile
 from typing import Any
@@ -28,6 +29,7 @@ from hermes.plugins.model_router.admin.actions import (
 from hermes.plugins.model_router.admin.config_edit import (
     save_proxy_config_patch as _shared_save_proxy_config_patch,
 )
+from hermes.plugins.model_router.admin.model_library import build_model_library_state
 from hermes.plugins.model_router.admin.state import build_admin_state, settings_paths
 from hermes.plugins.model_router.admin.supervisor import (
     ProxyProcessStatus,
@@ -243,6 +245,10 @@ def create_settings_app(
     async def api_download_run(request: Request) -> JSONResponse:
         return await run_endpoint_action("model.download.run", request)
 
+    @app.post("/api/model/assign-route")
+    async def api_model_assign_route(request: Request) -> JSONResponse:
+        return await run_endpoint_action("model.assign_route", request)
+
     @app.post("/api/benchmark/plan")
     async def api_benchmark_plan() -> JSONResponse:
         return await run_endpoint_action("benchmark.plan")
@@ -363,6 +369,14 @@ def _build_settings_state_impl(
         "discovery": discovery.to_dict(),
         "recommendation": recommendation.to_dict(),
         "download_plan": download_plan.to_dict(),
+        "model_library": build_model_library_state(
+            paths=paths,
+            config=config,
+            discovery=discovery,
+            recommendation=recommendation,
+            download_plan=download_plan,
+            benchmark_results=benchmark_results,
+        ),
         "installer": build_installer_state(paths, discovery=discovery),
         "benchmarks": benchmark_summary(paths["benchmarks"]),
         "workflow_benchmarks": _workflow_benchmark_state(paths),
@@ -933,6 +947,7 @@ def render_dashboard_page(state: Mapping[str, Any]) -> str:
       <nav class="side-nav">
         {_sidebar_item("llama.cpp", "active", "runtimes")}
         {_sidebar_item("Ollama", "", "providers")}
+        {_sidebar_item("Models", "", "models")}
         {_sidebar_item("Runtimes", "", "runtimes")}
         {_sidebar_item("Risky", "", "safety")}
         {_sidebar_item("Research", "", "routing-map")}
@@ -1020,6 +1035,8 @@ def render_dashboard_page(state: Mapping[str, Any]) -> str:
             </div>
             {_providers_runtime_section(state)}
           </section>
+
+          {_model_library_panel(state)}
 
           {_settings_follow_through_panel(state)}
 
@@ -1526,6 +1543,33 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
   gap: 9px;
   align-items: center;
 }
+.compact-actions {
+  padding: 0;
+}
+.models-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 14px;
+}
+.model-card {
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: #fbfcfe;
+  overflow: hidden;
+}
+.model-card h3 {
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--line-soft);
+  color: #273750;
+}
+.model-card-wide {
+  grid-column: 1 / -1;
+}
+.model-table th,
+.model-table td {
+  white-space: normal;
+}
 .review-list {
   padding: 12px 14px;
   display: grid;
@@ -1758,7 +1802,7 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
   .top-status { flex-wrap: wrap; }
   .flow { grid-template-columns: 1fr; }
   .flow-arrow { transform: rotate(90deg); min-height: 22px; }
-  .profile-row, .runtime-grid, .settings-grid, .review-form { grid-template-columns: 1fr; }
+  .profile-row, .runtime-grid, .settings-grid, .review-form, .models-grid { grid-template-columns: 1fr; }
   .provider-list { border-right: 0; border-bottom: 1px solid var(--line); }
 }
 @media (max-width: 1500px) {
@@ -1857,6 +1901,31 @@ async function runDownload(route, repoId) {
   if (!window.confirm('Download ' + repoId + ' for ' + route + '?')) return;
   await postAction('/api/download/run', {confirm: true, route: route, repo_id: repoId});
 }
+async function planDownload(route, repoId) {
+  const data = await postAction('/api/download/plan', {route: route, repo_id: repoId});
+  showModelAction(data);
+}
+async function assignRoute(routeId, backend, inputId) {
+  const input = document.getElementById(inputId);
+  const model = input ? input.value.trim() : '';
+  if (!model) {
+    const target = document.getElementById('model-library-output');
+    if (target) target.textContent = 'Choose a model before saving an assignment.';
+    return;
+  }
+  const data = await postAction('/api/model/assign-route', {
+    confirm: true,
+    route_id: routeId,
+    backend: backend,
+    model: model
+  });
+  showModelAction(data);
+}
+function showModelAction(data) {
+  const target = document.getElementById('model-library-output');
+  if (target) target.textContent = JSON.stringify(data, null, 2);
+  return data;
+}
 async function runBenchmark() {
   if (!window.confirm('Run local backend benchmark requests with a fixed synthetic prompt?')) return;
   await postAction('/api/benchmark/run', {confirm: true});
@@ -1865,6 +1934,7 @@ async function scanModels() {
   const data = await postAction('/api/scan');
   const target = document.getElementById('scan-output');
   if (target) target.textContent = JSON.stringify(data.recommendation || data, null, 2);
+  showModelAction(data);
 }
 async function planBenchmark() {
   const data = await postAction('/api/benchmark/plan');
@@ -2236,6 +2306,239 @@ def _providers_runtime_section(state: Mapping[str, Any]) -> str:
         <div id="last-action" class="muted detail-wide" aria-live="polite"></div>
       </div>
     </div>"""
+
+
+def _model_library_panel(state: Mapping[str, Any]) -> str:
+    library = state.get("model_library") if isinstance(state.get("model_library"), dict) else {}
+    return f"""<section class="panel" id="models" aria-labelledby="models-title">
+      <div class="panel-title">
+        <h2 id="models-title">Models</h2>
+        <div class="settings-actions compact-actions">
+          <button type="button" onclick="scanModels()">Scan local models</button>
+          <button type="button" onclick="postAction('/api/download/plan').then(showModelAction)">Plan downloads</button>
+        </div>
+      </div>
+      <div class="models-grid">
+        {_installed_models_card(library)}
+        {_discover_models_card(library)}
+        {_recommended_models_card(library)}
+        {_downloads_models_card(library)}
+        {_assignments_models_card(library)}
+      </div>
+      <pre id="model-library-output" class="catalog-output">Model actions are plan-first. Downloads and assignments require confirmation.</pre>
+    </section>"""
+
+
+def _installed_models_card(library: Mapping[str, Any]) -> str:
+    installed = library.get("installed") if isinstance(library.get("installed"), list) else []
+    if installed:
+        rows = "\n".join(
+            _installed_model_row(item)
+            for item in installed
+            if isinstance(item, Mapping)
+        )
+    else:
+        rows = (
+            '<tr><td colspan="5" class="muted">No local models found yet. '
+            'Run Scan local models, start Ollama/LM Studio, or place models under '
+            '~/.model-router/models, ~/.lmstudio/models, ~/.ollama/models, or ~/models.</td></tr>'
+        )
+    return f"""<div class="model-card">
+      <h3>Installed</h3>
+      <table class="data-table model-table">
+        <thead><tr><th>Model</th><th>Source</th><th>Runtime</th><th>Assigned</th><th>Score</th></tr></thead>
+        <tbody>{rows}</tbody>
+      </table>
+    </div>"""
+
+
+def _installed_model_row(item: Mapping[str, Any]) -> str:
+    score = item.get("score") if isinstance(item.get("score"), Mapping) else {}
+    assigned = item.get("assigned_routes") if isinstance(item.get("assigned_routes"), list) else []
+    runtime = item.get("runtime_compatibility") if isinstance(item.get("runtime_compatibility"), list) else []
+    warnings = item.get("warnings") if isinstance(item.get("warnings"), list) else []
+    warning_text = "; ".join(str(warning) for warning in warnings[:2])
+    score_text = str(score.get("label") or "unscored")
+    if score.get("overall_score") is not None:
+        score_text += f" {score.get('overall_score')}"
+    warning_html = (
+        f'<br><span class="muted">{escape(warning_text)}</span>'
+        if warning_text
+        else ""
+    )
+    return f"""<tr>
+      <td><strong class="code">{escape(str(item.get("model_id") or ""))}</strong><br><span class="muted">{escape(str(item.get("path") or "local scan"))}</span></td>
+      <td>{escape(str(item.get("source") or "unknown"))}</td>
+      <td>{escape(", ".join(str(value) for value in runtime) or "unknown")}</td>
+      <td>{escape(", ".join(str(value) for value in assigned) or "none")}</td>
+      <td>{escape(score_text)}{warning_html}</td>
+    </tr>"""
+
+
+def _discover_models_card(library: Mapping[str, Any]) -> str:
+    discover = library.get("discover") if isinstance(library.get("discover"), Mapping) else {}
+    results = discover.get("results") if isinstance(discover.get("results"), list) else []
+    if results:
+        rows = "\n".join(
+            _discover_model_row(item)
+            for item in results[:10]
+            if isinstance(item, Mapping)
+        )
+    else:
+        error = discover.get("error") or "Curated catalog did not return candidates."
+        rows = f'<tr><td colspan="5" class="muted">{escape(str(error))}</td></tr>'
+    return f"""<div class="model-card">
+      <h3>Discover</h3>
+      <table class="data-table model-table">
+        <thead><tr><th>Model</th><th>Route</th><th>Runtime</th><th>Memory</th><th>Label</th></tr></thead>
+        <tbody>{rows}</tbody>
+      </table>
+    </div>"""
+
+
+def _discover_model_row(item: Mapping[str, Any]) -> str:
+    routes = item.get("route_fit") if isinstance(item.get("route_fit"), list) else []
+    memory = _memory_range(
+        item.get("min_memory_gb"),
+        item.get("recommended_memory_gb"),
+    )
+    warnings = item.get("warnings") if isinstance(item.get("warnings"), list) else []
+    warning_text = "; ".join(str(warning) for warning in warnings[:2])
+    warning_html = (
+        f'<br><span class="muted">{escape(warning_text)}</span>'
+        if warning_text
+        else ""
+    )
+    return f"""<tr>
+      <td><strong class="code">{escape(str(item.get("model_id") or ""))}</strong><br><span class="muted">{escape(str(item.get("reason") or ""))}</span></td>
+      <td>{escape(", ".join(str(route) for route in routes) or "general")}</td>
+      <td>{escape(str(item.get("runtime_kind") or "unknown"))}</td>
+      <td>{escape(memory)}</td>
+      <td>{escape(str(item.get("score_label") or "unscored"))}{warning_html}</td>
+    </tr>"""
+
+
+def _recommended_models_card(library: Mapping[str, Any]) -> str:
+    recommended = library.get("recommended") if isinstance(library.get("recommended"), list) else []
+    if recommended:
+        rows = "\n".join(
+            _recommended_model_row(item)
+            for item in recommended[:10]
+            if isinstance(item, Mapping)
+        )
+    else:
+        rows = (
+            '<tr><td colspan="4" class="muted">No hardware-aware recommendations yet. '
+            'Run Scan local models or check installer prerequisites.</td></tr>'
+        )
+    return f"""<div class="model-card">
+      <h3>Recommended</h3>
+      <table class="data-table model-table">
+        <thead><tr><th>Model</th><th>Route</th><th>Score</th><th>Why</th></tr></thead>
+        <tbody>{rows}</tbody>
+      </table>
+    </div>"""
+
+
+def _recommended_model_row(item: Mapping[str, Any]) -> str:
+    routes = item.get("route_fit") if isinstance(item.get("route_fit"), list) else []
+    score = item.get("score") if isinstance(item.get("score"), Mapping) else {}
+    reasons = item.get("score_reasons") if isinstance(item.get("score_reasons"), list) else []
+    return f"""<tr>
+      <td><strong class="code">{escape(str(item.get("model_id") or ""))}</strong><br><span class="muted">{escape(str(item.get("provider") or ""))}</span></td>
+      <td>{escape(", ".join(str(route) for route in routes))}</td>
+      <td>{escape(str(item.get("score_label") or score.get("label") or "unscored"))} {escape(str(score.get("overall_score") or ""))}</td>
+      <td>{escape("; ".join(str(reason) for reason in reasons[:2]) or str(item.get("reason") or ""))}</td>
+    </tr>"""
+
+
+def _downloads_models_card(library: Mapping[str, Any]) -> str:
+    downloads = library.get("downloads") if isinstance(library.get("downloads"), list) else []
+    if downloads:
+        rows = "\n".join(
+            _download_state_row(item)
+            for item in downloads[:10]
+            if isinstance(item, Mapping)
+        )
+    else:
+        rows = (
+            '<tr><td colspan="4" class="muted">No downloads planned. '
+            'Use Plan downloads after scanning/recommendations; downloads never run silently.</td></tr>'
+        )
+    return f"""<div class="model-card">
+      <h3>Downloads</h3>
+      <table class="data-table model-table">
+        <thead><tr><th>Model</th><th>Route</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody>{rows}</tbody>
+      </table>
+    </div>"""
+
+
+def _download_state_row(item: Mapping[str, Any]) -> str:
+    route = str(item.get("route") or "")
+    model_id = str(item.get("model_id") or "")
+    route_js = escape(json.dumps(route))
+    model_js = escape(json.dumps(model_id))
+    command = " ".join(str(part) for part in item.get("command", []) if part)
+    return f"""<tr>
+      <td><strong class="code">{escape(model_id)}</strong><br><span class="muted">{escape(str(item.get("local_dir") or ""))}</span></td>
+      <td>{escape(route)}</td>
+      <td>{escape(str(item.get("status") or "planned"))}</td>
+      <td>
+        <button type="button" onclick="planDownload({route_js}, {model_js})">Plan</button>
+        <button type="button" class="danger-text" onclick="runDownload({route_js}, {model_js})">Download</button>
+        <br><span class="muted code">{escape(command)}</span>
+      </td>
+    </tr>"""
+
+
+def _assignments_models_card(library: Mapping[str, Any]) -> str:
+    assignments = library.get("assignments") if isinstance(library.get("assignments"), list) else []
+    if assignments:
+        rows = "\n".join(
+            _assignment_model_row(item)
+            for item in assignments
+            if isinstance(item, Mapping)
+        )
+    else:
+        rows = (
+            '<tr><td colspan="5" class="muted">No route assignments are available because no valid proxy config is loaded.</td></tr>'
+        )
+    return f"""<div class="model-card model-card-wide">
+      <h3>Assignments</h3>
+      <table class="data-table model-table">
+        <thead><tr><th>Route</th><th>Backend</th><th>Current model</th><th>Assign model</th><th>Action</th></tr></thead>
+        <tbody>{rows}</tbody>
+      </table>
+    </div>"""
+
+
+def _assignment_model_row(item: Mapping[str, Any]) -> str:
+    route_id = str(item.get("route_id") or "")
+    backend = str(item.get("backend") or "")
+    model = str(item.get("model") or "")
+    dom_id = _dom_id(f"assign-{route_id}")
+    return f"""<tr>
+      <td><strong>{escape(route_id)}</strong><br><span class="muted">{escape(str(item.get("route_class") or ""))}</span></td>
+      <td>{escape(backend)}</td>
+      <td><span class="code">{escape(model)}</span></td>
+      <td><input id="{dom_id}" list="model-options-list" value="{escape(model)}" aria-label="Model for {escape(route_id)}"></td>
+      <td><button type="button" onclick="assignRoute({json.dumps(route_id)}, {json.dumps(backend)}, {json.dumps(dom_id)})">Save</button><br><span class="muted">restart recommended</span></td>
+    </tr>"""
+
+
+def _memory_range(minimum: Any, recommended: Any) -> str:
+    if minimum is None and recommended is None:
+        return "unknown"
+    if minimum is None:
+        return f"rec {recommended} GB"
+    if recommended is None:
+        return f"min {minimum} GB"
+    return f"{minimum}-{recommended} GB"
+
+
+def _dom_id(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_-]+", "-", value)
 
 
 def _policy_summary_fields(state: Mapping[str, Any]) -> str:

@@ -91,6 +91,19 @@ def _stub_scan(monkeypatch) -> None:
     )
 
 
+def _stub_empty_scan(monkeypatch) -> None:
+    monkeypatch.setattr(
+        settings_ui,
+        "scan_local_environment",
+        lambda: SetupDiscovery(
+            commands={"ollama": False, "hf": False},
+            env_vars={"OPENAI_API_KEY": False},
+            model_dirs=(),
+            models=(),
+        ),
+    )
+
+
 def test_settings_state_redacts_literal_api_keys(tmp_path, monkeypatch):
     _init_config(tmp_path)
     _stub_scan(monkeypatch)
@@ -198,6 +211,17 @@ def test_settings_state_api_includes_models_and_downloads(tmp_path, monkeypatch)
     assert payload["verifier"]["mode"] == "off"
     assert payload["discovery"]["models"][0]["repo_id"] == "mlx-community/Qwen3-4B-4bit"
     assert payload["download_plan"]["suggestions"]
+    assert payload["model_library"]["installed"][0]["model_id"] == (
+        "mlx-community/Qwen3-4B-4bit"
+    )
+    assert payload["model_library"]["discover"]["source"] == "curated_catalog"
+    assert payload["model_library"]["discover"]["results"]
+    assert payload["model_library"]["recommended"]
+    assert payload["model_library"]["downloads"]
+    assert any(
+        assignment["route_id"] == "code_agent"
+        for assignment in payload["model_library"]["assignments"]
+    )
     assert payload["recommendation"]["local_model_recommendations"]
     assert "score" in payload["recommendation"]["local_model_recommendations"][0]
     assert "score" in payload["download_plan"]["suggestions"][0]
@@ -209,6 +233,41 @@ def test_settings_state_api_includes_models_and_downloads(tmp_path, monkeypatch)
     assert payload["route_receipt"]["selected"] == "code_agent"
     assert payload["provider_runtime"]["selected_backend"] == "code"
     assert any(row["route_id"] == "code_agent" for row in payload["route_map"])
+
+
+def test_model_library_dashboard_renders_populated_surfaces(tmp_path, monkeypatch):
+    _init_config(tmp_path)
+    _stub_scan(monkeypatch)
+
+    state = settings_ui.build_settings_state(settings_ui.settings_paths(tmp_path))
+    html = settings_ui.render_dashboard_page(state)
+
+    assert 'id="models"' in html
+    assert "Installed" in html
+    assert "Discover" in html
+    assert "Recommended" in html
+    assert "Downloads" in html
+    assert "Assignments" in html
+    assert "mlx-community/Qwen3-4B-4bit" in html
+    assert "Qwen2.5-Coder" in html
+    assert "/api/model/assign-route" in html
+    assert "Plan downloads" in html
+    assert "No local models found yet" not in html
+
+
+def test_model_library_dashboard_renders_useful_empty_states(tmp_path, monkeypatch):
+    _stub_empty_scan(monkeypatch)
+
+    state = settings_ui.build_settings_state(settings_ui.settings_paths(tmp_path))
+    html = settings_ui.render_dashboard_page(state)
+
+    assert state["config_valid"] is False
+    assert state["model_library"]["installed"] == []
+    assert state["model_library"]["assignments"] == []
+    assert state["model_library"]["discover"]["results"]
+    assert "No local models found yet" in html
+    assert "No route assignments are available" in html
+    assert "Curated catalog did not return candidates" not in html
 
 
 def test_dashboard_uses_latest_safe_route_receipt_without_prompt_leakage(
@@ -423,6 +482,42 @@ def test_save_config_patches_routing_profile(tmp_path, monkeypatch):
     assert payload["proxy"]["routing_profile"] == "private"
     config = load_proxy_config(tmp_path / "routing_proxy.yaml")
     assert config.proxy.routing_profile == "private"
+
+
+def test_model_assign_route_api_requires_confirmation_and_updates_config(
+    tmp_path,
+    monkeypatch,
+):
+    _init_config(tmp_path)
+    _stub_scan(monkeypatch)
+    app = settings_ui.create_settings_app(config_dir=tmp_path)
+
+    missing_confirm = TestClient(app).post(
+        "/api/model/assign-route",
+        json={"route_id": "fast_local", "model": "new-fast-model"},
+    )
+    assert missing_confirm.status_code == 400
+
+    response = TestClient(app).post(
+        "/api/model/assign-route",
+        json={
+            "confirm": True,
+            "route_id": "fast_local",
+            "model": "new-fast-model",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["restart_recommended"] is True
+    assert payload["assignment"] == {
+        "route_id": "fast_local",
+        "backend": "fast",
+        "model": "new-fast-model",
+    }
+    config = load_proxy_config(tmp_path / "routing_proxy.yaml")
+    assert config.backends["fast"].model == "new-fast-model"
 
 
 def test_save_config_patches_backend_policy(tmp_path, monkeypatch):
