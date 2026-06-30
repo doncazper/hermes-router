@@ -185,6 +185,13 @@ clearly.
 Done when unsupported endpoints return useful errors and no endpoint ignores
 `routing_mode`.
 
+Current implementation note: M6 adds routed `/v1/embeddings` and
+`/v1/completions` forwarding through the same proxy path as chat/Responses, so
+decision/manual mode, fallback, headers, telemetry, runtime startup, and
+unsupported-backend handling stay consistent. `/v1/models` now exposes proxy
+aliases plus configured backend models with capability hints. `/v1/messages`
+returns a shaped `unsupported_endpoint` response and remains planned.
+
 ### M7: Maturity And Release Gate
 
 Track feature maturity for basic router mode, installer, model library, runtime

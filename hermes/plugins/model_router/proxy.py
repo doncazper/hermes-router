@@ -210,6 +210,7 @@ def create_app(config: RoutingProxyConfig):
         *,
         upstream_path: str,
         prompt_from_body: Callable[[dict[str, Any]], str],
+        allow_stream: bool = True,
     ):
         auth_response = _authorize_request(request, config)
         if auth_response is not None:
@@ -433,7 +434,7 @@ def create_app(config: RoutingProxyConfig):
             selected_model = backend.model
 
         payload = _payload_for_backend(body, backend, model=selected_model)
-        if bool(body.get("stream", False)):
+        if allow_stream and bool(body.get("stream", False)):
             try:
                 (
                     stream_context,
@@ -815,22 +816,64 @@ def create_app(config: RoutingProxyConfig):
             ),
         )
 
+    @app.post("/v1/embeddings")
+    async def embeddings(request: Request):
+        return await _forward_routed_request(
+            request,
+            upstream_path="/embeddings",
+            prompt_from_body=lambda body: _extract_embeddings_input_text(
+                body.get("input")
+            ),
+            allow_stream=False,
+        )
+
+    @app.post("/v1/completions")
+    async def completions(request: Request):
+        return await _forward_routed_request(
+            request,
+            upstream_path="/completions",
+            prompt_from_body=lambda body: _extract_completions_prompt_text(
+                body.get("prompt")
+            ),
+        )
+
+    @app.post("/v1/messages")
+    async def messages(request: Request):
+        auth_response = _authorize_request(request, config)
+        if auth_response is not None:
+            return auth_response
+        return JSONResponse(
+            status_code=501,
+            content=_unsupported_endpoint_error(
+                "/v1/messages",
+                "Anthropic Messages compatibility is planned but not supported by "
+                "this OpenAI-compatible proxy yet.",
+            ),
+        )
+
     @app.get("/v1/models")
     async def list_models(request: Request):
         auth_response = _authorize_request(request, config)
         if auth_response is not None:
             return auth_response
-        return {
-            "object": "list",
-            "data": [
-                {
-                    "id": model_id,
-                    "object": "model",
-                    "owned_by": "model-router",
-                }
-                for model_id in config.proxy.model_ids
-            ],
-        }
+        return _models_response(config)
+
+    @app.api_route(
+        "/v1/{unsupported_path:path}",
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+    )
+    async def unsupported_v1_endpoint(request: Request, unsupported_path: str):
+        auth_response = _authorize_request(request, config)
+        if auth_response is not None:
+            return auth_response
+        path = f"/v1/{unsupported_path}"
+        return JSONResponse(
+            status_code=404,
+            content=_unsupported_endpoint_error(
+                path,
+                f"{path} is not supported by this ModelRouter proxy.",
+            ),
+        )
 
     @app.get("/health")
     async def health():
@@ -1092,6 +1135,137 @@ def _backend_model_detail(model: str, body: bytes) -> tuple[bool, str | None]:
     return False, f"configured model {model!r} not listed"
 
 
+def _models_response(config: RoutingProxyConfig) -> dict[str, Any]:
+    seen: set[str] = set()
+    data: list[dict[str, Any]] = []
+    proxy_capabilities = _proxy_alias_capabilities(config)
+    for model_id in config.proxy.model_ids:
+        if model_id in seen:
+            continue
+        seen.add(model_id)
+        data.append(
+            {
+                "id": model_id,
+                "object": "model",
+                "owned_by": "model-router",
+                "capabilities": proxy_capabilities,
+                "modelrouter": {
+                    "kind": "proxy_alias",
+                    "routing_mode": config.proxy.routing_mode,
+                    "decision_layer_enabled": config.proxy.routing_mode == "decision",
+                    "default_backend": config.proxy.default_backend,
+                    "default_model": config.proxy.default_model,
+                },
+            }
+        )
+    for backend in config.backends.values():
+        model_id = backend.model
+        if model_id in seen:
+            continue
+        seen.add(model_id)
+        data.append(
+            {
+                "id": model_id,
+                "object": "model",
+                "owned_by": "model-router-backend",
+                "capabilities": _backend_capability_hints(backend),
+                "modelrouter": {
+                    "kind": "backend_model",
+                    "backend": backend.name,
+                    "runtime_kind": backend.runtime.kind
+                    if backend.runtime.enabled
+                    else "openai-compatible",
+                    "managed": backend.runtime.enabled,
+                },
+            }
+        )
+    return {"object": "list", "data": data}
+
+
+def _proxy_alias_capabilities(config: RoutingProxyConfig) -> dict[str, bool]:
+    backends = tuple(config.backends.values())
+    return {
+        "chat_completions": any(
+            _backend_capability_hints(backend)["chat_completions"]
+            for backend in backends
+        ),
+        "responses": any(
+            _backend_capability_hints(backend)["responses"] for backend in backends
+        ),
+        "embeddings": any(
+            _backend_capability_hints(backend)["embeddings"] for backend in backends
+        ),
+        "completions": any(
+            _backend_capability_hints(backend)["completions"] for backend in backends
+        ),
+        "messages": False,
+    }
+
+
+def _backend_capability_hints(backend: ProxyBackendConfig) -> dict[str, bool]:
+    return {
+        "chat_completions": _backend_support_for_upstream_path(
+            backend,
+            "/chat/completions",
+        )[0],
+        "responses": _backend_support_for_upstream_path(backend, "/responses")[0],
+        "embeddings": _backend_support_for_upstream_path(backend, "/embeddings")[0],
+        "completions": _backend_support_for_upstream_path(backend, "/completions")[0],
+        "models": True,
+        "messages": False,
+    }
+
+
+def _backend_support_for_upstream_path(
+    backend: ProxyBackendConfig,
+    upstream_path: str,
+) -> tuple[bool, str | None]:
+    if upstream_path in {"/chat/completions", "/models"}:
+        return True, None
+    if upstream_path == "/messages":
+        return (
+            False,
+            "/v1/messages is planned but not supported by this OpenAI-compatible "
+            "proxy yet.",
+        )
+    if backend.runtime.enabled and backend.runtime.kind == "mlx-lm":
+        if upstream_path in {"/responses", "/embeddings", "/completions"}:
+            return (
+                False,
+                "MLX-LM managed runtimes are chat/models-first; "
+                f"{_public_endpoint_for_upstream_path(upstream_path)} requires an "
+                "upstream that supports that API.",
+            )
+    return True, None
+
+
+def _public_endpoint_for_upstream_path(upstream_path: str) -> str:
+    return f"/v1{upstream_path}"
+
+
+def _unsupported_endpoint_error(path: str, message: str) -> dict[str, Any]:
+    return {
+        "error": {
+            "message": message,
+            "type": "unsupported_endpoint",
+            "param": None,
+            "code": "unsupported_endpoint",
+        },
+        "modelrouter": {
+            "endpoint": path,
+            "supported_endpoints": [
+                "/v1/chat/completions",
+                "/v1/responses",
+                "/v1/embeddings",
+                "/v1/completions",
+                "/v1/models",
+                "/health",
+            ],
+            "planned_endpoints": ["/v1/messages"],
+        },
+    }
+
+
 def _extract_recent_user_text(messages: Any, *, lookback: int = 3) -> str:
     if not isinstance(messages, list):
         return ""
@@ -1149,6 +1323,34 @@ def _extract_responses_input_text(input_value: Any, *, lookback: int = 3) -> str
         if seen >= lookback:
             break
     return " ".join(reversed(parts))
+
+
+def _extract_embeddings_input_text(input_value: Any, *, lookback: int = 8) -> str:
+    if isinstance(input_value, str):
+        return input_value
+    if not isinstance(input_value, list):
+        return ""
+    parts: list[str] = []
+    for item in input_value:
+        if isinstance(item, str) and item.strip():
+            parts.append(item)
+        if len(parts) >= lookback:
+            break
+    return " ".join(parts)
+
+
+def _extract_completions_prompt_text(prompt_value: Any, *, lookback: int = 3) -> str:
+    if isinstance(prompt_value, str):
+        return prompt_value
+    if not isinstance(prompt_value, list):
+        return ""
+    parts: list[str] = []
+    for item in prompt_value:
+        if isinstance(item, str) and item.strip():
+            parts.append(item)
+        if len(parts) >= lookback:
+            break
+    return " ".join(parts)
 
 
 def _responses_content_text(content: Any) -> str:
@@ -1341,14 +1543,10 @@ def _ensure_backend_supports_upstream_path(
     backend: ProxyBackendConfig,
     upstream_path: str,
 ) -> None:
-    if (
-        upstream_path == "/responses"
-        and backend.runtime.enabled
-        and backend.runtime.kind == "mlx-lm"
-    ):
+    supported, reason = _backend_support_for_upstream_path(backend, upstream_path)
+    if not supported:
         raise UnsupportedUpstreamAPIError(
-            "MLX-LM managed runtimes are chat/models-first; "
-            "/v1/responses requires an upstream that supports Responses API."
+            reason or f"{upstream_path} is not supported by backend {backend.name}."
         )
 
 

@@ -597,7 +597,9 @@ model visibility, capabilities, disabled action reasons, and log metadata
 without crashing when local runtimes are unavailable. M5 now adds
 `model-router tui` as a read-only terminal control center over shared admin
 state, with Status, Models, Routing, Runtimes, Telemetry, Logs, and Settings
-tabs and a clean `hermes-router[tui]` install hint when Textual is missing.
+tabs and a clean `hermes-router[tui]` install hint when Textual is missing. M6
+now adds `/v1/embeddings` and `/v1/completions` forwarding, shaped
+`/v1/messages` unsupported responses, and `/v1/models` capability hints.
 
 Guardrails:
 

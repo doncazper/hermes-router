@@ -646,16 +646,27 @@ Example receipt:
 ## Optional Proxy And Future Adapters
 
 The optional `model-router-proxy` command is the supported runtime boundary for
-OpenAI-compatible clients. It exposes local `/v1/chat/completions` and
-`/v1/responses` endpoints, routes each request through initialized
+OpenAI-compatible clients. It exposes local `/v1/chat/completions`,
+`/v1/responses`, `/v1/embeddings`, `/v1/completions`, and `/v1/models`
+endpoints. In decision mode it routes supported request text through initialized
 `route_fast(...)`, maps the selected engine to a configured upstream backend,
-and forwards the request to that OpenAI-compatible server. It remains outside
-the router hot path and is installed only with the `proxy` extra.
+and forwards the request to that OpenAI-compatible server. In manual mode it
+forwards without prompt classification to the configured default backend/model.
+It remains outside the router hot path and is installed only with the `proxy`
+extra.
 
 For `/v1/responses`, ModelRouter extracts routing text from the `input` field
 and preserves the common Responses API request shape when forwarding, including
 instructions, tools, metadata, previous response ids, streaming, and fallback
 behavior.
+
+For `/v1/embeddings`, ModelRouter extracts routing text only from string inputs
+or bounded string arrays, preserves the request body, and does not stream. For
+legacy `/v1/completions`, it routes from the `prompt` string or bounded string
+array and preserves streaming when the upstream supports it. `/v1/models` lists
+proxy aliases plus configured backend models with capability hints. `/v1/messages`
+returns a shaped `unsupported_endpoint` response; Anthropic Messages
+compatibility is planned but not silently bridged.
 
 Managed local runtimes are an optional proxy feature, not part of
 `route_fast(...)`. A backend may declare an explicit argv-only runtime command,

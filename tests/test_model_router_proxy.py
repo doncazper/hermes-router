@@ -890,6 +890,170 @@ def test_proxy_responses_blocks_human_confirm_without_upstream_call(monkeypatch)
     assert _FakeAsyncClient.requests == []
 
 
+def test_proxy_embeddings_routes_to_backend_and_preserves_input(monkeypatch):
+    with _client(monkeypatch, _config()) as client:
+        response = client.post(
+            "/v1/embeddings",
+            json={
+                "model": "client-visible-model",
+                "input": ["rewrite this text", "another string"],
+                "encoding_format": "float",
+            },
+        )
+
+    body = _FakeAsyncClient.requests[0]["body"]
+    assert response.status_code == 200
+    _assert_route_headers(response, engine="fast_local", backend="fast")
+    assert _FakeAsyncClient.requests[0]["path"] == "/embeddings"
+    assert body["model"] == "fast-model"
+    assert body["input"] == ["rewrite this text", "another string"]
+    assert body["encoding_format"] == "float"
+
+
+def test_proxy_embeddings_manual_mode_does_not_call_route_fast(monkeypatch):
+    def fail_route(*_args, **_kwargs):
+        raise AssertionError("decision layer should be disabled")
+
+    monkeypatch.setattr(proxy_module.ModelRouter, "route_fast", fail_route)
+    monkeypatch.setattr(proxy_module.ModelRouter, "route", fail_route)
+    config = replace(
+        _config(),
+        proxy=ProxyServerConfig(
+            routing_mode="manual",
+            default_backend="deep",
+            default_model="manual-embedding-model",
+            respect_client_model=False,
+        ),
+    )
+
+    with _client(monkeypatch, config) as client:
+        response = client.post(
+            "/v1/embeddings",
+            json={
+                "model": "client-visible-model",
+                "input": "api_key=secret embed this",
+            },
+        )
+
+    assert response.status_code == 200
+    _assert_route_headers(
+        response,
+        engine="manual",
+        backend="deep",
+        model="manual-embedding-model",
+        mode="manual",
+        decision_layer="off",
+        route_api="manual",
+    )
+    assert _FakeAsyncClient.requests[0]["path"] == "/embeddings"
+    assert _FakeAsyncClient.requests[0]["body"]["model"] == "manual-embedding-model"
+
+
+def test_proxy_completions_routes_to_backend_and_preserves_prompt(monkeypatch):
+    with _client(monkeypatch, _config()) as client:
+        response = client.post(
+            "/v1/completions",
+            json={
+                "model": "client-visible-model",
+                "prompt": "fix the repo and run tests",
+                "max_tokens": 64,
+            },
+        )
+
+    body = _FakeAsyncClient.requests[0]["body"]
+    assert response.status_code == 200
+    _assert_route_headers(response, engine="code_agent", backend="deep")
+    assert _FakeAsyncClient.requests[0]["path"] == "/completions"
+    assert body["model"] == "deep-model"
+    assert body["prompt"] == "fix the repo and run tests"
+    assert body["max_tokens"] == 64
+
+
+def test_proxy_mlx_lm_runtime_rejects_unsupported_compat_endpoints(
+    monkeypatch,
+    tmp_path,
+):
+    fake_manager = _patch_runtime_manager(monkeypatch)
+    config = _config(fast_runtime=_managed_runtime(tmp_path, kind="mlx-lm"))
+
+    with _client(monkeypatch, config) as client:
+        embeddings = client.post(
+            "/v1/embeddings",
+            json={"model": "model-router", "input": "rewrite this text"},
+        )
+        completions = client.post(
+            "/v1/completions",
+            json={"model": "model-router", "prompt": "rewrite this text"},
+        )
+
+    manager = fake_manager.instances[-1]
+    assert embeddings.status_code == 502
+    assert embeddings.json()["error"]["type"] == "upstream_api_unsupported"
+    assert completions.status_code == 502
+    assert completions.json()["error"]["type"] == "upstream_api_unsupported"
+    assert manager.ensure_calls == []
+    assert _FakeAsyncClient.requests == []
+
+
+def test_proxy_messages_returns_shaped_unsupported_error(monkeypatch):
+    with _client(monkeypatch, _config()) as client:
+        response = client.post(
+            "/v1/messages",
+            json={"model": "model-router", "messages": []},
+        )
+
+    payload = response.json()
+    assert response.status_code == 501
+    assert payload["error"]["type"] == "unsupported_endpoint"
+    assert payload["modelrouter"]["endpoint"] == "/v1/messages"
+    assert "/v1/messages" in payload["modelrouter"]["planned_endpoints"]
+    assert _FakeAsyncClient.requests == []
+
+
+def test_proxy_unknown_v1_endpoint_returns_shaped_unsupported_error(monkeypatch):
+    with _client(monkeypatch, _config()) as client:
+        response = client.post(
+            "/v1/audio/transcriptions",
+            json={"model": "model-router"},
+        )
+
+    payload = response.json()
+    assert response.status_code == 404
+    assert payload["error"]["type"] == "unsupported_endpoint"
+    assert payload["modelrouter"]["endpoint"] == "/v1/audio/transcriptions"
+    assert "/v1/embeddings" in payload["modelrouter"]["supported_endpoints"]
+    assert _FakeAsyncClient.requests == []
+
+
+def test_proxy_models_exposes_aliases_and_capability_hints(monkeypatch):
+    config = replace(
+        _config(),
+        proxy=ProxyServerConfig(
+            model_ids=("model-router", "model-router-fast"),
+        ),
+    )
+
+    with _client(monkeypatch, config) as client:
+        response = client.get("/v1/models")
+
+    payload = response.json()
+    models = {item["id"]: item for item in payload["data"]}
+    assert response.status_code == 200
+    assert list(models)[:2] == ["model-router", "model-router-fast"]
+    assert models["model-router"]["modelrouter"]["kind"] == "proxy_alias"
+    assert models["model-router"]["capabilities"]["chat_completions"] is True
+    assert models["model-router"]["capabilities"]["embeddings"] is True
+    assert models["model-router"]["capabilities"]["completions"] is True
+    assert models["model-router"]["capabilities"]["messages"] is False
+    assert models["fast-model"]["modelrouter"] == {
+        "kind": "backend_model",
+        "backend": "fast",
+        "runtime_kind": "openai-compatible",
+        "managed": False,
+    }
+    assert models["fast-model"]["capabilities"]["models"] is True
+
+
 def test_proxy_uses_explicit_fallback_chain_on_upstream_5xx(monkeypatch):
     _FakeAsyncClient.responses = {"fast": [_response(503)], "deep": [_response(200)]}
     with _client(monkeypatch, _config()) as client:

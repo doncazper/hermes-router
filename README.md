@@ -520,8 +520,8 @@ migration entry.
 ## Local Routing Proxy
 
 Most agents can talk to an OpenAI-compatible local endpoint. Install the optional
-proxy extra to expose one local endpoint that routes each chat or Responses API
-request to the configured upstream model server:
+proxy extra to expose one local endpoint that routes common OpenAI-compatible
+requests to the configured upstream model server:
 
 ```bash
 model-router init --preset lmstudio --yes
@@ -534,13 +534,20 @@ Then point the agent at:
 http://127.0.0.1:8082/v1
 ```
 
-The proxy supports `/v1/chat/completions`, `/v1/responses`, `/v1/models`, and
-`/health`. It calls initialized `route_fast(...)` once per chat or Responses
-request, maps the selected engine to a configured backend, overrides the
-outgoing backend model, and forwards to an OpenAI-compatible upstream such as
-LM Studio, llama.cpp server, LocalAI, or a frontier gateway. `human_confirm`
-returns HTTP `409` and is never forwarded. Tools are preserved by default and
-can be stripped per backend for small local models.
+The proxy supports `/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`,
+`/v1/completions`, `/v1/models`, and `/health`. It calls initialized
+`route_fast(...)` once per decision-mode routed request, maps the selected
+engine to a configured backend, overrides the outgoing backend model, and
+forwards to an OpenAI-compatible upstream such as LM Studio, llama.cpp server,
+LocalAI, or a frontier gateway. `human_confirm` returns HTTP `409` and is never
+forwarded. Tools are preserved by default and can be stripped per backend for
+small local models.
+
+`/v1/models` returns ModelRouter proxy aliases and configured backend models
+with capability hints for chat completions, Responses, embeddings, completions,
+models, and planned Messages support. `/v1/messages` is intentionally returned
+as a shaped `unsupported_endpoint` error until Anthropic Messages compatibility
+has real capability plumbing.
 
 The configured `proxy.routing_profile` is applied to every decision-mode proxy
 request and is reported in `/health` plus the `X-ModelRouter-Profile` response
