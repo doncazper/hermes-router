@@ -174,6 +174,10 @@ def _populated_state(tmp_path: Path) -> dict:
                 "usage_completion_tokens": 10,
                 "usage_total_tokens": 40,
                 "usage_cached_input_tokens": 5,
+                "estimated_cost_events": 1,
+                "estimated_total_cost": 0.00009,
+                "estimated_cost_currency": "USD",
+                "pricing_match_counts": {"matched": 1},
                 "usage_by_backend": {
                     "code": {
                         "events": 1,
@@ -181,6 +185,9 @@ def _populated_state(tmp_path: Path) -> dict:
                         "usage_completion_tokens": 10,
                         "usage_total_tokens": 40,
                         "usage_cached_input_tokens": 5,
+                        "estimated_cost_events": 1,
+                        "estimated_total_cost": 0.00009,
+                        "estimated_cost_currency": "USD",
                     }
                 },
             },
@@ -236,6 +243,8 @@ def test_tui_snapshot_renders_populated_state(tmp_path):
     assert "Outcome labels: accepted=1" in snapshot
     assert "Usage events: 1" in snapshot
     assert "Usage tokens: prompt=30, completion=10, total=40, cached_input=5" in snapshot
+    assert "Estimated cost: 0.00009 USD" in snapshot
+    assert "Pricing matches: matched=1" in snapshot
     assert "tokens=p=30 c=10 t=40 cache=5" in snapshot
     assert "code.log" in snapshot
     assert "Basic router mode: beta" in snapshot

@@ -101,6 +101,15 @@ def test_packaged_model_catalog_resource_exists():
     assert catalog_resource.is_file()
 
 
+def test_packaged_pricing_catalog_resource_exists():
+    pricing_resource = resources.files("hermes.plugins.model_router").joinpath(
+        "data",
+        "pricing_catalog.yaml",
+    )
+
+    assert pricing_resource.is_file()
+
+
 def test_packaged_proxy_example_resource_exists():
     proxy_resource = resources.files("hermes.plugins.model_router").joinpath(
         "data",
@@ -174,6 +183,7 @@ def test_wheel_contains_console_scripts_generic_package_and_packaged_config(tmp_
     assert any(name.endswith(".dist-info/licenses/LICENSE") for name in names)
     assert "hermes/plugins/model_router/data/model_router.yaml" in names
     assert "hermes/plugins/model_router/data/model_catalog.yaml" in names
+    assert "hermes/plugins/model_router/data/pricing_catalog.yaml" in names
     assert "hermes/plugins/model_router/data/routing_proxy.example.yaml" in names
     for template_name in preset_template_names():
         assert f"hermes/plugins/model_router/data/{template_name}" in names

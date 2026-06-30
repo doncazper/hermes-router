@@ -855,10 +855,23 @@ Use full capture only during deliberate calibration runs.
 
 Cost and outcome telemetry follows the same privacy-first boundary. Routing uses
 configured `cost_tier` metadata and provider policy; `route_fast(...)` and
-`route(...)` do not fetch live prices. Future proxy telemetry should record
-upstream token usage when providers return it, accept explicit outcome labels
-from users/operators, and estimate exact cost only from a local versioned pricing
-catalog. Missing usage or pricing metadata means no exact estimate.
+`route(...)` do not fetch live prices. Proxy telemetry records upstream token
+usage when providers return it, accepts explicit outcome labels from
+users/operators, and estimates cost only from a local versioned pricing catalog.
+Missing usage or pricing metadata means no exact estimate.
+
+Pricing metadata is packaged and local-first. Operators can inspect and maintain
+the local override explicitly:
+
+```bash
+model-router pricing status
+model-router pricing diff
+model-router pricing apply --yes
+```
+
+These commands read packaged/local files only. They do not scrape provider pages
+or run during routing/proxy forwarding. See
+[Versioned pricing catalog](docs/pricing-catalog.md).
 
 When a route is wrong, copy `X-ModelRouter-Request-ID` from the response and
 label it:

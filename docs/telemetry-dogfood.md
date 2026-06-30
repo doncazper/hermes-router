@@ -56,15 +56,15 @@ Cost and outcome telemetry should separate four concepts:
   tokens, and upstream model id. The proxy should record these when available
   without buffering streaming responses or making provider-specific follow-up
   calls.
-- **Estimated cost**: best-effort dollar estimates only when a later local
-  versioned pricing catalog has a matching provider/model entry and usage
-  counts are present. Missing price or missing usage means no estimate.
+- **Estimated cost**: best-effort cost estimates only when the local versioned
+  pricing catalog has a matching provider/model entry and usage counts are
+  present. Missing price or missing usage means no estimate.
 - **Outcome labels**: explicit user/operator feedback such as `success`,
   `partial`, `failed`, `wrong_route`, `too_expensive`, or `too_slow`. The router
   must not infer task success from status codes, route choice, or verifier
   status.
 
-Recommended future routing event fields:
+Reporting fields:
 
 | Group | Fields |
 | --- | --- |
@@ -72,13 +72,21 @@ Recommended future routing event fields:
 | Latency | `route_latency_ms`, `diagnostic_latency_ms`, `upstream_latency_ms`, `total_latency_ms` |
 | Usage | `usage_prompt_tokens`, `usage_completion_tokens`, `usage_total_tokens`, `usage_cached_input_tokens`, `upstream_model` |
 | Cost tier | `configured_cost_tier`, `configured_latency_tier`, `cost_estimate_available` |
-| Estimated cost | `estimated_cost`, `estimated_cost_currency`, `pricing_catalog_version`, `pricing_source`, `pricing_effective_date`, `pricing_match`, `pricing_unavailable_reason` |
+| Estimated cost | `estimated_input_cost`, `estimated_output_cost`, `estimated_cached_input_cost`, `estimated_total_cost`, `estimated_cost_currency`, `pricing_catalog_version`, `pricing_catalog_source`, `pricing_source`, `pricing_effective_date`, `pricing_match_status` |
 | Outcomes | `outcome_label`, `feedback_label`, `expected_engine`, `feedback_notes_present` |
 
-Pricing catalog metadata should be local and versioned. Refreshing it should be
-an explicit operator action, similar to catalog maintenance: status/diff/apply,
-preview changes, require confirmation, and never run during routing or default
-proxy forwarding.
+Pricing catalog metadata is local and versioned. Maintaining it is an explicit
+operator action:
+
+```bash
+model-router pricing status
+model-router pricing diff
+model-router pricing apply --yes
+```
+
+These commands preview local packaged metadata, require confirmation for writes,
+and never run during routing or proxy forwarding. They do not fetch live pricing
+or scrape provider pages.
 
 ## Identify Routes Live
 
@@ -216,8 +224,19 @@ routing behavior without private content.
 When proxy responses include upstream usage metadata, telemetry summaries may
 show aggregate prompt, completion, total, and cached-input token counts by
 route, backend, and model. These fields are usage telemetry only: they do not
-include prompt or response text, do not estimate cost without a local pricing
-catalog, and do not imply task success.
+include prompt or response text and do not imply task success. When a local
+pricing catalog has a matching model entry, summaries may also show estimated
+input, output, cached-input, and total cost. Missing catalog entries are shown
+as pricing match statuses rather than invented prices.
+
+To use a local override for CLI reporting:
+
+```bash
+model-router telemetry summary \
+  --events ~/.model-router/logs/routing-events.jsonl \
+  --feedback ~/.model-router/routing-feedback.jsonl \
+  --pricing-catalog ~/.model-router/pricing_catalog.yaml
+```
 
 ## Maintain Catalogs
 
@@ -238,6 +257,18 @@ model-router catalog apply --config ~/.model-router/model_router.yaml --yes
 
 Apply backs up the existing config and writes a migration log entry. Treat the
 result as a maintenance action, not as telemetry-driven auto-tuning.
+
+Maintain pricing metadata separately:
+
+```bash
+model-router pricing status --override ~/.model-router/pricing_catalog.yaml
+model-router pricing diff --override ~/.model-router/pricing_catalog.yaml
+model-router pricing apply --override ~/.model-router/pricing_catalog.yaml --yes
+```
+
+The packaged pricing catalog contains local/control-plane defaults and
+non-authoritative examples. Add operator-verified provider prices through the
+override file before using estimates for spend review.
 
 ## Advanced Routing Threshold
 

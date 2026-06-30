@@ -342,6 +342,8 @@ def _telemetry_tab(state: Mapping[str, Any]) -> str:
         _pair("Fallbacks", telemetry.get("fallback_count", 0)),
         _pair("Usage events", telemetry.get("usage_events", 0)),
         _pair("Usage tokens", _compact_usage(telemetry)),
+        _pair("Estimated cost", _compact_cost(telemetry)),
+        _pair("Pricing matches", _compact_counts(telemetry.get("pricing_match_counts"))),
         _pair("Engines", _compact_counts(telemetry.get("selected_engine_counts"))),
         _pair("Backends", _compact_counts(telemetry.get("backend_counts"))),
         _pair("Usage by backend", _compact_usage_groups(telemetry.get("usage_by_backend"))),
@@ -500,9 +502,27 @@ def _compact_usage_groups(value: Any) -> str:
     parts = []
     for key, usage in sorted(value.items()):
         formatted = _compact_usage(usage)
+        cost = _compact_cost(usage)
         if formatted != "none":
-            parts.append(f"{key}={formatted}")
+            suffix = f" cost={cost}" if cost != "none" else ""
+            parts.append(f"{key}={formatted}{suffix}")
     return "; ".join(parts) if parts else "none"
+
+
+def _compact_cost(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "none"
+    total = value.get("estimated_total_cost")
+    events = _usage_int(value.get("estimated_cost_events"))
+    currency = value.get("estimated_cost_currency")
+    if not isinstance(total, (int, float)) or total < 0:
+        return "none"
+    if total == 0 and events == 0:
+        return "none"
+    amount = f"{float(total):.8f}".rstrip("0").rstrip(".") or "0"
+    if isinstance(currency, str) and currency:
+        return f"{amount} {currency}"
+    return amount
 
 
 def _usage_int(value: Any) -> int:

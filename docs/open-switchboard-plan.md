@@ -34,6 +34,11 @@ A future session-aware routing extension is sketched in
 optional host-agent control-plane API, not as hidden orchestration in the proxy
 or the `route_fast(...)` hot path.
 
+Cost reporting follows the same switchboard boundary. ModelRouter can record
+actual upstream usage, accept manual outcome labels, and estimate reporting cost
+from `docs/pricing-catalog.md` local metadata. It must not turn live pricing into
+a hidden routing dependency or use estimated cost as an inferred task outcome.
+
 ## Non-Goals
 
 - Do not add hidden planner-worker-synthesizer behavior to the default proxy.

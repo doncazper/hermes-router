@@ -218,6 +218,21 @@ def test_settings_state_api_includes_models_and_downloads(tmp_path, monkeypatch)
         + "\n",
         encoding="utf-8",
     )
+    (tmp_path / "pricing_catalog.yaml").write_text(
+        """catalog_version: 4
+updated_at: "2026-06-30T00:00:00Z"
+entries:
+  - provider: test
+    model: actual-code
+    input_per_1m: 2
+    output_per_1m: 4
+    cached_input_per_1m: 0.5
+    currency: USD
+    effective_date: "2026-06-30"
+    source: settings-test
+""",
+        encoding="utf-8",
+    )
     app = settings_ui.create_settings_app(config_dir=tmp_path)
 
     payload = TestClient(app).get("/api/state").json()
@@ -266,6 +281,9 @@ def test_settings_state_api_includes_models_and_downloads(tmp_path, monkeypatch)
     assert payload["telemetry"]["usage_by_model"]["actual-code"][
         "usage_total_tokens"
     ] == 30
+    assert payload["telemetry"]["pricing_match_counts"] == {"matched": 1}
+    assert payload["telemetry"]["estimated_total_cost"] == 0.000072
+    assert payload["telemetry"]["estimated_cost_currency"] == "USD"
     assert payload["telemetry"]["recent_request_ids"] == ["req-1", "req-2"]
     assert payload["route_receipt"]["request_id"] == "req-2"
     assert payload["route_receipt"]["selected"] == "code_agent"

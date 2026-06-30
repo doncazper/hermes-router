@@ -16,6 +16,25 @@ def _write_jsonl(path, rows):
     )
 
 
+def _write_pricing_catalog(path):
+    path.write_text(
+        """catalog_version: 3
+updated_at: "2026-06-30T00:00:00Z"
+entries:
+  - provider: test
+    model: actual-fast
+    input_per_1m: 2
+    output_per_1m: 4
+    cached_input_per_1m: 0.5
+    currency: USD
+    effective_date: "2026-06-30"
+    source: test-fixture
+    notes: test only
+""",
+        encoding="utf-8",
+    )
+
+
 def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "-m", "hermes.plugins.model_router.cli", *args],
@@ -153,6 +172,64 @@ def test_replay_routing_log_summarizes_usage_without_prompt_text(tmp_path):
     assert "secret-value" not in serialized
 
 
+def test_replay_routing_log_estimates_cost_from_local_catalog(tmp_path):
+    events = tmp_path / "events.jsonl"
+    feedback = tmp_path / "feedback.jsonl"
+    pricing = tmp_path / "pricing_catalog.yaml"
+    _write_jsonl(feedback, [])
+    _write_pricing_catalog(pricing)
+    _write_jsonl(
+        events,
+        [
+            {
+                "event_type": "routing_event",
+                "request_id": "priced",
+                "prompt": "rewrite token=secret-value",
+                "selected_engine": "fast_local",
+                "backend": "fast",
+                "backend_model": "configured-fast",
+                "upstream_model": "actual-fast",
+                "status": "forwarded",
+                "usage_prompt_tokens": 10,
+                "usage_completion_tokens": 5,
+                "usage_total_tokens": 15,
+                "usage_cached_input_tokens": 3,
+            },
+            {
+                "event_type": "routing_event",
+                "request_id": "missing-price",
+                "prompt": "summarize this",
+                "selected_engine": "balanced_local",
+                "backend": "balanced",
+                "backend_model": "unknown-model",
+                "status": "forwarded",
+                "usage_prompt_tokens": 20,
+                "usage_completion_tokens": 8,
+                "usage_total_tokens": 28,
+            },
+        ],
+    )
+
+    summary = replay_events(
+        events_path=events,
+        feedback_path=feedback,
+        config_path=None,
+        pricing_catalog_path=pricing,
+    )
+    serialized = json.dumps(summary, sort_keys=True)
+
+    assert summary["pricing_catalog_version"] == 3
+    assert summary["pricing_match_counts"] == {"matched": 1, "missing_price": 1}
+    assert summary["estimated_cost_events"] == 1
+    assert summary["estimated_input_cost"] == 0.000014
+    assert summary["estimated_output_cost"] == 0.00002
+    assert summary["estimated_cached_input_cost"] == 0.0000015
+    assert summary["estimated_total_cost"] == 0.0000355
+    assert summary["estimated_cost_currency"] == "USD"
+    assert summary["usage_by_model"]["actual-fast"]["estimated_total_cost"] == 0.0000355
+    assert "secret-value" not in serialized
+
+
 def test_review_queue_includes_usage_without_prompt_or_response_text(tmp_path):
     events = tmp_path / "events.jsonl"
     feedback = tmp_path / "feedback.jsonl"
@@ -193,10 +270,50 @@ def test_review_queue_includes_usage_without_prompt_or_response_text(tmp_path):
     assert "fix this" not in serialized
 
 
+def test_review_queue_includes_cost_without_prompt_or_response_text(tmp_path):
+    events = tmp_path / "events.jsonl"
+    feedback = tmp_path / "feedback.jsonl"
+    pricing = tmp_path / "pricing_catalog.yaml"
+    _write_jsonl(feedback, [])
+    _write_pricing_catalog(pricing)
+    _write_jsonl(
+        events,
+        [
+            {
+                "event_type": "routing_event",
+                "request_id": "review-priced",
+                "prompt": "api_key=secret-value rewrite this",
+                "selected_engine": "fast_local",
+                "backend_model": "configured-fast",
+                "upstream_model": "actual-fast",
+                "usage_prompt_tokens": 10,
+                "usage_completion_tokens": 5,
+                "usage_total_tokens": 15,
+                "usage_cached_input_tokens": 3,
+            }
+        ],
+    )
+
+    summary = review_queue(
+        events_path=events,
+        feedback_path=feedback,
+        pricing_catalog_path=pricing,
+    )
+    item = summary["items"][0]
+    serialized = json.dumps(summary, sort_keys=True)
+
+    assert item["cost"]["pricing_match_status"] == "matched"
+    assert item["cost"]["estimated_total_cost"] == 0.0000355
+    assert "secret-value" not in serialized
+    assert "rewrite this" not in serialized
+
+
 def test_telemetry_cli_summary_and_review_show_usage_without_prompt_text(tmp_path):
     events = tmp_path / "events.jsonl"
     feedback = tmp_path / "feedback.jsonl"
     _write_jsonl(feedback, [])
+    pricing = tmp_path / "pricing_catalog.yaml"
+    _write_pricing_catalog(pricing)
     _write_jsonl(
         events,
         [
@@ -223,6 +340,8 @@ def test_telemetry_cli_summary_and_review_show_usage_without_prompt_text(tmp_pat
         str(events),
         "--feedback",
         str(feedback),
+        "--pricing-catalog",
+        str(pricing),
     )
     review = _run_cli(
         "telemetry",
@@ -231,6 +350,8 @@ def test_telemetry_cli_summary_and_review_show_usage_without_prompt_text(tmp_pat
         str(events),
         "--feedback",
         str(feedback),
+        "--pricing-catalog",
+        str(pricing),
     )
 
     assert summary.returncode == 0
@@ -238,10 +359,13 @@ def test_telemetry_cli_summary_and_review_show_usage_without_prompt_text(tmp_pat
     assert "Usage tokens: prompt=14, completion=6, total=20" in summary.stdout
     assert "Usage by backend:" in summary.stdout
     assert "fast: prompt=14, completion=6, total=20" in summary.stdout
+    assert "Estimated cost events: 1" in summary.stdout
+    assert "Estimated cost: 0.000052 USD events=1" in summary.stdout
     assert "secret-value" not in summary.stdout
     assert "rewrite this" not in summary.stdout
     assert review.returncode == 0
     assert "usage: prompt=14, completion=6, total=20" in review.stdout
+    assert "cost: 0.000052 USD" in review.stdout
     assert "secret-value" not in review.stdout
     assert "rewrite this" not in review.stdout
 

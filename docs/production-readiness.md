@@ -262,9 +262,9 @@ Cost and outcome telemetry must stay outside routing decisions. `route_fast(...)
 and `route(...)` use configured route/backend metadata such as `cost_tier` and
 provider policy; they must not fetch live prices, scrape provider pages, or call
 pricing APIs. The proxy can record actual upstream usage fields when a response
-already includes them, and later estimate cost only from a local versioned
-pricing catalog. Outcome labels are explicit user/operator feedback, not
-inferred success claims.
+already includes them, and reporting paths can estimate cost only from a local
+versioned pricing catalog. Outcome labels are explicit user/operator feedback,
+not inferred success claims.
 
 Future cost/outcome telemetry fields should distinguish route identity
 (`selected_engine`, `routing_profile`, `selected_backend`, `selected_model`,
@@ -273,10 +273,24 @@ Future cost/outcome telemetry fields should distinguish route identity
 (`usage_prompt_tokens`, `usage_completion_tokens`, `usage_total_tokens`,
 `usage_cached_input_tokens`, `upstream_model`), configured cost metadata
 (`configured_cost_tier`, `configured_latency_tier`), estimated cost
-(`estimated_cost`, `estimated_cost_currency`, `pricing_catalog_version`,
-`pricing_source`, `pricing_effective_date`, `pricing_match`), and feedback
+(`estimated_input_cost`, `estimated_output_cost`,
+`estimated_cached_input_cost`, `estimated_total_cost`,
+`estimated_cost_currency`, `pricing_catalog_version`, `pricing_catalog_source`,
+`pricing_source`, `pricing_effective_date`, `pricing_match_status`), and feedback
 (`outcome_label`, `feedback_label`, `expected_engine`). Missing usage or pricing
 catalog matches should produce no exact estimate rather than an invented value.
+
+Pricing maintenance is explicit and local:
+
+```bash
+model-router pricing status --override ~/.model-router/pricing_catalog.yaml
+model-router pricing diff --override ~/.model-router/pricing_catalog.yaml
+model-router pricing apply --override ~/.model-router/pricing_catalog.yaml --yes
+```
+
+These commands operate on packaged metadata and a local override file only. They
+must not fetch pricing during `route_fast(...)`, `route(...)`, proxy forwarding,
+verification, or telemetry rendering.
 
 Optional classifier-based routing is not part of the production path. The
 Milestone 7 audit found no labeled replay mismatches that justify it. Revisit

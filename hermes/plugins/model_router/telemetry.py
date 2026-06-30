@@ -9,6 +9,11 @@ from time import perf_counter
 from typing import Any
 
 from hermes.plugins.model_router.policy import ModelRouter
+from hermes.plugins.model_router.pricing_catalog import (
+    PricingCatalog,
+    estimate_usage_cost,
+    load_pricing_catalog,
+)
 from hermes.plugins.model_router.routing_log import (
     DEFAULT_FEEDBACK_PATH,
     OUTCOME_LABEL_SET,
@@ -30,12 +35,14 @@ def replay_events(
     events_path: str | Path,
     feedback_path: str | Path | None,
     config_path: str | Path | None,
+    pricing_catalog_path: str | Path | None = None,
     max_examples: int = 10,
 ) -> dict[str, Any]:
     events = read_jsonl(events_path)
     feedback_rows = read_jsonl(feedback_path) if feedback_path else []
     feedback = _feedback_records_by_request(feedback_rows)
     router = ModelRouter.from_config(config_path, validate_availability=False)
+    pricing_catalog = load_pricing_catalog(pricing_catalog_path)
 
     routing_events = _routing_events(events)
     event_by_request = _events_by_request(routing_events)
@@ -55,7 +62,10 @@ def replay_events(
     replayed = 0
     skipped_no_prompt = 0
     labeled_replayable = 0
-    usage_summary = usage_telemetry_summary(routing_events)
+    usage_summary = usage_telemetry_summary(
+        routing_events,
+        pricing_catalog=pricing_catalog,
+    )
     outcome_label_counts = _outcome_label_counts(feedback.values())
 
     for event in routing_events:
@@ -216,6 +226,7 @@ def review_queue(
     *,
     events_path: str | Path,
     feedback_path: str | Path | None,
+    pricing_catalog_path: str | Path | None = None,
     max_rows: int = 20,
 ) -> dict[str, Any]:
     """Build a privacy-safe wrong-route review queue.
@@ -225,6 +236,7 @@ def review_queue(
     """
 
     events = _routing_events(read_jsonl(events_path))
+    pricing_catalog = load_pricing_catalog(pricing_catalog_path)
     feedback = (
         _feedback_records_by_request(read_jsonl(feedback_path))
         if feedback_path
@@ -255,6 +267,7 @@ def review_queue(
             "receipt_summary": event.get("receipt_summary"),
             "reason_codes": _string_list(event.get("reason_codes")),
             "usage": event_usage_summary(event),
+            "cost": event_cost_summary(event, pricing_catalog),
             "replayable": replayable,
             "suggested_feedback_command": (
                 "model-router feedback "
@@ -278,12 +291,19 @@ def review_queue(
     }
 
 
-def usage_telemetry_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
+def usage_telemetry_summary(
+    events: list[dict[str, Any]],
+    *,
+    pricing_catalog: PricingCatalog | None = None,
+) -> dict[str, Any]:
+    catalog = pricing_catalog or load_pricing_catalog()
     totals = _empty_usage_totals()
+    cost_totals = _empty_cost_totals()
     by_engine: dict[str, dict[str, int]] = {}
     by_backend: dict[str, dict[str, int]] = {}
     by_model: dict[str, dict[str, int]] = {}
     upstream_model_counts: Counter[str] = Counter()
+    pricing_match_counts: Counter[str] = Counter()
     usage_events = 0
 
     for event in events:
@@ -292,19 +312,28 @@ def usage_telemetry_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
         if not has_usage:
             continue
         usage_events += 1
+        cost = event_cost_summary(event, catalog)
+        pricing_match_counts[str(cost.get("pricing_match_status") or "unknown")] += 1
         _merge_usage_totals(totals, usage)
+        _merge_cost_totals(cost_totals, cost)
 
         engine = _safe_group_key(event.get("selected_engine"))
         if engine:
-            _merge_usage_totals(_group_totals(by_engine, engine), usage)
+            group = _group_totals(by_engine, engine)
+            _merge_usage_totals(group, usage)
+            _merge_cost_totals(group, cost)
 
         backend = _safe_group_key(event.get("backend") or event.get("selected_backend"))
         if backend:
-            _merge_usage_totals(_group_totals(by_backend, backend), usage)
+            group = _group_totals(by_backend, backend)
+            _merge_usage_totals(group, usage)
+            _merge_cost_totals(group, cost)
 
         model = _safe_model_key(event)
         if model:
-            _merge_usage_totals(_group_totals(by_model, model), usage)
+            group = _group_totals(by_model, model)
+            _merge_usage_totals(group, usage)
+            _merge_cost_totals(group, cost)
 
         upstream_model = _safe_group_key(event.get("upstream_model"))
         if upstream_model:
@@ -320,6 +349,10 @@ def usage_telemetry_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
         "usage_by_backend": _sorted_usage_groups(by_backend),
         "usage_by_model": _sorted_usage_groups(by_model),
         "upstream_model_counts": dict(sorted(upstream_model_counts.items())),
+        "pricing_catalog_version": catalog.catalog_version,
+        "pricing_catalog_source": catalog.source,
+        "pricing_match_counts": dict(sorted(pricing_match_counts.items())),
+        **cost_totals,
     }
 
 
@@ -334,6 +367,30 @@ def event_usage_summary(event: dict[str, Any]) -> dict[str, Any]:
     if backend_model:
         usage["backend_model"] = backend_model
     return usage
+
+
+def event_cost_summary(
+    event: dict[str, Any],
+    pricing_catalog: PricingCatalog | None = None,
+) -> dict[str, Any]:
+    catalog = pricing_catalog or load_pricing_catalog()
+    usage = event_usage_summary(event)
+    provider = _safe_group_key(event.get("provider") or event.get("backend_provider"))
+    model_candidates = tuple(
+        model
+        for model in (
+            _safe_group_key(event.get("upstream_model")),
+            _safe_group_key(event.get("backend_model")),
+            _safe_group_key(event.get("selected_model")),
+        )
+        if model
+    )
+    return estimate_usage_cost(
+        usage,
+        catalog,
+        provider=provider or None,
+        model_candidates=model_candidates,
+    )
 
 
 def _feedback_records_by_request(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -389,6 +446,17 @@ def _empty_usage_totals() -> dict[str, int]:
     return {field: 0 for field in USAGE_TOKEN_FIELDS}
 
 
+def _empty_cost_totals() -> dict[str, Any]:
+    return {
+        "estimated_cost_events": 0,
+        "estimated_input_cost": 0.0,
+        "estimated_output_cost": 0.0,
+        "estimated_cached_input_cost": 0.0,
+        "estimated_total_cost": 0.0,
+        "estimated_cost_currency": None,
+    }
+
+
 def _merge_usage_totals(target: dict[str, int], usage: dict[str, Any]) -> None:
     target["events"] = target.get("events", 0) + 1
     for field in USAGE_TOKEN_FIELDS:
@@ -397,8 +465,28 @@ def _merge_usage_totals(target: dict[str, int], usage: dict[str, Any]) -> None:
 
 def _group_totals(groups: dict[str, dict[str, int]], key: str) -> dict[str, int]:
     if key not in groups:
-        groups[key] = {"events": 0, **_empty_usage_totals()}
+        groups[key] = {"events": 0, **_empty_usage_totals(), **_empty_cost_totals()}
     return groups[key]
+
+
+def _merge_cost_totals(target: dict[str, Any], cost: dict[str, Any]) -> None:
+    if cost.get("pricing_match_status") != "matched":
+        return
+    target["estimated_cost_events"] = int(target.get("estimated_cost_events", 0)) + 1
+    for field in (
+        "estimated_input_cost",
+        "estimated_output_cost",
+        "estimated_cached_input_cost",
+        "estimated_total_cost",
+    ):
+        target[field] = _round_cost(
+            float(target.get(field, 0.0) or 0.0)
+            + float(cost.get(field, 0.0) or 0.0)
+        )
+    target["estimated_cost_currency"] = _merged_currency(
+        target.get("estimated_cost_currency"),
+        cost.get("estimated_cost_currency"),
+    )
 
 
 def _sorted_usage_groups(groups: dict[str, dict[str, int]]) -> dict[str, dict[str, int]]:
@@ -438,6 +526,20 @@ def _non_negative_int(value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         return 0
     return value
+
+
+def _round_cost(value: float) -> float:
+    return round(value, 8)
+
+
+def _merged_currency(current: Any, incoming: Any) -> str | None:
+    if not isinstance(incoming, str) or not incoming:
+        return current if isinstance(current, str) else None
+    if not isinstance(current, str) or not current:
+        return incoming
+    if current == incoming:
+        return current
+    return "mixed"
 
 
 def _outcome_label(value: Any) -> str | None:

@@ -508,7 +508,9 @@ def render_settings_page(state: Mapping[str, Any]) -> str:
     telemetry_fallbacks = escape(str(telemetry.get("fallback_count", 0)))
     telemetry_usage_events = escape(str(telemetry.get("usage_events", 0)))
     telemetry_usage_tokens = escape(_format_usage_summary(telemetry))
+    telemetry_estimated_cost = escape(_format_cost_summary(telemetry))
     telemetry_outcomes = escape(_compact_counts(telemetry.get("outcome_label_counts", {})))
+    telemetry_pricing_matches = escape(_compact_counts(telemetry.get("pricing_match_counts", {})))
     engine_counts = escape(_compact_counts(telemetry.get("selected_engine_counts", {})))
     backend_counts = escape(_compact_counts(telemetry.get("backend_counts", {})))
     status_counts = escape(_compact_counts(telemetry.get("status_counts", {})))
@@ -788,7 +790,9 @@ def render_settings_page(state: Mapping[str, Any]) -> str:
           <div><h3>fallbacks</h3><strong>{telemetry_fallbacks}</strong></div>
           <div><h3>usage events</h3><strong>{telemetry_usage_events}</strong></div>
           <div><h3>tokens</h3><span class="mono">{telemetry_usage_tokens}</span></div>
+          <div><h3>estimated cost</h3><span class="mono">{telemetry_estimated_cost}</span></div>
           <div><h3>outcomes</h3><span class="mono">{telemetry_outcomes}</span></div>
+          <div><h3>pricing</h3><span class="mono">{telemetry_pricing_matches}</span></div>
           <div><h3>engines</h3><span class="mono">{engine_counts}</span></div>
           <div><h3>backends</h3><span class="mono">{backend_counts}</span></div>
           <div><h3>usage by backend</h3><span class="mono">{usage_backend_counts}</span></div>
@@ -3094,6 +3098,7 @@ def _review_item(item: Mapping[str, Any], state: Mapping[str, Any]) -> str:
         <dt>Backend:</dt><dd>{escape(str(item.get("backend") or "unassigned"))}</dd>
         <dt>Status:</dt><dd>{escape(str(item.get("status") or "unknown"))}</dd>
         <dt>Tokens:</dt><dd class="code">{escape(str(item.get("usage_tokens") or "none"))}</dd>
+        <dt>Cost:</dt><dd class="code">{escape(str(item.get("cost_estimate") or "none"))}</dd>
         <dt>Replayable:</dt><dd>{escape("yes" if item.get("replayable") else "no; private/no full prompt")}</dd>
       </dl>
       <div class="rationale">{reason_html}</div>
@@ -3454,6 +3459,7 @@ def _telemetry_state(
             events_path=events_path,
             feedback_path=feedback_path,
             config_path=config.router_config if config is not None else None,
+            pricing_catalog_path=paths.get("pricing"),
             max_examples=10,
         )
     except Exception as exc:
@@ -3496,6 +3502,7 @@ def _sanitize_telemetry_summary(summary: Mapping[str, Any]) -> dict[str, Any]:
             "confusion_matrix",
             "upstream_model_counts",
             "outcome_label_counts",
+            "pricing_match_counts",
         }:
             payload[key] = _safe_count_mapping(value)
         elif key in {
@@ -3556,8 +3563,19 @@ def _safe_usage_summary(value: Any) -> dict[str, Any]:
         "usage_completion_tokens",
         "usage_total_tokens",
         "usage_cached_input_tokens",
+        "estimated_cost_events",
     ):
         usage[field] = _safe_int(value.get(field))
+    for field in (
+        "estimated_input_cost",
+        "estimated_output_cost",
+        "estimated_cached_input_cost",
+        "estimated_total_cost",
+    ):
+        usage[field] = _safe_float(value.get(field))
+    currency = _safe_event_string(value.get("estimated_cost_currency"), max_chars=16)
+    if currency:
+        usage["estimated_cost_currency"] = currency
     upstream_model = _safe_event_string(value.get("upstream_model"), max_chars=160)
     if upstream_model:
         usage["upstream_model"] = upstream_model
@@ -3567,6 +3585,41 @@ def _safe_usage_summary(value: Any) -> dict[str, Any]:
     return usage
 
 
+def _safe_cost_summary(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    payload: dict[str, Any] = {
+        "pricing_match_status": _safe_event_string(
+            value.get("pricing_match_status"),
+            max_chars=80,
+        ),
+        "estimated_cost_events": _safe_int(value.get("estimated_cost_events")),
+        "estimated_input_cost": _safe_float(value.get("estimated_input_cost")),
+        "estimated_output_cost": _safe_float(value.get("estimated_output_cost")),
+        "estimated_cached_input_cost": _safe_float(
+            value.get("estimated_cached_input_cost")
+        ),
+        "estimated_total_cost": _safe_float(value.get("estimated_total_cost")),
+        "estimated_cost_currency": _safe_event_string(
+            value.get("estimated_cost_currency"),
+            max_chars=16,
+        ),
+        "pricing_catalog_version": _safe_int(value.get("pricing_catalog_version")),
+        "pricing_catalog_source": _safe_event_string(
+            value.get("pricing_catalog_source"),
+            max_chars=160,
+        ),
+        "pricing_source": _safe_event_string(value.get("pricing_source"), max_chars=160),
+        "pricing_effective_date": _safe_event_string(
+            value.get("pricing_effective_date"),
+            max_chars=40,
+        ),
+        "pricing_provider": _safe_event_string(value.get("pricing_provider")),
+        "pricing_model": _safe_event_string(value.get("pricing_model")),
+    }
+    return payload
+
+
 def _empty_usage_summary() -> dict[str, Any]:
     return {
         "events": 0,
@@ -3574,6 +3627,12 @@ def _empty_usage_summary() -> dict[str, Any]:
         "usage_completion_tokens": 0,
         "usage_total_tokens": 0,
         "usage_cached_input_tokens": 0,
+        "estimated_cost_events": 0,
+        "estimated_input_cost": 0.0,
+        "estimated_output_cost": 0.0,
+        "estimated_cached_input_cost": 0.0,
+        "estimated_total_cost": 0.0,
+        "estimated_cost_currency": None,
     }
 
 
@@ -3892,6 +3951,7 @@ def _review_state(paths: Mapping[str, Path]) -> dict[str, Any]:
         payload = review_queue(
             events_path=paths["events"],
             feedback_path=paths["feedback"],
+            pricing_catalog_path=paths.get("pricing"),
             max_rows=8,
         )
         return _sanitize_review_state(payload, feedback_path=paths["feedback"])
@@ -3930,6 +3990,8 @@ def _sanitize_review_state(
                 "upstream_model": _safe_event_string(item.get("upstream_model")),
                 "usage": _safe_usage_summary(item.get("usage")),
                 "usage_tokens": _format_usage_summary(item.get("usage")),
+                "cost": _safe_cost_summary(item.get("cost")),
+                "cost_estimate": _format_cost_summary(item.get("cost")),
                 "routing_profile": _safe_event_string(item.get("routing_profile")),
                 "receipt_summary": _safe_event_string(item.get("receipt_summary")),
                 "reason_codes": _safe_string_list(item.get("reason_codes"))[:8],
@@ -4090,6 +4152,12 @@ def _safe_int(value: Any) -> int:
     if isinstance(value, int):
         return max(0, value)
     return 0
+
+
+def _safe_float(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return 0.0
+    return round(float(value), 8)
 
 
 def _short_event_time(value: Any) -> str:
@@ -4555,8 +4623,9 @@ def _compact_usage_groups(value: Any) -> str:
     parts: list[str] = []
     for key, usage in sorted(value.items(), key=lambda item: str(item[0])):
         formatted = _format_usage_summary(usage)
+        cost = _format_cost_summary(usage)
         if formatted != "none":
-            parts.append(f"{key}:{formatted}")
+            parts.append(f"{key}:{formatted}" + (f" cost={cost}" if cost != "none" else ""))
     return ", ".join(parts) if parts else "none"
 
 
@@ -4572,6 +4641,22 @@ def _format_usage_summary(value: Any) -> str:
     if usage["usage_cached_input_tokens"]:
         parts.append(f"cache={usage['usage_cached_input_tokens']}")
     return " ".join(parts)
+
+
+def _format_cost_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "none"
+    cost = _safe_cost_summary(value)
+    status = cost.get("pricing_match_status")
+    if status and status != "matched":
+        return str(status)
+    total = _safe_float(cost.get("estimated_total_cost"))
+    events = _safe_int(cost.get("estimated_cost_events"))
+    currency = _safe_event_string(cost.get("estimated_cost_currency"), max_chars=16)
+    if total == 0 and events == 0:
+        return "none"
+    amount = f"{total:.8f}".rstrip("0").rstrip(".") or "0"
+    return " ".join(part for part in (amount, currency) if part)
 
 
 def _download_row(item: Mapping[str, Any]) -> str:

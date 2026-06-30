@@ -1,0 +1,52 @@
+catalog_version: 1
+updated_at: "2026-06-30T00:00:00Z"
+notes:
+  - Packaged pricing metadata is local-only and intentionally conservative.
+  - Local/control-plane entries are zero-priced because ModelRouter does not know operator hardware or electricity cost.
+  - The example hosted entry is non-authoritative; replace it with an operator-verified override before reporting spend.
+entries:
+  - provider: local
+    model: modelrouter-web-research
+    input_per_1m: 0
+    output_per_1m: 0
+    cached_input_per_1m: 0
+    currency: USD
+    effective_date: "2026-06-30"
+    source: packaged-local-default
+    notes: Local runtime/control-plane token usage has no provider billable token price in the packaged catalog.
+  - provider: local
+    model: modelrouter-vision-local
+    input_per_1m: 0
+    output_per_1m: 0
+    cached_input_per_1m: 0
+    currency: USD
+    effective_date: "2026-06-30"
+    source: packaged-local-default
+    notes: Local runtime/control-plane token usage has no provider billable token price in the packaged catalog.
+  - provider: local
+    model: modelrouter-local-diffusion
+    input_per_1m: 0
+    output_per_1m: 0
+    cached_input_per_1m: 0
+    currency: USD
+    effective_date: "2026-06-30"
+    source: packaged-local-default
+    notes: Local runtime/control-plane token usage has no provider billable token price in the packaged catalog.
+  - provider: human
+    model: human-confirmation
+    input_per_1m: 0
+    output_per_1m: 0
+    cached_input_per_1m: 0
+    currency: USD
+    effective_date: "2026-06-30"
+    source: packaged-control-plane-default
+    notes: Human confirmation is a safety gate, not a provider-token billing model.
+  - provider: example
+    model: example-hosted-model
+    input_per_1m: 1.0
+    output_per_1m: 3.0
+    cached_input_per_1m: 0.25
+    currency: USD
+    effective_date: "2026-06-30"
+    source: example-placeholder-not-current-pricing
+    notes: Non-authoritative example for tests and operator override shape; do not use as a provider price.

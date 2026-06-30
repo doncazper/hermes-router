@@ -31,6 +31,13 @@ from hermes.plugins.model_router.model_benchmark import (
     plan_backend_benchmarks,
 )
 from hermes.plugins.model_router.policy import ModelRouter, route_prompt
+from hermes.plugins.model_router.pricing_catalog import (
+    DEFAULT_PRICING_CATALOG_NAME,
+    apply_pricing_catalog,
+    default_pricing_override_path,
+    pricing_diff,
+    pricing_status,
+)
 from hermes.plugins.model_router.profiles import ROUTING_PROFILE_VALUES
 from hermes.plugins.model_router.product import (
     DEFAULT_CONFIG_DIR,
@@ -627,6 +634,7 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
         default=10,
         help="Maximum request ids to show per example list",
     )
+    _add_pricing_catalog_arg(telemetry_summary)
     telemetry_summary.add_argument("--json", action="store_true", help="Emit JSON")
     telemetry_summary.add_argument(
         "--fail-on-regression",
@@ -665,8 +673,58 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
         default=20,
         help="Maximum unlabeled events to show",
     )
+    _add_pricing_catalog_arg(telemetry_review)
     telemetry_review.add_argument("--json", action="store_true", help="Emit JSON")
     telemetry_review.set_defaults(func=_cmd_telemetry_review)
+
+    pricing = subparsers.add_parser(
+        "pricing",
+        help="Inspect and maintain local pricing catalog metadata",
+    )
+    pricing_subparsers = pricing.add_subparsers(
+        dest="pricing_command",
+        required=True,
+    )
+    pricing_status_parser = pricing_subparsers.add_parser(
+        "status",
+        help="Show packaged and local pricing catalog status",
+    )
+    _add_pricing_maintenance_args(pricing_status_parser)
+    pricing_status_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    pricing_status_parser.set_defaults(func=_cmd_pricing_status)
+
+    pricing_diff_parser = pricing_subparsers.add_parser(
+        "diff",
+        help="Preview local pricing catalog override changes",
+    )
+    _add_pricing_maintenance_args(pricing_diff_parser)
+    pricing_diff_parser.add_argument(
+        "--context",
+        type=_positive_int,
+        default=3,
+        help="Unified diff context lines",
+    )
+    pricing_diff_parser.add_argument(
+        "--max-lines",
+        type=_positive_int,
+        default=240,
+        help="Maximum diff lines to print",
+    )
+    pricing_diff_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    pricing_diff_parser.set_defaults(func=_cmd_pricing_diff)
+
+    pricing_apply_parser = pricing_subparsers.add_parser(
+        "apply",
+        help="Write packaged pricing metadata to the local override after confirmation",
+    )
+    _add_pricing_maintenance_args(pricing_apply_parser)
+    pricing_apply_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Apply without an interactive prompt",
+    )
+    pricing_apply_parser.add_argument("--json", action="store_true", help="Emit JSON")
+    pricing_apply_parser.set_defaults(func=_cmd_pricing_apply)
 
     setup = subparsers.add_parser(
         "setup",
@@ -1143,6 +1201,30 @@ def _add_telemetry_paths(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_pricing_catalog_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--pricing-catalog",
+        type=Path,
+        default=None,
+        help=(
+            "Optional local pricing catalog override for reporting estimates; "
+            "no network pricing checks are made"
+        ),
+    )
+
+
+def _add_pricing_maintenance_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--override",
+        type=Path,
+        default=default_pricing_override_path(),
+        help=(
+            f"Local pricing override path, defaults to "
+            f"~/.model-router/{DEFAULT_PRICING_CATALOG_NAME}"
+        ),
+    )
+
+
 def _cmd_validate_config(args: argparse.Namespace) -> int:
     try:
         config = load_router_config(args.config)
@@ -1297,6 +1379,7 @@ def _cmd_telemetry_summary(args: argparse.Namespace) -> int:
         events_path=args.events,
         feedback_path=args.feedback,
         config_path=args.config,
+        pricing_catalog_path=args.pricing_catalog,
         max_examples=args.max_examples,
     )
     if args.json:
@@ -1326,6 +1409,7 @@ def _cmd_telemetry_review(args: argparse.Namespace) -> int:
     summary = review_queue(
         events_path=args.events,
         feedback_path=args.feedback,
+        pricing_catalog_path=args.pricing_catalog,
         max_rows=args.max_rows,
     )
     if args.json:
@@ -1333,6 +1417,46 @@ def _cmd_telemetry_review(args: argparse.Namespace) -> int:
     else:
         _print_telemetry_review(summary)
     return 0
+
+
+def _cmd_pricing_status(args: argparse.Namespace) -> int:
+    status = pricing_status(args.override)
+    if args.json:
+        print(json.dumps(status.to_dict(), indent=2, sort_keys=True))
+    else:
+        _print_pricing_status(status)
+    return 0 if status.override_valid and not status.validation_errors else 1
+
+
+def _cmd_pricing_diff(args: argparse.Namespace) -> int:
+    diff = pricing_diff(
+        args.override,
+        context_lines=args.context,
+        max_lines=args.max_lines,
+    )
+    if args.json:
+        print(json.dumps(diff.to_dict(), indent=2, sort_keys=True))
+    else:
+        _print_pricing_diff(diff)
+    return 0 if diff.status.override_valid and not diff.status.validation_errors else 1
+
+
+def _cmd_pricing_apply(args: argparse.Namespace) -> int:
+    confirmed = args.yes
+    if not confirmed and not args.json:
+        diff = pricing_diff(args.override)
+        _print_pricing_diff(diff)
+        if diff.has_changes:
+            answer = input("Apply packaged pricing metadata locally? [y/N] ").strip().lower()
+            confirmed = answer in {"y", "yes"}
+        else:
+            confirmed = True
+    result = apply_pricing_catalog(args.override, confirmed=confirmed)
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+    else:
+        _print_pricing_apply_result(result)
+    return 0 if result.ok else 1
 
 
 def _cmd_setup_scan(args: argparse.Namespace) -> int:
@@ -2165,6 +2289,65 @@ def _print_catalog_apply_result(result) -> None:
         print(f"- {note}")
 
 
+def _print_pricing_status(status) -> None:
+    override_state = (
+        "missing"
+        if not status.override_exists
+        else ("valid" if status.override_valid else "invalid")
+    )
+    print("Pricing Catalog Status")
+    print(f"Packaged pricing catalog: v{status.packaged_catalog_version}")
+    print(f"Packaged entries: {status.packaged_entry_count}")
+    print(f"Override: {status.override_path} ({override_state})")
+    if status.override_catalog_version is not None:
+        print(f"Override catalog: v{status.override_catalog_version}")
+    print(f"Active catalog: v{status.active_catalog_version}")
+    print(f"Active source: {status.active_catalog_source}")
+    print(f"Active entries: {status.active_entry_count}")
+    print(f"Remote checks: {str(status.remote_checks_enabled).lower()}")
+    print("Validation:")
+    if not status.validation_errors:
+        print("- none")
+    for error in status.validation_errors:
+        print(f"- {error}")
+    print("Notes:")
+    for note in status.notes:
+        print(f"- {note}")
+
+
+def _print_pricing_diff(diff) -> None:
+    print("Pricing Catalog Diff")
+    print(f"Action: {diff.action}")
+    print(f"Changes: {str(diff.has_changes).lower()}")
+    print(f"Override: {diff.status.override_path}")
+    if diff.diff_lines:
+        print("Diff:")
+        for line in diff.diff_lines:
+            print(line)
+    else:
+        print("Diff: none")
+    print("Notes:")
+    if not diff.notes:
+        print("- none")
+    for note in diff.notes:
+        print(f"- {note}")
+
+
+def _print_pricing_apply_result(result) -> None:
+    print("Pricing Catalog Apply")
+    print(f"OK: {str(result.ok).lower()}")
+    print(f"Executed: {str(result.executed).lower()}")
+    print(f"Action: {result.action}")
+    print(f"Override: {result.override_path}")
+    if result.backup_path:
+        print(f"Backup: {result.backup_path}")
+    print("Notes:")
+    if not result.notes:
+        print("- none")
+    for note in result.notes:
+        print(f"- {note}")
+
+
 def _print_dogfood_report(report) -> None:
     print("Proxy Dogfood")
     print(f"Executed: {str(report.executed).lower()}")
@@ -2325,7 +2508,12 @@ def _print_telemetry_summary(summary: dict[str, Any]) -> None:
         f"total={summary.get('usage_total_tokens', 0)}, "
         f"cached_input={summary.get('usage_cached_input_tokens', 0)}"
     )
+    print(f"Estimated cost events: {summary.get('estimated_cost_events', 0)}")
+    cost = _format_cost_summary(summary)
+    print(f"Estimated cost: {cost or 'none'}")
+    print(f"Pricing catalog: {summary.get('pricing_catalog_source', 'unknown')}")
     _print_counter("Outcome labels", summary.get("outcome_label_counts", {}))
+    _print_counter("Pricing matches", summary.get("pricing_match_counts", {}))
     _print_counter("Selected engines", summary["selected_engine_counts"])
     _print_counter("Statuses", summary["status_counts"])
     _print_usage_groups("Usage by route", summary.get("usage_by_selected_engine"))
@@ -2393,6 +2581,11 @@ def _print_telemetry_review(summary: dict[str, Any]) -> None:
             print(f"  summary: {item['receipt_summary']}")
         if usage:
             print(f"  usage: {usage}")
+        cost = _format_cost_summary(item.get("cost"))
+        if cost:
+            print(f"  cost: {cost}")
+        elif isinstance(item.get("cost"), dict):
+            print(f"  cost: {item['cost'].get('pricing_match_status', 'unknown')}")
         print(f"  reason codes: {reason_codes}")
         print(f"  feedback: {item['suggested_feedback_command']}")
     if summary["truncated"]:
@@ -2414,7 +2607,9 @@ def _print_usage_groups(title: str, values: Any) -> None:
         return
     for key, usage in values.items():
         formatted = _format_usage_summary(usage)
-        print(f"- {key}: {formatted or 'no usage'}")
+        cost = _format_cost_summary(usage)
+        suffix = f"; cost={cost}" if cost else ""
+        print(f"- {key}: {formatted or 'no usage'}{suffix}")
 
 
 def _format_usage_summary(value: Any) -> str:
@@ -2437,6 +2632,26 @@ def _format_usage_summary(value: Any) -> str:
     if isinstance(upstream_model, str) and upstream_model:
         parts.append(f"upstream_model={upstream_model}")
     return ", ".join(parts)
+
+
+def _format_cost_summary(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+    if value.get("pricing_match_status") not in {None, "matched"}:
+        return ""
+    events = _safe_usage_int(value.get("estimated_cost_events"))
+    total = value.get("estimated_total_cost")
+    currency = value.get("estimated_cost_currency") or ""
+    if not isinstance(total, (int, float)) or total < 0:
+        return ""
+    if events == 0 and total == 0:
+        return ""
+    parts = [f"{total:.8f}".rstrip("0").rstrip(".") or "0"]
+    if isinstance(currency, str) and currency:
+        parts.append(currency)
+    if events:
+        parts.append(f"events={events}")
+    return " ".join(parts)
 
 
 def _safe_usage_int(value: Any) -> int:

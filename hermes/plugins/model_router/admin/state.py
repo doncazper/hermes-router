@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from hermes.plugins.model_router.admin.supervisor import ProxyProcessSupervisor
+from hermes.plugins.model_router.pricing_catalog import DEFAULT_PRICING_CATALOG_NAME
 
 
 def settings_paths(config_dir: str | Path) -> dict[str, Path]:
@@ -23,6 +24,7 @@ def settings_paths(config_dir: str | Path) -> dict[str, Path]:
         "models": base / "models",
         "benchmarks": base / "benchmarks.json",
         "workflow_benchmarks": base / "workflow-benchmarks.json",
+        "pricing": base / DEFAULT_PRICING_CATALOG_NAME,
     }
 
 
