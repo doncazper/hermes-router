@@ -4,9 +4,16 @@ import subprocess
 from typing import Any
 
 from fastapi.testclient import TestClient
+import pytest
 import yaml
 
 import hermes.plugins.model_router.settings_ui as settings_ui
+from hermes.plugins.model_router.admin.actions import (
+    AdminActionError,
+    action_descriptors,
+    run_admin_action,
+)
+from hermes.plugins.model_router.admin.state import build_admin_state
 from hermes.plugins.model_router.model_benchmark import BenchmarkResult, BenchmarkTarget
 from hermes.plugins.model_router.product import initialize_product_config
 from hermes.plugins.model_router.proxy_config import load_proxy_config
@@ -99,8 +106,25 @@ def test_settings_state_redacts_literal_api_keys(tmp_path, monkeypatch):
     assert "secret-proxy-key" not in serialized
     assert "secret-backend-key" not in serialized
     assert state["proxy"]["api_key_configured"] is True
+    assert state["proxy"]["routing_mode"] == "decision"
+    assert state["proxy"]["decision_layer_enabled"] is True
+    assert state["proxy"]["default_backend"] is None
+    assert state["proxy"]["default_model"] is None
+    assert state["proxy"]["respect_client_model"] is False
+    assert state["proxy"]["unknown_model_behavior"] == "fallback_to_default"
+    assert state["proxy"]["safety_gate_mode"] == "decision_only"
+    assert any(action["id"] == "config.save_proxy_patch" for action in state["actions"])
     fast = next(backend for backend in state["backends"] if backend["name"] == "fast")
     assert fast["api_key_configured"] is True
+
+
+def test_admin_state_entrypoint_matches_settings_state(tmp_path, monkeypatch):
+    _init_config(tmp_path)
+    _stub_scan(monkeypatch)
+    paths = settings_ui.settings_paths(tmp_path)
+
+    assert build_admin_state(paths)["proxy"] == settings_ui.build_settings_state(paths)["proxy"]
+    assert "proxy.start" in {action["id"] for action in action_descriptors()}
 
 
 def test_settings_home_page_loads_without_chat_surface(tmp_path, monkeypatch):
@@ -323,7 +347,7 @@ def test_save_config_can_apply_preset_template_explicitly(tmp_path, monkeypatch)
 
     response = TestClient(app).post(
         "/api/save-config",
-        json={"apply_preset": True, "preset": "ollama"},
+        json={"confirm": True, "apply_preset": True, "preset": "ollama"},
     )
 
     assert response.status_code == 200
@@ -342,6 +366,7 @@ def test_save_config_patches_structured_fields_and_validates(tmp_path, monkeypat
     response = TestClient(app).post(
         "/api/save-config",
         json={
+            "confirm": True,
             "proxy": {"host": "127.0.0.1", "port": "9099"},
             "observability": {
                 "enabled": True,
@@ -374,7 +399,7 @@ def test_save_config_patches_routing_profile(tmp_path, monkeypatch):
 
     response = TestClient(app).post(
         "/api/save-config",
-        json={"proxy": {"routing_profile": "private"}},
+        json={"confirm": True, "proxy": {"routing_profile": "private"}},
     )
 
     assert response.status_code == 200
@@ -393,6 +418,7 @@ def test_save_config_patches_backend_policy(tmp_path, monkeypatch):
     response = TestClient(app).post(
         "/api/save-config",
         json={
+            "confirm": True,
             "backend_policy": {
                 "backend_allowlist": "fast, balanced",
                 "backend_denylist": ["reasoning"],
@@ -450,9 +476,9 @@ def test_proxy_supervisor_endpoints_start_stop_restart_without_shell(tmp_path, m
     )
     client = TestClient(app)
 
-    started = client.post("/api/proxy/start").json()
-    restarted = client.post("/api/proxy/restart").json()
-    stopped = client.post("/api/proxy/stop").json()
+    started = client.post("/api/proxy/start", json={"confirm": True}).json()
+    restarted = client.post("/api/proxy/restart", json={"confirm": True}).json()
+    stopped = client.post("/api/proxy/stop", json={"confirm": True}).json()
 
     assert started["proxy"]["state"] == "running"
     assert restarted["proxy"]["state"] == "running"
@@ -559,6 +585,7 @@ def test_feedback_api_writes_cli_compatible_jsonl(tmp_path, monkeypatch):
     response = TestClient(app).post(
         "/api/feedback",
         json={
+            "confirm": True,
             "request_id": "req-123",
             "expected_engine": "code_agent",
             "notes": "should have used code",
@@ -571,3 +598,34 @@ def test_feedback_api_writes_cli_compatible_jsonl(tmp_path, monkeypatch):
     assert row["request_id"] == "req-123"
     assert row["expected_engine"] == "code_agent"
     assert row["notes"] == "should have used code"
+
+
+def test_mutating_admin_actions_require_confirmation(tmp_path, monkeypatch):
+    _init_config(tmp_path)
+    _stub_scan(monkeypatch)
+    paths = settings_ui.settings_paths(tmp_path)
+    app = settings_ui.create_settings_app(config_dir=tmp_path)
+    client = TestClient(app)
+
+    blocked_save = client.post(
+        "/api/save-config",
+        json={"proxy": {"routing_profile": "private"}},
+    )
+    blocked_proxy = client.post("/api/proxy/start", json={})
+    blocked_feedback = client.post(
+        "/api/feedback",
+        json={"request_id": "req-123", "expected_engine": "code_agent"},
+    )
+
+    assert blocked_save.status_code == 400
+    assert blocked_save.json()["error"] == "Config save requires confirm=true."
+    assert blocked_proxy.status_code == 400
+    assert blocked_proxy.json()["error"] == "Proxy start requires confirm=true."
+    assert blocked_feedback.status_code == 400
+    assert blocked_feedback.json()["error"] == "Feedback submission requires confirm=true."
+    with pytest.raises(AdminActionError, match="Config save requires confirm=true"):
+        run_admin_action(
+            "config.save_proxy_patch",
+            paths,
+            {"proxy": {"routing_profile": "private"}},
+        )

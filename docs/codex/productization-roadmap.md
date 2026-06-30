@@ -81,6 +81,14 @@ Minimum useful slice:
 Done when existing settings behavior still works, new shared-state tests cover
 valid/missing/invalid config, and mutating actions reject missing confirmation.
 
+Current implementation note: M0 now has a shared admin package at
+`hermes/plugins/model_router/admin/` with public entry points for admin state,
+admin actions, proxy process supervision, and proxy config patching. The web
+settings UI calls that shared action layer and keeps compatibility wrappers for
+existing callers. Some dashboard state helper internals still live in
+`settings_ui.py`; future M1/M3 work should keep moving non-rendering helpers
+behind the shared admin boundary as the contract grows.
+
 ### M1: Basic Router Mode
 
 Add `proxy.routing_mode` with `decision`, `manual`, `model_map`, and

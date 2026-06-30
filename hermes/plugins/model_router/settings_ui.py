@@ -9,13 +9,10 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
 from html import escape
 import json
 from pathlib import Path
 import shlex
-import subprocess
-import sys
 import tempfile
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -23,26 +20,33 @@ import webbrowser
 
 import yaml
 
-from hermes.plugins.model_router.catalog_update import (
-    apply_catalog_update,
-    catalog_diff,
-    catalog_status,
+from hermes.plugins.model_router.admin.actions import (
+    AdminActionError,
+    action_descriptors,
+    run_admin_action,
 )
+from hermes.plugins.model_router.admin.config_edit import (
+    save_proxy_config_patch as _shared_save_proxy_config_patch,
+)
+from hermes.plugins.model_router.admin.state import build_admin_state, settings_paths
+from hermes.plugins.model_router.admin.supervisor import (
+    ProxyProcessStatus,
+    ProxyProcessSupervisor,
+)
+from hermes.plugins.model_router.catalog_update import catalog_status
 from hermes.plugins.model_router.config import RouterConfigError, load_router_config
 from hermes.plugins.model_router.product import (
     DEFAULT_CONFIG_DIR,
     DEFAULT_PROXY_PORT,
     PRESETS,
-    doctor_proxy_config,
+    doctor_proxy_config,  # noqa: F401 - compatibility patch point for tests/callers.
     initialize_product_config,
 )
 from hermes.plugins.model_router.model_benchmark import (
     BenchmarkResult,
     BenchmarkTarget,
     benchmark_summary,
-    execute_benchmark_plan,
     load_benchmark_results,
-    plan_backend_benchmarks,
 )
 from hermes.plugins.model_router.proxy_config import (
     ProxyConfigError,
@@ -52,14 +56,11 @@ from hermes.plugins.model_router.proxy_config import (
 from hermes.plugins.model_router.profiles import ROUTING_PROFILE_VALUES
 from hermes.plugins.model_router.routing_log import (
     PROMPT_CAPTURE_MODES,
-    RoutingLogWriter,
-    build_feedback,
     read_jsonl,
     redact_text,
 )
 from hermes.plugins.model_router.setup_assistant import (
     DownloadPlan,
-    execute_download_plan,
     plan_model_downloads,
     recommend_setup,
     scan_local_environment,
@@ -118,97 +119,6 @@ class SettingsDependencyError(RuntimeError):
     """Raised when optional settings UI dependencies are not installed."""
 
 
-@dataclass
-class ProxyProcessStatus:
-    state: str
-    pid: int | None = None
-    log_path: str | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {"state": self.state}
-        if self.pid is not None:
-            payload["pid"] = self.pid
-        if self.log_path is not None:
-            payload["log_path"] = self.log_path
-        return payload
-
-
-class ProxyProcessSupervisor:
-    """Settings-owned supervisor for the proxy process only."""
-
-    def __init__(
-        self,
-        *,
-        config_path: str | Path,
-        log_path: str | Path,
-        process_factory: Callable[..., subprocess.Popen] = subprocess.Popen,
-    ) -> None:
-        self.config_path = Path(config_path).expanduser()
-        self.log_path = Path(log_path).expanduser()
-        self.process_factory = process_factory
-        self._process: subprocess.Popen | None = None
-        self._log_handle: Any | None = None
-
-    def status(self) -> ProxyProcessStatus:
-        if self._process is None:
-            return ProxyProcessStatus("stopped", log_path=str(self.log_path))
-        returncode = self._process.poll()
-        if returncode is None:
-            return ProxyProcessStatus(
-                "running",
-                pid=self._process.pid,
-                log_path=str(self.log_path),
-            )
-        self._close_log_handle()
-        return ProxyProcessStatus("stopped", log_path=str(self.log_path))
-
-    def start(self) -> ProxyProcessStatus:
-        status = self.status()
-        if status.state == "running":
-            return status
-        self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        self._log_handle = self.log_path.open("a", encoding="utf-8", buffering=1)
-        command = [
-            sys.executable,
-            "-m",
-            "hermes.plugins.model_router.proxy",
-            "--config",
-            str(self.config_path),
-        ]
-        self._process = self.process_factory(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=self._log_handle,
-            stderr=subprocess.STDOUT,
-            text=True,
-            shell=False,
-        )
-        return self.status()
-
-    def stop(self, *, timeout_seconds: float = 5.0) -> ProxyProcessStatus:
-        if self._process is None:
-            self._close_log_handle()
-            return ProxyProcessStatus("stopped", log_path=str(self.log_path))
-        if self._process.poll() is None:
-            self._process.terminate()
-            try:
-                self._process.wait(timeout=timeout_seconds)
-            except subprocess.TimeoutExpired:
-                self._process.kill()
-                self._process.wait(timeout=timeout_seconds)
-        self._close_log_handle()
-        return ProxyProcessStatus("stopped", log_path=str(self.log_path))
-
-    def restart(self) -> ProxyProcessStatus:
-        self.stop()
-        return self.start()
-
-    def _close_log_handle(self) -> None:
-        if self._log_handle is not None:
-            self._log_handle.close()
-            self._log_handle = None
-
-
 def create_settings_app(
     *,
     config_dir: str | Path = DEFAULT_CONFIG_DIR,
@@ -245,189 +155,112 @@ def create_settings_app(
     async def api_state() -> JSONResponse:
         return JSONResponse(build_settings_state(paths, supervisor))
 
+    def action_error_response(exc: AdminActionError) -> JSONResponse:
+        payload = {"ok": False, "error": str(exc)}
+        payload.update(exc.details)
+        return JSONResponse(payload, status_code=exc.status_code)
+
+    def action_payload(result: Mapping[str, Any]) -> dict[str, Any]:
+        payload = result.get("payload", {})
+        return payload if isinstance(payload, dict) else {"ok": False}
+
+    async def run_endpoint_action(
+        action_id: str,
+        request: Request | None = None,
+    ) -> JSONResponse:
+        payload = await _request_payload(request) if request is not None else {}
+        try:
+            result = run_admin_action(
+                action_id,
+                paths,
+                payload,
+                supervisor=supervisor,
+                download_runner=download_runner,
+                benchmark_runner=benchmark_runner,
+            )
+        except AdminActionError as exc:
+            return action_error_response(exc)
+        return JSONResponse(action_payload(result))
+
+    @app.post("/api/action")
+    async def api_action(request: Request) -> JSONResponse:
+        payload = await _request_payload(request)
+        action_id = str(payload.get("action_id", "")).strip()
+        action_body = payload.get("payload")
+        if isinstance(action_body, dict):
+            body = dict(action_body)
+        else:
+            body = {
+                key: value
+                for key, value in payload.items()
+                if key not in {"action_id", "payload"}
+            }
+        if "confirm" in payload and "confirm" not in body:
+            body["confirm"] = payload["confirm"]
+        try:
+            result = run_admin_action(
+                action_id,
+                paths,
+                body,
+                supervisor=supervisor,
+                download_runner=download_runner,
+                benchmark_runner=benchmark_runner,
+            )
+        except AdminActionError as exc:
+            return action_error_response(exc)
+        return JSONResponse(result)
+
     @app.post("/api/scan")
     async def api_scan() -> JSONResponse:
-        discovery = scan_local_environment()
-        benchmark_results = load_benchmark_results(paths["benchmarks"])
-        recommendation = recommend_setup(
-            discovery,
-            download_alternatives=2,
-            benchmark_results=benchmark_results,
-        )
-        plan = _download_plan(
-            paths,
-            discovery=discovery,
-            benchmark_results=benchmark_results,
-        )
-        return JSONResponse(
-            {
-                "discovery": discovery.to_dict(),
-                "recommendation": recommendation.to_dict(),
-                "download_plan": plan.to_dict(),
-                "benchmarks": benchmark_summary(paths["benchmarks"]),
-            }
-        )
+        return await run_endpoint_action("model.scan")
 
     @app.post("/api/save-config")
     async def api_save_config(request: Request) -> JSONResponse:
-        payload = await _request_payload(request)
-        try:
-            result = save_proxy_config_patch(paths["proxy_config"], payload)
-        except (OSError, ProxyConfigError, ValueError, yaml.YAMLError) as exc:
-            return JSONResponse(
-                {"ok": False, "error": str(exc)},
-                status_code=400,
-            )
-        return JSONResponse({"ok": True, **result})
+        return await run_endpoint_action("config.save_proxy_patch", request)
 
     @app.post("/api/doctor")
     async def api_doctor() -> JSONResponse:
-        report = doctor_proxy_config(paths["proxy_config"])
-        return JSONResponse(report.to_dict())
+        return await run_endpoint_action("doctor.run")
 
     @app.post("/api/proxy/start")
-    async def api_proxy_start() -> JSONResponse:
-        try:
-            return JSONResponse({"ok": True, "proxy": supervisor.start().to_dict()})
-        except OSError as exc:
-            return JSONResponse(
-                {"ok": False, "error": str(exc), "proxy": supervisor.status().to_dict()},
-                status_code=500,
-            )
+    async def api_proxy_start(request: Request) -> JSONResponse:
+        return await run_endpoint_action("proxy.start", request)
 
     @app.post("/api/proxy/stop")
-    async def api_proxy_stop() -> JSONResponse:
-        return JSONResponse({"ok": True, "proxy": supervisor.stop().to_dict()})
+    async def api_proxy_stop(request: Request) -> JSONResponse:
+        return await run_endpoint_action("proxy.stop", request)
 
     @app.post("/api/proxy/restart")
-    async def api_proxy_restart() -> JSONResponse:
-        try:
-            return JSONResponse({"ok": True, "proxy": supervisor.restart().to_dict()})
-        except OSError as exc:
-            return JSONResponse(
-                {"ok": False, "error": str(exc), "proxy": supervisor.status().to_dict()},
-                status_code=500,
-            )
+    async def api_proxy_restart(request: Request) -> JSONResponse:
+        return await run_endpoint_action("proxy.restart", request)
 
     @app.post("/api/download/plan")
     async def api_download_plan(request: Request) -> JSONResponse:
-        payload = await _request_payload(request)
-        try:
-            plan = _download_plan_from_payload(paths, payload)
-        except ValueError as exc:
-            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
-        return JSONResponse({"ok": True, "plan": plan.to_dict()})
+        return await run_endpoint_action("model.download.plan", request)
 
     @app.post("/api/download/run")
     async def api_download_run(request: Request) -> JSONResponse:
-        payload = await _request_payload(request)
-        if not _payload_bool(payload, "confirm", default=False):
-            return JSONResponse(
-                {
-                    "ok": False,
-                    "error": "Download execution requires confirm=true.",
-                },
-                status_code=400,
-            )
-        try:
-            plan = _download_plan_from_payload(paths, payload)
-        except ValueError as exc:
-            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
-        result = execute_download_plan(
-            plan,
-            execute=True,
-            confirmed=True,
-            runner=download_runner,
-        )
-        return JSONResponse({"ok": result.ok, "result": result.to_dict()})
+        return await run_endpoint_action("model.download.run", request)
 
     @app.post("/api/benchmark/plan")
     async def api_benchmark_plan() -> JSONResponse:
-        try:
-            targets = plan_backend_benchmarks(paths["proxy_config"])
-        except Exception as exc:
-            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
-        return JSONResponse(
-            {
-                "ok": True,
-                "targets": [target.to_dict() for target in targets],
-                "output_path": str(paths["benchmarks"]),
-            }
-        )
+        return await run_endpoint_action("benchmark.plan")
 
     @app.post("/api/benchmark/run")
     async def api_benchmark_run(request: Request) -> JSONResponse:
-        payload = await _request_payload(request)
-        if not _payload_bool(payload, "confirm", default=False):
-            return JSONResponse(
-                {
-                    "ok": False,
-                    "error": "Benchmark execution requires confirm=true.",
-                },
-                status_code=400,
-            )
-        try:
-            targets = plan_backend_benchmarks(paths["proxy_config"])
-        except Exception as exc:
-            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
-        result = execute_benchmark_plan(
-            targets,
-            output_path=paths["benchmarks"],
-            execute=True,
-            confirmed=True,
-            runner=benchmark_runner,
-        )
-        return JSONResponse({"ok": result.ok, "result": result.to_dict()})
+        return await run_endpoint_action("benchmark.run", request)
 
     @app.post("/api/catalog/diff")
     async def api_catalog_diff() -> JSONResponse:
-        diff = catalog_diff(paths["model_router_config"])
-        return JSONResponse({"ok": True, "diff": diff.to_dict()})
+        return await run_endpoint_action("catalog.diff")
 
     @app.post("/api/catalog/apply")
     async def api_catalog_apply(request: Request) -> JSONResponse:
-        payload = await _request_payload(request)
-        if not _payload_bool(payload, "confirm", default=False):
-            return JSONResponse(
-                {
-                    "ok": False,
-                    "error": "Catalog apply requires confirm=true.",
-                },
-                status_code=400,
-            )
-        result = apply_catalog_update(paths["model_router_config"], confirmed=True)
-        return JSONResponse(
-            {
-                "ok": result.ok,
-                "result": result.to_dict(),
-                "catalog": catalog_status(paths["model_router_config"]).to_dict(),
-            }
-        )
+        return await run_endpoint_action("catalog.apply", request)
 
     @app.post("/api/feedback")
     async def api_feedback(request: Request) -> JSONResponse:
-        payload = await _request_payload(request)
-        request_id = str(payload.get("request_id", "")).strip()
-        expected_engine = str(payload.get("expected_engine", "")).strip()
-        notes = str(payload.get("notes", "")).strip() or None
-        if not request_id or not expected_engine:
-            return JSONResponse(
-                {"ok": False, "error": "request_id and expected_engine are required."},
-                status_code=400,
-            )
-        writer = RoutingLogWriter(paths["feedback"])
-        if not writer.write(
-            build_feedback(
-                request_id=request_id,
-                expected_engine=expected_engine,
-                notes=notes,
-            )
-        ):
-            return JSONResponse(
-                {"ok": False, "error": "Failed to write feedback."},
-                status_code=500,
-            )
-        return JSONResponse({"ok": True, "feedback_path": str(paths["feedback"])})
+        return await run_endpoint_action("telemetry.feedback.write", request)
 
     return app
 
@@ -458,21 +291,6 @@ def run_settings_server(
     return 0
 
 
-def settings_paths(config_dir: str | Path) -> dict[str, Path]:
-    base = Path(config_dir).expanduser()
-    return {
-        "config_dir": base,
-        "model_router_config": base / "model_router.yaml",
-        "proxy_config": base / "routing_proxy.yaml",
-        "events": base / "logs" / "routing-events.jsonl",
-        "feedback": base / "routing-feedback.jsonl",
-        "settings_proxy_log": base / "logs" / "settings-proxy.log",
-        "models": base / "models",
-        "benchmarks": base / "benchmarks.json",
-        "workflow_benchmarks": base / "workflow-benchmarks.json",
-    }
-
-
 def _ensure_local_host(host: str) -> None:
     if host not in {"127.0.0.1", "localhost", "::1"}:
         raise SettingsDependencyError(
@@ -481,6 +299,20 @@ def _ensure_local_host(host: str) -> None:
 
 
 def build_settings_state(
+    paths: Mapping[str, Path],
+    supervisor: ProxyProcessSupervisor | None = None,
+) -> dict[str, Any]:
+    return build_admin_state(paths, supervisor)
+
+
+def save_proxy_config_patch(
+    config_path: str | Path,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    return _shared_save_proxy_config_patch(config_path, payload)
+
+
+def _build_settings_state_impl(
     paths: Mapping[str, Path],
     supervisor: ProxyProcessSupervisor | None = None,
 ) -> dict[str, Any]:
@@ -540,12 +372,13 @@ def build_settings_state(
         "recent_events": recent_events,
         "review": _review_state(paths),
         "model_options": _model_options_state(discovery, download_plan),
+        "actions": action_descriptors(),
         "not_chat_ui": True,
     }
     return state
 
 
-def save_proxy_config_patch(
+def _save_proxy_config_patch_impl(
     config_path: str | Path,
     payload: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -780,9 +613,9 @@ def render_settings_page(state: Mapping[str, Any]) -> str:
       <section>
         <h2>Proxy Process</h2>
         <div class="toolbar">
-          <button class="primary" onclick="postAction('/api/proxy/start')">Start</button>
-          <button onclick="postAction('/api/proxy/restart')">Restart</button>
-          <button class="danger" onclick="postAction('/api/proxy/stop')">Stop</button>
+          <button class="primary" onclick="postAction('/api/proxy/start', {{confirm: true}})">Start</button>
+          <button onclick="postAction('/api/proxy/restart', {{confirm: true}})">Restart</button>
+          <button class="danger" onclick="postAction('/api/proxy/stop', {{confirm: true}})">Stop</button>
           <button {doctor_disabled} onclick="postAction('/api/doctor')">Run doctor</button>
         </div>
         <p class="muted">Endpoint: <span class="mono">{proxy_endpoint}</span></p>
@@ -984,15 +817,17 @@ def render_settings_page(state: Mapping[str, Any]) -> str:
         }},
         backends: backendPayload()
       }};
+      payload.confirm = true;
       await postAction('/api/save-config', payload);
     }}
     async function applyPreset() {{
       const preset = document.getElementById('preset').value;
       if (!window.confirm('Replace current config with the ' + preset + ' preset?')) return;
-      await postAction('/api/save-config', {{apply_preset: true, preset: preset}});
+      await postAction('/api/save-config', {{confirm: true, apply_preset: true, preset: preset}});
     }}
     async function sendFeedback() {{
       await postAction('/api/feedback', {{
+        confirm: true,
         request_id: document.getElementById('feedback-request-id').value,
         expected_engine: document.getElementById('feedback-engine').value,
         notes: document.getElementById('feedback-notes').value
@@ -1908,7 +1743,7 @@ async function postAction(path, payload = {}) {
 async function saveProfile() {
   const active = document.querySelector('.segment.active');
   const profile = active ? active.dataset.profileValue : 'balanced';
-  await postAction('/api/save-config', {proxy: {routing_profile: profile}});
+  await postAction('/api/save-config', {confirm: true, proxy: {routing_profile: profile}});
 }
 function backendPayload() {
   const backends = {};
@@ -1946,15 +1781,17 @@ async function saveConfig() {
     },
     backends: backendPayload()
   };
+  payload.confirm = true;
   await postAction('/api/save-config', payload);
 }
 async function applyPreset() {
   const preset = document.getElementById('preset').value;
   if (!window.confirm('Replace current config with the ' + preset + ' preset?')) return;
-  await postAction('/api/save-config', {apply_preset: true, preset: preset});
+  await postAction('/api/save-config', {confirm: true, apply_preset: true, preset: preset});
 }
 async function sendFeedback() {
   await postAction('/api/feedback', {
+    confirm: true,
     request_id: document.getElementById('feedback-request-id').value,
     expected_engine: document.getElementById('feedback-engine').value,
     notes: document.getElementById('feedback-notes').value
@@ -1993,6 +1830,7 @@ async function sendReviewFeedback(requestId) {
   const notes = document.getElementById('notes-' + requestId);
   if (!expected || !expected.value) return;
   await postAction('/api/feedback', {
+    confirm: true,
     request_id: requestId,
     expected_engine: expected.value,
     notes: notes ? notes.value : ''
@@ -2330,9 +2168,9 @@ def _providers_runtime_section(state: Mapping[str, Any]) -> str:
         {_policy_summary_fields(state)}
         <div class="runtime-actions">
           <div class="action-group">
-            <button class="button-blue" type="button" onclick="postAction('/api/proxy/start')">{_icon("play")} Start</button>
-            <button class="button-red" type="button" onclick="postAction('/api/proxy/stop')">{_icon("stop")} Stop</button>
-            <button class="button-blue" type="button" onclick="postAction('/api/proxy/restart')">{_icon("refresh")} Restart</button>
+            <button class="button-blue" type="button" onclick="postAction('/api/proxy/start', {{confirm: true}})">{_icon("play")} Start</button>
+            <button class="button-red" type="button" onclick="postAction('/api/proxy/stop', {{confirm: true}})">{_icon("stop")} Stop</button>
+            <button class="button-blue" type="button" onclick="postAction('/api/proxy/restart', {{confirm: true}})">{_icon("refresh")} Restart</button>
           </div>
           <div class="action-group">
             <button type="button">{_icon("document")} Logs</button>
@@ -2637,7 +2475,7 @@ def _settings_follow_through_panel(state: Mapping[str, Any]) -> str:
       <div class="settings-actions">
         <button type="button" onclick="applyPreset()">Apply preset template</button>
         <button class="button-blue" type="button" onclick="saveConfig()">Save config</button>
-        <button type="button" onclick="saveConfig().then(() => postAction('/api/proxy/restart'))">Apply and restart proxy</button>
+        <button type="button" onclick="saveConfig().then(() => postAction('/api/proxy/restart', {{confirm: true}}))">Apply and restart proxy</button>
         <button type="button" onclick="scanModels()">Scan models</button>
         <button type="button" onclick="postAction('/api/doctor')">Run doctor</button>
         <span id="last-action" class="muted" aria-live="polite"></span>
@@ -2913,7 +2751,7 @@ def _mini_popup(
         </div>
         <div class="mini-actions">
           <button type="button" onclick="jumpTo('dashboard')">{_icon("open")}<span>Open Dashboard</span></button>
-          <button type="button" onclick="postAction('/api/proxy/stop')">{_icon("pause")}<span>Pause Proxy</span></button>
+          <button type="button" onclick="postAction('/api/proxy/stop', {{confirm: true}})">{_icon("pause")}<span>Pause Proxy</span></button>
           <button type="button" onclick="jumpTo('receipt-title')">{_icon("document")}<span>Route Receipt</span></button>
           <button type="button" onclick="jumpTo('providers')">{_icon("server")}<span>Providers</span></button>
           <button type="button" onclick="jumpTo('safety')">{_icon("shield")}<span>Safety</span></button>
@@ -2985,15 +2823,39 @@ async def _request_payload(request: Any) -> dict[str, Any]:
 
 def _redacted_proxy_state(config: RoutingProxyConfig | None) -> dict[str, Any]:
     if config is None:
-        return {}
+        return {
+            "routing_mode": "decision",
+            "decision_layer_enabled": True,
+            "default_backend": None,
+            "default_model": None,
+            "respect_client_model": False,
+            "unknown_model_behavior": "fallback_to_default",
+            "safety_gate_mode": "decision_only",
+        }
+    proxy = config.proxy
+    routing_mode = str(getattr(proxy, "routing_mode", "decision") or "decision")
     return {
-        "host": config.proxy.host,
-        "port": config.proxy.port,
-        "routing_profile": config.proxy.routing_profile,
-        "endpoint": f"http://{config.proxy.host}:{config.proxy.port}/v1",
-        "model_ids": list(config.proxy.model_ids),
-        "api_key_configured": bool(config.proxy.api_key or config.proxy.api_key_env),
-        "api_key_env": config.proxy.api_key_env,
+        "host": proxy.host,
+        "port": proxy.port,
+        "routing_profile": proxy.routing_profile,
+        "routing_mode": routing_mode,
+        "decision_layer_enabled": routing_mode == "decision",
+        "default_backend": getattr(proxy, "default_backend", None),
+        "default_model": getattr(proxy, "default_model", None),
+        "respect_client_model": bool(
+            getattr(proxy, "respect_client_model", routing_mode != "decision")
+        ),
+        "unknown_model_behavior": str(
+            getattr(proxy, "unknown_model_behavior", "fallback_to_default")
+            or "fallback_to_default"
+        ),
+        "safety_gate_mode": str(
+            getattr(proxy, "safety_gate_mode", "decision_only") or "decision_only"
+        ),
+        "endpoint": f"http://{proxy.host}:{proxy.port}/v1",
+        "model_ids": list(proxy.model_ids),
+        "api_key_configured": bool(proxy.api_key or proxy.api_key_env),
+        "api_key_env": proxy.api_key_env,
     }
 
 
