@@ -594,7 +594,10 @@ mutating files. M3 now adds the settings Models section backed by shared state:
 Installed, Discover, Recommended, Downloads, and Assignments. M4 now adds
 runtime adapter foundations so settings/TUI state can report backend health,
 model visibility, capabilities, disabled action reasons, and log metadata
-without crashing when local runtimes are unavailable.
+without crashing when local runtimes are unavailable. M5 now adds
+`model-router tui` as a read-only terminal control center over shared admin
+state, with Status, Models, Routing, Runtimes, Telemetry, Logs, and Settings
+tabs and a clean `hermes-router[tui]` install hint when Textual is missing.
 
 Guardrails:
 

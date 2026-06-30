@@ -35,6 +35,9 @@ proxy = [
   "httpx>=0.27,<1",
   "uvicorn>=0.30,<1",
 ]
+tui = [
+  "textual>=0.86",
+]
 dev = [
   "pytest>=8,<9",
   "ruff>=0.8,<1",

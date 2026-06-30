@@ -169,6 +169,13 @@ layer. This should be useful without a browser.
 Escape hatch: ship a read-only TUI first, but it must still use real shared
 state and honest empty states.
 
+Current implementation note: M5 adds `model-router tui` behind the optional
+`hermes-router[tui]` extra. V1 is read-only and renders Status, Models, Routing,
+Runtimes, Telemetry, Logs, and Settings tabs from shared admin state. It prints a
+clean Textual install hint when the optional dependency is missing. Mutating
+shared actions are listed with their confirmation requirements but are not yet
+executed from the TUI.
+
 ### M6: API Compatibility Expansion
 
 Add capability-driven forwarding for `/v1/embeddings` and `/v1/completions`.

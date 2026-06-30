@@ -50,6 +50,9 @@ def test_pyproject_declares_generic_package_metadata():
         "httpx>=0.27,<1",
         "uvicorn>=0.30,<1",
     ]
+    assert project["optional-dependencies"]["tui"] == [
+        "textual>=0.86",
+    ]
     assert project["optional-dependencies"]["release"] == [
         "build>=1,<2",
         "twine>=5,<7",

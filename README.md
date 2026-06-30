@@ -85,6 +85,18 @@ local proxy control center with routing maps, runtime status, receipts, safety
 gates, telemetry, and feedback labeling, while remaining explicitly not a chat
 UI or agent workspace.
 
+Prefer a terminal control center instead of a browser:
+
+```bash
+python -m pip install "hermes-router[tui]"
+model-router tui --config-dir ~/.model-router
+```
+
+The TUI uses the same shared admin state as `model-router settings`. The first
+version is read-only: Status, Models, Routing, Runtimes, Telemetry, Logs, and
+Settings tabs show real config/runtime/telemetry state, while mutating actions
+remain confirmation-gated in the shared action layer.
+
 If you are testing from a local checkout or setting up managed runtimes, install
 prerequisites into the active Python environment:
 
@@ -133,6 +145,7 @@ can start and stop only those configured local model-server processes.
   endpoint.
 - First-run `model-router init` for local proxy configs.
 - Opt-in managed local runtimes for `llama-server` and `mlx_lm.server`.
+- Optional terminal control center with `model-router tui`.
 - User-configurable routing targets for local models, hosted APIs, web/RAG
   tools, vision, image generation, or custom adapters.
 - Fail-closed safety: missing/invalid config and high-risk actions route to

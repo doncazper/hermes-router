@@ -563,6 +563,19 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
     )
     settings.set_defaults(func=_cmd_settings)
 
+    tui = subparsers.add_parser(
+        "tui",
+        help="Run the terminal ModelRouter control center",
+        description="Run the terminal ModelRouter control center.",
+    )
+    tui.add_argument(
+        "--config-dir",
+        type=Path,
+        default=Path(DEFAULT_CONFIG_DIR),
+        help="Directory containing routing_proxy.yaml and telemetry files",
+    )
+    tui.set_defaults(func=_cmd_tui)
+
     feedback = subparsers.add_parser(
         "feedback",
         help="Append a hindsight label for a logged routing event",
@@ -1238,6 +1251,12 @@ def _cmd_settings(args: argparse.Namespace) -> int:
     except SettingsDependencyError as exc:
         print(f"Settings UI failed: {exc}", file=sys.stderr)
         return 1
+
+
+def _cmd_tui(args: argparse.Namespace) -> int:
+    from hermes.plugins.model_router.tui import run_tui
+
+    return run_tui(config_dir=args.config_dir)
 
 
 def _cmd_feedback(args: argparse.Namespace) -> int:

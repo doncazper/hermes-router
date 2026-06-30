@@ -202,6 +202,14 @@ def test_settings_cli_help_exposes_local_admin_command():
     assert "--port" in result.stdout
 
 
+def test_tui_cli_help_exposes_terminal_control_center():
+    result = _run_cli("tui", "--help")
+
+    assert result.returncode == 0
+    assert "--config-dir" in result.stdout
+    assert "terminal ModelRouter control center" in result.stdout
+
+
 def test_install_cli_json_is_parseable_plan_only(tmp_path):
     config_dir = tmp_path / "install"
     result = _run_cli(

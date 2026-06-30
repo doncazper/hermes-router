@@ -252,6 +252,20 @@ and local runtime signals. It prints the next explicit commands for prereqs,
 available. It does not download models, install services, enable hosted
 providers, overwrite configs, or start runtimes.
 
+Terminal control center:
+
+```bash
+python -m pip install "hermes-router[tui]"
+model-router tui --config-dir ~/.model-router
+```
+
+`model-router tui` is an optional local terminal control center backed by the
+same shared admin state as `model-router settings`. V1 is read-only and exposes
+Status, Models, Routing, Runtimes, Telemetry, Logs, and Settings tabs. It does
+not provide a chat prompt, does not show raw prompts by default, and does not
+perform writes; mutating shared actions remain explicit and require
+`confirm=true` in the shared action layer.
+
 Scan:
 
 ```bash
