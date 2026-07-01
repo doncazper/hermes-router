@@ -23,6 +23,7 @@ def build_model_library_state(
     recommendation: Any,
     download_plan: Any,
     benchmark_results: Any = None,
+    runtime_models: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a real model-library state block from scan/catalog/config data."""
 
@@ -31,6 +32,7 @@ def build_model_library_state(
         "registry": build_model_registry(
             proxy_config=config,
             discovery=discovery,
+            runtime_models=runtime_models,
         ).to_dict(),
         "installed": _installed_models(config, discovery, local_scores),
         "discover": _discover_state(

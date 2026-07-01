@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+import shutil
 from typing import Any, Mapping, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
@@ -37,17 +38,59 @@ class RuntimeCapabilities:
     load_model: AdapterSupport
     unload_model: AdapterSupport
     logs: AdapterSupport
+    endpoint_url: str | None = None
+    detect_runtime: AdapterSupport = field(
+        default_factory=lambda: AdapterSupport(True),
+    )
+    start_server: AdapterSupport = field(
+        default_factory=lambda: AdapterSupport(
+            False,
+            "Runtime adapter does not expose a start action.",
+        ),
+    )
+    stop_server: AdapterSupport = field(
+        default_factory=lambda: AdapterSupport(
+            False,
+            "Runtime adapter does not expose a stop action.",
+        ),
+    )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "provider": self.provider,
             "runtime_kind": self.runtime_kind,
+            "endpoint_url": self.endpoint_url,
+            "detect_runtime": self.detect_runtime.to_dict(),
             "health": self.health.to_dict(),
             "discover_models": self.discover_models.to_dict(),
             "list_loaded_models": self.list_loaded_models.to_dict(),
+            "start_server": self.start_server.to_dict(),
+            "stop_server": self.stop_server.to_dict(),
             "load_model": self.load_model.to_dict(),
             "unload_model": self.unload_model.to_dict(),
             "logs": self.logs.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class RuntimeDetection:
+    provider: str
+    runtime_kind: str
+    endpoint_url: str
+    installed: bool | None
+    available: bool | None
+    detail: str
+    command: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "provider": self.provider,
+            "runtime_kind": self.runtime_kind,
+            "endpoint_url": self.endpoint_url,
+            "installed": self.installed,
+            "available": self.available,
+            "detail": self.detail,
+            "command": list(self.command),
         }
 
 
@@ -122,8 +165,14 @@ class RuntimeLogInfo:
 class RuntimeAdapter(Protocol):
     backend: ProxyBackendConfig
 
+    def endpoint_url(self) -> str:
+        """Return the endpoint URL this adapter targets."""
+
     def capabilities(self) -> RuntimeCapabilities:
         """Return supported runtime actions and disabled reasons."""
+
+    def detect(self) -> RuntimeDetection:
+        """Return installation/configuration availability without raising."""
 
     def health(self, *, timeout_seconds: float = 0.25) -> RuntimeHealth:
         """Return best-effort health without raising to UI callers."""
@@ -148,6 +197,12 @@ class RuntimeAdapter(Protocol):
     def unload_model(self, model_id: str) -> RuntimeActionResult:
         """Unload a model if the runtime supports explicit unload control."""
 
+    def start_server(self) -> RuntimeActionResult:
+        """Start a server if the adapter can do so safely."""
+
+    def stop_server(self) -> RuntimeActionResult:
+        """Stop a server if the adapter can do so safely."""
+
     def logs(self) -> RuntimeLogInfo:
         """Return safe runtime log metadata."""
 
@@ -168,12 +223,22 @@ class GenericOpenAICompatibleAdapter:
         self._provider = provider or provider_for_backend(backend)
         self._runtime_kind = runtime_kind or runtime_kind_for_backend(backend)
 
+    def endpoint_url(self) -> str:
+        return self.backend.base_url.rstrip("/")
+
     def capabilities(self) -> RuntimeCapabilities:
         local = _is_local_base_url(self.backend.base_url)
         health_reason = None if local else "Hosted runtime health is not checked by settings."
+        lifecycle_reason = (
+            "External OpenAI-compatible runtime lifecycle is managed outside ModelRouter."
+            if local
+            else "Hosted runtime lifecycle is managed by the provider."
+        )
         return RuntimeCapabilities(
             provider=self._provider,
             runtime_kind=self._runtime_kind,
+            endpoint_url=self.endpoint_url(),
+            detect_runtime=AdapterSupport(True),
             health=AdapterSupport(local, health_reason),
             discover_models=AdapterSupport(
                 local,
@@ -191,12 +256,34 @@ class GenericOpenAICompatibleAdapter:
                 False,
                 "OpenAI-compatible runtimes do not expose a standard unload action.",
             ),
+            start_server=AdapterSupport(False, lifecycle_reason),
+            stop_server=AdapterSupport(False, lifecycle_reason),
             logs=AdapterSupport(
                 self.backend.runtime.enabled and bool(self.backend.runtime.log_path),
                 None
                 if self.backend.runtime.enabled and self.backend.runtime.log_path
                 else "No managed runtime log path is configured.",
             ),
+        )
+
+    def detect(self) -> RuntimeDetection:
+        local = _is_local_base_url(self.backend.base_url)
+        if local:
+            return RuntimeDetection(
+                provider=self._provider,
+                runtime_kind=self._runtime_kind,
+                endpoint_url=self.endpoint_url(),
+                installed=None,
+                available=True,
+                detail="Local endpoint is configured; health check determines reachability.",
+            )
+        return RuntimeDetection(
+            provider=self._provider,
+            runtime_kind=self._runtime_kind,
+            endpoint_url=self.endpoint_url(),
+            installed=None,
+            available=None,
+            detail="Hosted endpoint configured; availability is not probed by default.",
         )
 
     def health(self, *, timeout_seconds: float = 0.25) -> RuntimeHealth:
@@ -306,6 +393,24 @@ class GenericOpenAICompatibleAdapter:
             disabled_reason=reason,
         )
 
+    def start_server(self) -> RuntimeActionResult:
+        reason = self.capabilities().start_server.disabled_reason
+        return RuntimeActionResult(
+            ok=False,
+            status="unsupported",
+            message=reason or "Start server unsupported.",
+            disabled_reason=reason,
+        )
+
+    def stop_server(self) -> RuntimeActionResult:
+        reason = self.capabilities().stop_server.disabled_reason
+        return RuntimeActionResult(
+            ok=False,
+            status="unsupported",
+            message=reason or "Stop server unsupported.",
+            disabled_reason=reason,
+        )
+
     def logs(self) -> RuntimeLogInfo:
         reason = self.capabilities().logs.disabled_reason
         if reason:
@@ -328,6 +433,18 @@ class LMStudioAdapter(GenericOpenAICompatibleAdapter):
             runtime_kind="lmstudio",
         )
 
+    def detect(self) -> RuntimeDetection:
+        installed = _command_available("lms") or _command_available("lmstudio")
+        return RuntimeDetection(
+            provider="lmstudio",
+            runtime_kind="lmstudio",
+            endpoint_url=self.endpoint_url(),
+            installed=installed,
+            available=True,
+            detail="LM Studio endpoint configured; health check determines whether the server is running.",
+            command=("lms",) if installed else (),
+        )
+
 
 class OllamaAdapter(GenericOpenAICompatibleAdapter):
     def __init__(
@@ -341,6 +458,18 @@ class OllamaAdapter(GenericOpenAICompatibleAdapter):
             requester=requester,
             provider="ollama",
             runtime_kind="ollama",
+        )
+
+    def detect(self) -> RuntimeDetection:
+        installed = _command_available("ollama")
+        return RuntimeDetection(
+            provider="ollama",
+            runtime_kind="ollama",
+            endpoint_url=self.endpoint_url(),
+            installed=installed,
+            available=True,
+            detail="Ollama endpoint configured; health check determines whether ollama serve is running.",
+            command=("ollama",) if installed else (),
         )
 
 
@@ -360,9 +489,16 @@ class ManagedRuntimeAdapter(GenericOpenAICompatibleAdapter):
 
     def capabilities(self) -> RuntimeCapabilities:
         capabilities = super().capabilities()
+        lifecycle_reason = (
+            "Managed runtime lifecycle is executed by model-router-proxy for configured backends."
+            if self.backend.runtime.command
+            else "Managed runtime has no command configured."
+        )
         return RuntimeCapabilities(
             provider=capabilities.provider,
             runtime_kind=capabilities.runtime_kind,
+            endpoint_url=capabilities.endpoint_url,
+            detect_runtime=capabilities.detect_runtime,
             health=capabilities.health,
             discover_models=capabilities.discover_models,
             list_loaded_models=AdapterSupport(
@@ -377,7 +513,31 @@ class ManagedRuntimeAdapter(GenericOpenAICompatibleAdapter):
                 False,
                 "Managed runtimes unload after idle timeout or proxy shutdown.",
             ),
+            start_server=AdapterSupport(False, lifecycle_reason),
+            stop_server=AdapterSupport(False, lifecycle_reason),
             logs=capabilities.logs,
+        )
+
+    def detect(self) -> RuntimeDetection:
+        command = self.backend.runtime.command
+        command_name = command[0] if command else ""
+        installed = _command_available(command_name) if command_name else False
+        return RuntimeDetection(
+            provider=provider_for_backend(self.backend),
+            runtime_kind=self.backend.runtime.kind,
+            endpoint_url=self.endpoint_url(),
+            installed=installed,
+            available=installed if command_name else False,
+            detail=(
+                "Managed runtime command is available; model-router-proxy controls process start/stop."
+                if installed
+                else (
+                    f"Managed runtime command missing: {command_name}"
+                    if command_name
+                    else "Managed runtime command is not configured."
+                )
+            ),
+            command=tuple(command),
         )
 
 
@@ -410,6 +570,18 @@ def runtime_state_for_backend(
         capabilities = adapter.capabilities()
     except Exception as exc:
         return _adapter_error_state(backend, exc)
+    endpoint_url = _safe_endpoint_url(adapter, backend)
+    try:
+        detection = adapter.detect()
+    except Exception as exc:
+        detection = RuntimeDetection(
+            provider=capabilities.provider,
+            runtime_kind=capabilities.runtime_kind,
+            endpoint_url=endpoint_url,
+            installed=None,
+            available=None,
+            detail=exc.__class__.__name__,
+        )
     try:
         health = adapter.health(timeout_seconds=timeout_seconds)
     except Exception as exc:
@@ -435,6 +607,8 @@ def runtime_state_for_backend(
         "adapter": adapter.__class__.__name__,
         "provider": capabilities.provider,
         "runtime_kind": capabilities.runtime_kind,
+        "endpoint_url": endpoint_url,
+        "detection": detection.to_dict(),
         "health": health.to_dict(),
         "models": [model.to_dict() for model in models],
         "loaded_models": [model.to_dict() for model in loaded],
@@ -477,6 +651,15 @@ def _adapter_error_state(
         "adapter": "error",
         "provider": provider_for_backend(backend),
         "runtime_kind": runtime_kind_for_backend(backend),
+        "endpoint_url": backend.base_url.rstrip("/"),
+        "detection": RuntimeDetection(
+            provider=provider_for_backend(backend),
+            runtime_kind=runtime_kind_for_backend(backend),
+            endpoint_url=backend.base_url.rstrip("/"),
+            installed=None,
+            available=None,
+            detail=exc.__class__.__name__,
+        ).to_dict(),
         "health": RuntimeHealth(
             status="error",
             reachable=False,
@@ -493,10 +676,20 @@ def _adapter_error_state(
             list_loaded_models=AdapterSupport(False, "Adapter failed."),
             load_model=AdapterSupport(False, "Adapter failed."),
             unload_model=AdapterSupport(False, "Adapter failed."),
+            start_server=AdapterSupport(False, "Adapter failed."),
+            stop_server=AdapterSupport(False, "Adapter failed."),
             logs=AdapterSupport(False, "Adapter failed."),
         ).to_dict(),
         "logs": RuntimeLogInfo(supported=False, error=exc.__class__.__name__).to_dict(),
     }
+
+
+def _safe_endpoint_url(adapter: RuntimeAdapter, backend: ProxyBackendConfig) -> str:
+    try:
+        endpoint = adapter.endpoint_url()
+    except Exception:
+        endpoint = backend.base_url
+    return endpoint.rstrip("/")
 
 
 def _request_json(
@@ -545,3 +738,12 @@ def _is_local_base_url(base_url: str) -> bool:
 
 def _local_host(host: str) -> bool:
     return host in {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
+
+
+def _command_available(command: str) -> bool:
+    if not command:
+        return False
+    expanded = Path(command).expanduser()
+    if expanded.is_absolute() or "/" in command:
+        return expanded.exists()
+    return shutil.which(command) is not None

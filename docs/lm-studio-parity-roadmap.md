@@ -204,7 +204,9 @@ claims:
 - **ModelRouter current state**: integrates with LM Studio, Ollama, LocalAI,
   llama.cpp, MLX/MLX-LM, vLLM, hosted providers, and generic OpenAI-compatible
   services as backends; managed-process support exists for configured
-  llama.cpp and MLX-LM processes.
+  llama.cpp and MLX-LM processes. Runtime adapters now expose endpoint,
+  detection, health, model listing, loaded-model listing, lifecycle/load-unload
+  capability flags, log metadata, and unsupported-operation reasons.
 - **Parity requirement**: formalize runtime adapters that expose detect,
   health, list models, list loaded models, start, stop, load, unload, endpoint,
   capabilities, and unsupported-operation reasons where each runtime allows it.

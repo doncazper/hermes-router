@@ -372,6 +372,59 @@ def test_model_library_dashboard_renders_populated_surfaces(tmp_path, monkeypatc
     assert "No local models found yet" not in html
 
 
+def test_settings_state_feeds_runtime_models_into_registry(tmp_path, monkeypatch):
+    _init_config(tmp_path)
+    _stub_empty_scan(monkeypatch)
+
+    def fake_runtime_state(backend, *, timeout_seconds=0.25):
+        del timeout_seconds
+        return {
+            "adapter": "FakeRuntimeAdapter",
+            "provider": "lmstudio",
+            "runtime_kind": "lmstudio",
+            "endpoint_url": backend.base_url,
+            "detection": {
+                "provider": "lmstudio",
+                "runtime_kind": "lmstudio",
+                "endpoint_url": backend.base_url,
+                "installed": True,
+                "available": True,
+                "detail": "fake runtime available",
+                "command": ["lms"],
+            },
+            "health": {
+                "status": "ready",
+                "reachable": True,
+                "ok": True,
+                "detail": "ready",
+                "status_code": 200,
+                "checked_url": backend.base_url.rstrip("/") + "/models",
+            },
+            "models": [
+                {
+                    "model_id": f"runtime-visible-{backend.name}",
+                    "loaded": None,
+                    "source": "runtime",
+                }
+            ],
+            "loaded_models": [],
+            "capabilities": {},
+            "logs": {"supported": False},
+        }
+
+    monkeypatch.setattr(settings_ui, "runtime_state_for_backend", fake_runtime_state)
+
+    state = settings_ui.build_settings_state(settings_ui.settings_paths(tmp_path))
+    registry_models = state["model_library"]["registry"]["models"]
+
+    runtime_model = next(
+        model for model in registry_models if model["model_id"] == "runtime-visible-fast"
+    )
+    assert runtime_model["source"] == "runtime"
+    assert runtime_model["provider"] == "lmstudio"
+    assert runtime_model["backend"] == "fast"
+
+
 def test_model_library_dashboard_renders_useful_empty_states(tmp_path, monkeypatch):
     _stub_empty_scan(monkeypatch)
 

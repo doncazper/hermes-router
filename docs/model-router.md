@@ -344,6 +344,19 @@ ModelRouter move toward LM Studio-level model-library ownership while staying
 provider-neutral and compatible with LM Studio, Ollama, LocalAI, llama.cpp,
 MLX/MLX-LM, vLLM, hosted providers, and generic OpenAI-compatible runtimes.
 
+Runtime management remains adapter-based. The
+`hermes.plugins.model_router.runtime_adapters` module defines the optional
+control surface each backend can expose: runtime detection, endpoint URL,
+health, model listing, loaded-model listing, start/stop support, load/unload
+support, log metadata, and disabled reasons for unsupported operations. Generic
+OpenAI-compatible, LM Studio, Ollama, and managed-runtime adapters report their
+capabilities honestly. Hosted backends are not probed by default, and
+externally managed local runtimes report that their lifecycle is outside
+ModelRouter unless a configured managed process owns it. Settings/admin
+surfaces may use bounded adapter calls to populate runtime status and
+runtime-discovered models; `route_fast(...)`, `route(...)`, and proxy forwarding
+do not require runtime adapters to decide a route.
+
 Optional local backend benchmarks are explicit:
 
 ```bash

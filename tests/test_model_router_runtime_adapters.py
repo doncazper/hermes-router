@@ -11,8 +11,13 @@ from hermes.plugins.model_router.runtime_adapters import (
     LMStudioAdapter,
     ManagedRuntimeAdapter,
     OllamaAdapter,
+    RuntimeActionResult,
     RuntimeCapabilities,
     RuntimeAdapter,
+    RuntimeDetection,
+    RuntimeHealth,
+    RuntimeLogInfo,
+    RuntimeModel,
     adapter_for_backend,
     runtime_state_for_backend,
 )
@@ -58,10 +63,126 @@ def test_generic_openai_adapter_health_and_model_discovery_use_fake_http():
     assert health.status == "ready"
     assert [model.model_id for model in models] == ["fast-model", "other-model"]
     assert calls[0][0] == "http://127.0.0.1:8090/v1/models"
+    assert adapter.endpoint_url() == "http://127.0.0.1:8090/v1"
+    assert adapter.detect().available is True
+    assert capabilities["endpoint_url"] == "http://127.0.0.1:8090/v1"
+    assert capabilities["detect_runtime"]["supported"] is True
     assert capabilities["load_model"]["supported"] is False
     assert "standard load action" in capabilities["load_model"]["disabled_reason"]
+    assert capabilities["start_server"]["supported"] is False
+    assert "outside ModelRouter" in capabilities["start_server"]["disabled_reason"]
     assert load.ok is False
     assert load.status == "unsupported"
+
+
+def test_runtime_state_supports_mocked_full_support_adapter(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FullSupportAdapter:
+        def __init__(self, backend):
+            self.backend = backend
+            self.started = False
+            self.loaded: list[str] = []
+
+        def endpoint_url(self):
+            return "http://127.0.0.1:7777/v1"
+
+        def capabilities(self):
+            support = AdapterSupport(True)
+            return RuntimeCapabilities(
+                provider="mock",
+                runtime_kind="mock-runtime",
+                endpoint_url=self.endpoint_url(),
+                detect_runtime=support,
+                health=support,
+                discover_models=support,
+                list_loaded_models=support,
+                start_server=support,
+                stop_server=support,
+                load_model=support,
+                unload_model=support,
+                logs=support,
+            )
+
+        def detect(self):
+            return RuntimeDetection(
+                provider="mock",
+                runtime_kind="mock-runtime",
+                endpoint_url=self.endpoint_url(),
+                installed=True,
+                available=True,
+                detail="mock runtime available",
+                command=("mock-runtime",),
+            )
+
+        def health(self, *, timeout_seconds: float = 0.25):
+            return RuntimeHealth(
+                status="ready",
+                reachable=True,
+                ok=True,
+                detail=f"ready within {timeout_seconds}",
+                checked_url=self.endpoint_url() + "/models",
+            )
+
+        def discover_models(self, *, timeout_seconds: float = 0.25):
+            del timeout_seconds
+            return (
+                RuntimeModel("mock-small", loaded=True),
+                RuntimeModel("mock-large", loaded=False),
+            )
+
+        def list_loaded_models(self, *, timeout_seconds: float = 0.25):
+            del timeout_seconds
+            return (RuntimeModel("mock-small", loaded=True),)
+
+        def start_server(self):
+            self.started = True
+            return RuntimeActionResult(True, "started", "mock server started")
+
+        def stop_server(self):
+            self.started = False
+            return RuntimeActionResult(True, "stopped", "mock server stopped")
+
+        def load_model(self, model_id: str):
+            self.loaded.append(model_id)
+            return RuntimeActionResult(True, "loaded", f"loaded {model_id}")
+
+        def unload_model(self, model_id: str):
+            return RuntimeActionResult(True, "unloaded", f"unloaded {model_id}")
+
+        def logs(self):
+            return RuntimeLogInfo(supported=True, paths=("/tmp/mock.log",))
+
+    def fake_adapter_for_backend(backend, *, requester=None):
+        del requester
+        adapter = FullSupportAdapter(backend)
+        captured["adapter"] = adapter
+        return adapter
+
+    monkeypatch.setattr(
+        runtime_adapters,
+        "adapter_for_backend",
+        fake_adapter_for_backend,
+    )
+
+    state = runtime_adapters.runtime_state_for_backend(_backend())
+    adapter = captured["adapter"]
+
+    assert state["endpoint_url"] == "http://127.0.0.1:7777/v1"
+    assert state["detection"]["installed"] is True
+    assert state["detection"]["available"] is True
+    assert state["health"]["status"] == "ready"
+    assert [model["model_id"] for model in state["models"]] == [
+        "mock-small",
+        "mock-large",
+    ]
+    assert state["loaded_models"] == [
+        {"model_id": "mock-small", "loaded": True, "source": "runtime"}
+    ]
+    assert state["capabilities"]["start_server"]["supported"] is True
+    assert adapter.start_server().ok is True
+    assert adapter.load_model("mock-large").status == "loaded"
+    assert adapter.stop_server().status == "stopped"
 
 
 def test_lmstudio_and_ollama_adapters_are_detected_from_local_ports():
@@ -82,9 +203,18 @@ def test_hosted_generic_adapter_does_not_call_network_by_default():
     adapter = GenericOpenAICompatibleAdapter(backend, requester=requester)
 
     health = adapter.health()
+    capabilities = adapter.capabilities().to_dict()
+    start = adapter.start_server()
 
     assert health.status == "unsupported"
+    assert adapter.detect().available is None
     assert adapter.discover_models() == ()
+    assert capabilities["health"]["supported"] is False
+    assert capabilities["discover_models"]["supported"] is False
+    assert capabilities["start_server"]["supported"] is False
+    assert "provider" in capabilities["start_server"]["disabled_reason"]
+    assert start.status == "unsupported"
+    assert start.disabled_reason == capabilities["start_server"]["disabled_reason"]
 
 
 def test_managed_runtime_adapter_reports_logs_and_process_owned_actions(tmp_path):
@@ -105,6 +235,8 @@ def test_managed_runtime_adapter_reports_logs_and_process_owned_actions(tmp_path
     logs = adapter.logs().to_dict()
 
     assert capabilities["runtime_kind"] == "llama-server"
+    assert capabilities["start_server"]["supported"] is False
+    assert "model-router-proxy" in capabilities["start_server"]["disabled_reason"]
     assert capabilities["load_model"]["supported"] is False
     assert "starting their configured process" in capabilities["load_model"][
         "disabled_reason"

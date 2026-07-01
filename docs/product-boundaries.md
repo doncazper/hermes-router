@@ -67,6 +67,9 @@ boundaries, but it should not hide a planner/worker system inside the proxy.
   operator config, and explicit benchmark evidence when available.
 - Local runtime lifecycle for configured managed processes, including safe
   start/stop/restart, readiness, logs, and idle behavior.
+- Runtime adapter capability reporting for external runtimes, including
+  endpoint, detection, health, model listing, loaded-model listing, lifecycle
+  support, load/unload support, logs, and unsupported-operation reasons.
 - Route, provider, and backend policy, including profiles, allowlists,
   denylists, local-only controls, fallbacks, and human-confirm gates.
 - A local OpenAI-compatible proxy endpoint for clients and agents that want one

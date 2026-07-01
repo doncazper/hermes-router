@@ -374,6 +374,8 @@ def _build_settings_state_impl(
         if supervisor is not None
         else ProxyProcessStatus("unknown").to_dict()
     )
+    backend_states = _redacted_backend_states(config)
+    runtime_models = _runtime_models_from_backend_states(backend_states)
     recent_events = _recent_routing_events(paths["events"])
     latest_event = recent_events[0] if recent_events else {}
     state: dict[str, Any] = {
@@ -390,7 +392,7 @@ def _build_settings_state_impl(
         "verifier": _verifier_state(config),
         "catalog": catalog_status(paths["model_router_config"]).to_dict(),
         "pricing_catalog": pricing_status(paths["pricing"]).to_dict(),
-        "backends": _redacted_backend_states(config),
+        "backends": backend_states,
         "engine_backends": dict(sorted(config.engine_backends.items())) if config else {},
         "observability": _observability_state(config),
         "discovery": discovery.to_dict(),
@@ -403,6 +405,7 @@ def _build_settings_state_impl(
             recommendation=recommendation,
             download_plan=download_plan,
             benchmark_results=benchmark_results,
+            runtime_models=runtime_models,
         ),
         "installer": build_installer_state(paths, discovery=discovery),
         "benchmarks": benchmark_summary(paths["benchmarks"]),
@@ -3792,6 +3795,23 @@ def _redacted_backend_states(config: RoutingProxyConfig | None) -> list[dict[str
             }
         )
     return rows
+
+
+def _runtime_models_from_backend_states(
+    backend_states: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    runtime_models: dict[str, list[dict[str, Any]]] = {}
+    for backend in backend_states:
+        backend_name = str(backend.get("name") or "")
+        adapter = backend.get("runtime_adapter")
+        if not backend_name or not isinstance(adapter, dict):
+            continue
+        models = adapter.get("models")
+        if isinstance(models, list) and models:
+            runtime_models[backend_name] = [
+                model for model in models if isinstance(model, dict)
+            ]
+    return runtime_models
 
 
 def _observability_state(config: RoutingProxyConfig | None) -> dict[str, Any]:
