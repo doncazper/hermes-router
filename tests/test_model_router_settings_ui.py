@@ -245,9 +245,13 @@ def test_settings_home_page_loads_without_chat_surface(tmp_path, monkeypatch):
     assert "showPricingStatus" in response.text
     assert "showPricingDiff" in response.text
     assert "applyPricingCatalog" in response.text
-    assert 'href="/compact"' in response.text
-    assert "Open compact windowed mode" in response.text
-    assert '<section class="compact-window"' not in response.text
+    assert "Start Here" in response.text
+    assert 'data-target="models" onclick=\'jumpTo("models")\'' in response.text
+    assert "data-safety-toggle" in response.text
+    assert 'id="compact-popover"' in response.text
+    assert "openCompactPanel" in response.text
+    assert "openCompactWindow" in response.text
+    assert '<section class="compact-window"' in response.text
     assert "No routing events yet" in response.text
     assert "Settings UI Follow-Through" in response.text
     assert "Telemetry Review" in response.text

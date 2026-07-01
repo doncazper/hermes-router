@@ -989,7 +989,9 @@ def render_dashboard_page(state: Mapping[str, Any]) -> str:
     proxy = state["proxy"]
     observability = state["observability"]
     proxy_process = state.get("proxy_process", {})
-    endpoint = escape(str(proxy.get("endpoint") or "http://127.0.0.1:8082/v1"))
+    endpoint_value = str(proxy.get("endpoint") or "http://127.0.0.1:8082/v1")
+    endpoint = escape(endpoint_value)
+    endpoint_js = json.dumps(endpoint_value)
     profile_value = str(proxy.get("routing_profile") or "balanced")
     profile_label = _profile_label(profile_value)
     telemetry_state = "On" if observability.get("enabled") else "Off"
@@ -1017,16 +1019,16 @@ def render_dashboard_page(state: Mapping[str, Any]) -> str:
         <span class="red"></span><span class="yellow"></span><span class="green"></span>
       </div>
       <nav class="side-nav">
-        {_sidebar_item("llama.cpp", "active", "runtimes")}
-        {_sidebar_item("Ollama", "", "providers")}
-        {_sidebar_item("Models", "", "models")}
+        {_sidebar_item("Overview", "active", "dashboard")}
+        {_sidebar_item("Routing", "", "routing-map")}
         {_sidebar_item("Runtimes", "", "runtimes")}
-        {_sidebar_item("Risky", "", "safety")}
-        {_sidebar_item("Research", "", "routing-map")}
-        {_sidebar_item("CloseAI", "", "providers")}
-        {_sidebar_item("Codings", "", "routing-map")}
+        {_sidebar_item("Models", "", "models")}
+        {_sidebar_item("Settings", "", "settings")}
+        {_sidebar_item("Safety", "", "safety")}
+        {_sidebar_item("Telemetry", "", "telemetry")}
+        {_sidebar_item("Review", "", "review")}
       </nav>
-      <p class="sidebar-note">No chat surface. Local infrastructure only.</p>
+      <p class="sidebar-note">Control plane for LM Studio, local runtimes, routing, and proxy status.</p>
     </aside>
 
     <main class="workspace">
@@ -1036,7 +1038,7 @@ def render_dashboard_page(state: Mapping[str, Any]) -> str:
           <div>
             <h1>ModelRouter</h1>
             <p>Local endpoint: <a href="{endpoint}">{endpoint}</a>
-              <button class="copy-button" type="button" aria-label="Copy endpoint">
+              <button class="copy-button" type="button" onclick="copyText({endpoint_js})" aria-label="Copy endpoint">
                 {_icon("copy")}
               </button>
             </p>
@@ -1049,10 +1051,10 @@ def render_dashboard_page(state: Mapping[str, Any]) -> str:
           <button class="icon-button" type="button" onclick="postAction('/api/doctor')">
             {_icon("pulse")}<span>Live</span>
           </button>
-          <a class="icon-button" href="/compact" aria-label="Open compact windowed mode">
+          <button class="icon-button" type="button" onclick="openCompactPanel()" aria-label="Open floating compact panel">
             {_icon("open")}<span>Compact</span>
-          </a>
-          <button class="icon-only" type="button" aria-label="Toggle appearance">
+          </button>
+          <button class="icon-only" type="button" onclick="toggleAppearance()" aria-label="Toggle appearance">
             {_icon("moon")}
           </button>
           <button class="icon-only" type="button" onclick="jumpTo('settings')" aria-label="Settings">
@@ -1062,6 +1064,19 @@ def render_dashboard_page(state: Mapping[str, Any]) -> str:
       </header>
 
       {_config_notice(config_error)}
+
+      <section class="quick-start" id="overview" aria-labelledby="quick-title">
+        <div>
+          <h2 id="quick-title">Start Here</h2>
+          <p>Use LM Studio as the model loader, keep its local server running, then start the ModelRouter proxy and point clients to the endpoint above.</p>
+        </div>
+        <div class="quick-actions">
+          <button class="button-blue" type="button" onclick="postAction('/api/proxy/start', {{confirm: true}})">{_icon("play")} Start proxy</button>
+          <button type="button" onclick="postAction('/api/doctor')">{_icon("pulse")} Check setup</button>
+          <button type="button" onclick="copyText({endpoint_js})">{_icon("copy")} Copy endpoint</button>
+        </div>
+        <div id="action-status" class="action-status" aria-live="polite">Ready. Start LM Studio's local server, then start the proxy here.</div>
+      </section>
 
       <section class="health-strip" aria-label="System health">
         <div class="check-grid">
@@ -1096,7 +1111,7 @@ def render_dashboard_page(state: Mapping[str, Any]) -> str:
           <section class="panel" id="routing-map" aria-labelledby="routing-title">
             <div class="panel-title">
               <h2 id="routing-title">Routing Map</h2>
-              <button class="icon-only" type="button" aria-label="Refresh routing map">
+              <button class="icon-only" type="button" onclick="reloadState()" aria-label="Refresh routing map">
                 {_icon("refresh")}
               </button>
             </div>
@@ -1136,6 +1151,17 @@ def render_dashboard_page(state: Mapping[str, Any]) -> str:
         </aside>
       </div>
     </main>
+  </div>
+
+  <div class="compact-popover" id="compact-popover" aria-hidden="true">
+    <button class="compact-scrim" type="button" onclick="closeCompactPanel()" aria-label="Close compact panel"></button>
+    <div class="compact-float" role="dialog" aria-modal="false" aria-label="Floating ModelRouter compact panel">
+      <div class="compact-float-actions">
+        <button type="button" onclick="openCompactWindow()">Open as window</button>
+        <button class="icon-only" type="button" onclick="closeCompactPanel()" aria-label="Close compact panel">x</button>
+      </div>
+      {_compact_control_panel(state, endpoint, proxy_label, telemetry_state, profile_label)}
+    </div>
   </div>
 
   <script>{_dashboard_js()}</script>
@@ -1201,12 +1227,26 @@ def _dashboard_css() -> str:
 html { scroll-behavior: smooth; }
 body {
   margin: 0;
-  min-width: 1180px;
+  min-width: 0;
   background: var(--bg);
   color: var(--text);
-  font-size: 12px;
-  line-height: 1.32;
+  font-size: 13px;
+  line-height: 1.42;
   letter-spacing: 0;
+}
+body.dark-mode {
+  --bg: #111827;
+  --chrome: #172033;
+  --surface: #1f2937;
+  --surface-soft: #243247;
+  --surface-blue: #18345e;
+  --text: #f8fafc;
+  --muted: #b8c3d4;
+  --subtle: #91a0b6;
+  --line: #334155;
+  --line-soft: #2b3a50;
+  --accent: #6aa7ff;
+  --accent-strong: #9cc4ff;
 }
 button, input, select, textarea { font: inherit; letter-spacing: 0; }
 button {
@@ -1218,6 +1258,14 @@ button {
   padding: 6px 10px;
   font-weight: 650;
   cursor: pointer;
+}
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 button:hover { border-color: #c4cedb; background: #f9fbfd; }
 button.icon-button, a.icon-button {
@@ -1266,13 +1314,17 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
 .app-shell {
   min-height: 100vh;
   display: grid;
-  grid-template-columns: 170px minmax(1010px, 1fr);
+  grid-template-columns: 210px minmax(0, 1fr);
 }
 .sidebar {
   background: linear-gradient(90deg, #f8fafc 0%, #f5f7fa 100%);
   border-right: 1px solid var(--line);
   padding: 18px 10px;
+  position: sticky;
+  top: 0;
+  height: 100vh;
 }
+body.dark-mode .sidebar { background: #172033; }
 .traffic-lights { display: flex; gap: 8px; margin: 2px 0 30px 10px; }
 .traffic-lights span {
   width: 13px;
@@ -1301,6 +1353,9 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
   background: #eaf2ff;
   color: var(--accent-strong);
 }
+body.dark-mode .side-link { color: #d8e2f0; }
+body.dark-mode .side-link.active,
+body.dark-mode .side-link:hover { background: #1c3761; }
 .sidebar-note {
   color: var(--muted);
   font-size: 12px;
@@ -1319,6 +1374,8 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
   position: sticky;
   top: 0;
   z-index: 10;
+  gap: 16px;
+  flex-wrap: wrap;
 }
 .brand { display: flex; align-items: center; gap: 13px; }
 .brand p { margin-top: 5px; color: #34435a; }
@@ -1340,13 +1397,16 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
 .top-status {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 8px;
   color: #26344b;
-  white-space: nowrap;
+  white-space: normal;
+  flex-wrap: wrap;
 }
+body.dark-mode .top-status,
+body.dark-mode .brand p { color: var(--muted); }
 .top-status > span:not(:last-of-type) {
   border-right: 1px solid var(--line);
-  padding-right: 16px;
+  padding-right: 8px;
 }
 .accent { color: var(--accent-strong); }
 .dot {
@@ -1384,6 +1444,38 @@ button.icon-only:hover, a.icon-only:hover {
   background: #f9fbfd;
 }
 .health-strip { padding: 10px 14px 0 14px; }
+.quick-start {
+  margin: 12px 12px 0;
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--tiny-shadow);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+.quick-start p {
+  max-width: 820px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.quick-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.action-status {
+  grid-column: 1 / -1;
+  min-height: 26px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  padding: 6px 8px;
+}
 .health-title { font-weight: 720; }
 .health-title.ok { color: #1f6b35; }
 .health-title.danger { color: var(--red); }
@@ -1503,13 +1595,13 @@ button.icon-only:hover, a.icon-only:hover {
 .data-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .data-table th, .data-table td {
   border-bottom: 1px solid var(--line-soft);
-  padding: 5px 8px;
+  padding: 7px 9px;
   text-align: left;
   vertical-align: middle;
-  line-height: 1.12;
+  line-height: 1.28;
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: clip;
+  text-overflow: ellipsis;
 }
 .data-table td:first-child,
 .data-table td:nth-child(3),
@@ -1973,6 +2065,38 @@ button.icon-only:hover, a.icon-only:hover {
   padding: 18px;
   background: #eef2f7;
 }
+.compact-popover {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: none;
+  pointer-events: none;
+}
+.compact-popover.open {
+  display: block;
+  pointer-events: auto;
+}
+.compact-scrim {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: rgba(15, 23, 42, .18);
+  border-radius: 0;
+  padding: 0;
+}
+.compact-float {
+  position: absolute;
+  top: 78px;
+  right: 22px;
+  width: min(390px, calc(100vw - 34px));
+  filter: drop-shadow(0 24px 70px rgba(15, 23, 42, .28));
+}
+.compact-float-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-bottom: 6px;
+}
 .compact-window {
   width: min(360px, calc(100vw - 24px));
   background: rgba(255, 255, 255, .96);
@@ -2092,10 +2216,32 @@ button.icon-only:hover, a.icon-only:hover {
   .sidebar { display: none; }
   .topbar { position: static; align-items: flex-start; flex-direction: column; }
   .top-status { flex-wrap: wrap; }
+  .quick-start { grid-template-columns: 1fr; }
+  .quick-actions { justify-content: flex-start; }
   .flow { grid-template-columns: 1fr; }
   .flow-arrow { transform: rotate(90deg); min-height: 22px; }
   .profile-row, .runtime-grid, .settings-grid, .review-form, .models-grid, .model-ops-strip { grid-template-columns: 1fr; }
   .provider-list { border-right: 0; border-bottom: 1px solid var(--line); }
+}
+@media (max-width: 700px) {
+  .backend-editor,
+  .model-detail-body {
+    overflow-x: auto;
+  }
+  .backend-editor .data-table,
+  .model-table {
+    min-width: 760px;
+  }
+  .top-status > span:not(:last-of-type) {
+    border-right: 0;
+    padding-right: 0;
+  }
+  .compact-float {
+    top: 58px;
+    right: 10px;
+    left: 10px;
+    width: auto;
+  }
 }
 @media (max-width: 1500px) {
   .dashboard-grid { grid-template-columns: 1fr; padding-right: 16px; }
@@ -2105,8 +2251,14 @@ button.icon-only:hover, a.icon-only:hover {
 
 def _dashboard_js() -> str:
     return """
+function setActionMessage(message) {
+  const targets = document.querySelectorAll('#action-status, [data-action-status]');
+  targets.forEach((target) => {
+    target.textContent = message;
+  });
+}
 async function postAction(path, payload = {}) {
-  const target = document.getElementById('last-action');
+  setActionMessage('Running ' + path.replace('/api/', '') + '...');
   try {
     const response = await fetch(path, {
       method: 'POST',
@@ -2114,14 +2266,10 @@ async function postAction(path, payload = {}) {
       body: JSON.stringify(payload)
     });
     const data = await response.json();
-    if (target) {
-      target.textContent = data.ok === false ? data.error : 'Action complete';
-    }
+    setActionMessage(data.ok === false ? data.error : 'Action complete');
     return data;
   } catch (error) {
-    if (target) {
-      target.textContent = 'Action failed: ' + error;
-    }
+    setActionMessage('Action failed: ' + error);
     return {ok: false, error: String(error)};
   }
 }
@@ -2257,9 +2405,8 @@ async function copyText(text) {
   } catch (error) {
     // Copy support can be blocked in some local browser contexts; keep labeling usable.
   }
-  const target = document.getElementById('last-action');
   const label = text.length > 80 ? 'text block' : text;
-  if (target) target.textContent = 'Copied ' + label;
+  setActionMessage('Copied ' + label);
 }
 async function sendReviewFeedback(requestId) {
   const expected = document.getElementById('expected-' + requestId);
@@ -2313,6 +2460,47 @@ async function applyPricingCatalog() {
 function jumpTo(id) {
   const target = document.getElementById(id) || document.getElementById('dashboard');
   target.scrollIntoView({behavior: 'smooth', block: 'start'});
+  document.querySelectorAll('.side-link').forEach((button) => {
+    button.classList.toggle('active', button.dataset.target === id);
+  });
+  setActionMessage('Showing ' + (target.getAttribute('aria-labelledby') || id) + '.');
+}
+function reloadState() {
+  setActionMessage('Refreshing local state...');
+  window.location.reload();
+}
+function toggleAppearance() {
+  document.body.classList.toggle('dark-mode');
+  const mode = document.body.classList.contains('dark-mode') ? 'dark' : 'light';
+  try { window.localStorage.setItem('modelrouter-theme', mode); } catch (error) {}
+  setActionMessage('Appearance set to ' + mode + ' mode.');
+}
+function openCompactPanel() {
+  const panel = document.getElementById('compact-popover');
+  if (!panel) return;
+  panel.classList.add('open');
+  panel.setAttribute('aria-hidden', 'false');
+  setActionMessage('Compact panel opened.');
+}
+function closeCompactPanel() {
+  const panel = document.getElementById('compact-popover');
+  if (!panel) return;
+  panel.classList.remove('open');
+  panel.setAttribute('aria-hidden', 'true');
+  setActionMessage('Compact panel closed.');
+}
+function openCompactWindow() {
+  const child = window.open(
+    '/compact',
+    'modelrouter-compact',
+    'popup=yes,width=420,height=640,resizable=yes,scrollbars=yes'
+  );
+  if (child) {
+    child.focus();
+    setActionMessage('Compact window opened.');
+  } else {
+    setActionMessage('Browser blocked the popup; compact panel is still open here.');
+  }
 }
 document.querySelectorAll('.segment').forEach((button) => {
   button.addEventListener('click', () => {
@@ -2327,6 +2515,7 @@ document.querySelectorAll('.segment').forEach((button) => {
     const compactMode = document.getElementById('compact-mode');
     if (topMode) topMode.textContent = mode;
     if (compactMode) compactMode.textContent = mode;
+    setActionMessage('Selected ' + mode + ' routing profile. Click Save mode to write it.');
   });
 });
 document.querySelectorAll('[data-feedback]').forEach((button) => {
@@ -2335,10 +2524,24 @@ document.querySelectorAll('[data-feedback]').forEach((button) => {
     const input = document.getElementById('feedback-request-id');
     if (input) input.value = requestId;
     jumpTo('review');
-    const target = document.getElementById('last-action');
-    if (target) target.textContent = 'Ready to label ' + requestId + '.';
+    setActionMessage('Ready to label ' + requestId + '.');
   });
 });
+document.querySelectorAll('[data-safety-toggle]').forEach((input) => {
+  input.addEventListener('change', () => {
+    const label = input.closest('label');
+    const text = label ? label.textContent.trim() : 'safety control';
+    setActionMessage(text + ' is ' + (input.checked ? 'on' : 'off') + ' locally. Save behavior remains config-driven.');
+  });
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') closeCompactPanel();
+});
+try {
+  if (window.localStorage.getItem('modelrouter-theme') === 'dark') {
+    document.body.classList.add('dark-mode');
+  }
+} catch (error) {}
 """
 
 
@@ -2383,9 +2586,10 @@ def _dashboard_health_checks(state: Mapping[str, Any]) -> str:
 
 
 def _sidebar_item(label: str, class_name: str, target: str) -> str:
+    aria_current = ' aria-current="page"' if "active" in class_name.split() else ""
     return (
         f'<button class="side-link {class_name}" type="button" '
-        f'onclick="jumpTo({json.dumps(target)})">'
+        f'data-target="{escape(target)}" onclick=\'jumpTo({json.dumps(target)})\'{aria_current}>'
         f'{_nav_icon(label)}<span>{escape(label)}</span></button>'
     )
 
@@ -2399,6 +2603,7 @@ def _nav_icon(label: str) -> str:
         "Safety": "shield",
         "Telemetry": "pulse",
         "Settings": "gear",
+        "Review": "comment",
         "llama.cpp": "code",
         "Ollama": "shield",
         "Risky": "pulse",
@@ -2874,7 +3079,7 @@ def _providers_runtime_section(state: Mapping[str, Any]) -> str:
             {_runtime_action_button("runtime.unload_model", "Unload model", "close", backend_name, model_id, unload_support, confirm=True)}
           </div>
         </div>
-        <div id="last-action" class="muted detail-wide" aria-live="polite"></div>
+        <div class="muted detail-wide" data-action-status aria-live="polite"></div>
         <pre id="runtime-output" class="catalog-output detail-wide">External runtimes own execution. Runtime actions are explicit, confirmed, and adapter-gated.</pre>
       </div>
     </div>"""
@@ -3844,7 +4049,7 @@ def _safety_panel() -> str:
         "Ambiguous high-impact requests",
     )
     toggle_rows = "\n".join(
-        f'<label class="toggle-row"><span class="switch"><input type="checkbox" checked>'
+        f'<label class="toggle-row"><span class="switch"><input type="checkbox" data-safety-toggle checked>'
         f'<span class="slider"></span></span><span>{escape(row)}</span></label>'
         for row in rows
     )
@@ -3992,7 +4197,7 @@ def _settings_follow_through_panel(state: Mapping[str, Any]) -> str:
         <button type="button" onclick="saveConfig().then(() => postAction('/api/proxy/restart', {{confirm: true}}))">Apply and restart proxy</button>
         <button type="button" onclick="scanModels()">Scan models</button>
         <button type="button" onclick="postAction('/api/doctor')">Run doctor</button>
-        <span id="last-action" class="muted" aria-live="polite"></span>
+        <span class="muted" data-action-status aria-live="polite"></span>
       </div>
       <pre id="scan-output" class="catalog-output">No scan action yet.</pre>
     </section>"""
