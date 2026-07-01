@@ -37,6 +37,7 @@ from hermes.plugins.model_router.admin.supervisor import (
 )
 from hermes.plugins.model_router.catalog_update import catalog_status
 from hermes.plugins.model_router.config import RouterConfigError, load_router_config
+from hermes.plugins.model_router.eval_runner import load_eval_results
 from hermes.plugins.model_router.installer import build_installer_state
 from hermes.plugins.model_router.product import (
     DEFAULT_CONFIG_DIR,
@@ -359,6 +360,8 @@ def _build_settings_state_impl(
 
     discovery = scan_local_environment()
     benchmark_results = load_benchmark_results(paths["benchmarks"])
+    eval_results_path = paths.get("eval_results")
+    eval_results = load_eval_results(eval_results_path) if eval_results_path else ()
     recommendation = recommend_setup(
         discovery,
         download_alternatives=2,
@@ -405,6 +408,7 @@ def _build_settings_state_impl(
             recommendation=recommendation,
             download_plan=download_plan,
             benchmark_results=benchmark_results,
+            eval_results=eval_results,
             runtime_models=runtime_models,
         ),
         "installer": build_installer_state(paths, discovery=discovery),
@@ -2872,6 +2876,7 @@ def _model_library_panel(state: Mapping[str, Any]) -> str:
         {_installed_models_card(library)}
         {_discover_models_card(library)}
         {_recommended_models_card(library)}
+        {_eval_evidence_card(library)}
         {_downloads_models_card(library)}
         {_assignments_models_card(library)}
       </div>
@@ -3121,6 +3126,105 @@ def _recommended_model_row(item: Mapping[str, Any]) -> str:
       <td>{escape(str(item.get("score_label") or score.get("label") or "unscored"))} {escape(str(score.get("overall_score") or ""))}</td>
       <td>{escape("; ".join(str(reason) for reason in reasons[:2]) or str(item.get("reason") or ""))}</td>
     </tr>"""
+
+
+def _eval_evidence_card(library: Mapping[str, Any]) -> str:
+    rows_data = _eval_evidence_rows(library)
+    if rows_data:
+        rows = "\n".join(_eval_evidence_row(item) for item in rows_data[:10])
+    else:
+        rows = (
+            '<tr><td colspan="5" class="muted">'
+            "No cached eval evidence. Run evals explicitly when you want local "
+            "model suitability evidence.</td></tr>"
+        )
+    return f"""<details class="model-card">
+      <summary><span class="model-detail-title">Eval evidence</span><span class="muted">{len(rows_data)} model summaries</span></summary>
+      <div class="model-detail-body">
+        <table class="data-table model-table">
+          <thead><tr><th>Model</th><th>Backend</th><th>Status</th><th>Scores</th><th>Last run</th></tr></thead>
+          <tbody>{rows}</tbody>
+        </table>
+        <p class="muted">Advisory only; cached eval evidence does not change routing automatically.</p>
+      </div>
+    </details>"""
+
+
+def _eval_evidence_rows(library: Mapping[str, Any]) -> list[dict[str, Any]]:
+    registry = library.get("registry") if isinstance(library.get("registry"), Mapping) else {}
+    models = registry.get("models") if isinstance(registry.get("models"), list) else []
+    rows: list[dict[str, Any]] = []
+    for model in models:
+        if not isinstance(model, Mapping):
+            continue
+        metadata = model.get("metadata") if isinstance(model.get("metadata"), Mapping) else {}
+        summary = (
+            metadata.get("latest_eval_summary")
+            if isinstance(metadata.get("latest_eval_summary"), Mapping)
+            else None
+        )
+        if summary is None:
+            continue
+        rows.append(
+            {
+                "model_id": str(model.get("model_id") or summary.get("model") or ""),
+                "backend": str(model.get("backend") or summary.get("backend") or "any"),
+                "status": str(summary.get("status") or "unknown"),
+                "stale": summary.get("stale") is True,
+                "fixture_count": summary.get("fixture_count"),
+                "score_mean_percent": summary.get("score_mean_percent"),
+                "weighted_score_mean": summary.get("weighted_score_mean"),
+                "last_evaluated_at": summary.get("last_evaluated_at"),
+                "by_category": (
+                    summary.get("by_category")
+                    if isinstance(summary.get("by_category"), Mapping)
+                    else {}
+                ),
+            }
+        )
+    rows.sort(key=lambda item: (item["status"] == "not_evaluated", item["model_id"]))
+    return rows
+
+
+def _eval_evidence_row(item: Mapping[str, Any]) -> str:
+    status = str(item.get("status") or "unknown")
+    if item.get("stale"):
+        status = f"{status} · stale"
+    fixture_count = item.get("fixture_count")
+    mean_score = item.get("score_mean_percent")
+    weighted = item.get("weighted_score_mean")
+    score_parts = [
+        f"fixtures {fixture_count if fixture_count is not None else 'n/a'}",
+        f"mean {mean_score if mean_score is not None else 'n/a'}",
+        f"weighted {weighted if weighted is not None else 'n/a'}",
+    ]
+    categories = _eval_category_text(item.get("by_category"))
+    if categories:
+        score_parts.append(categories)
+    return f"""<tr>
+      <td><strong class="code">{escape(_short_model_id(str(item.get("model_id") or "")))}</strong></td>
+      <td>{escape(str(item.get("backend") or "any"))}</td>
+      <td>{escape(status)}</td>
+      <td>{escape(" · ".join(score_parts))}</td>
+      <td>{escape(str(item.get("last_evaluated_at") or "never"))}</td>
+    </tr>"""
+
+
+def _eval_category_text(raw: Any) -> str:
+    if not isinstance(raw, Mapping):
+        return ""
+    parts: list[str] = []
+    for category, group in list(raw.items())[:3]:
+        if not isinstance(group, Mapping):
+            continue
+        score = group.get("score_mean_percent")
+        passed = group.get("passed", 0)
+        total = group.get("total", 0)
+        score_text = score if score is not None else "n/a"
+        parts.append(f"{category}: {score_text} ({passed}/{total})")
+    if len(raw) > 3:
+        parts.append(f"+{len(raw) - 3} categories")
+    return "; ".join(parts)
 
 
 def _downloads_models_card(library: Mapping[str, Any]) -> str:

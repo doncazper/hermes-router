@@ -23,6 +23,7 @@ def settings_paths(config_dir: str | Path) -> dict[str, Path]:
         "settings_proxy_log": base / "logs" / "settings-proxy.log",
         "models": base / "models",
         "benchmarks": base / "benchmarks.json",
+        "eval_results": base / "evals" / "results.jsonl",
         "workflow_benchmarks": base / "workflow-benchmarks.json",
         "pricing": base / DEFAULT_PRICING_CATALOG_NAME,
     }

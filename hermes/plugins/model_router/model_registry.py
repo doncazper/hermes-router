@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 import re
 from typing import Any, Mapping, Sequence
 
+from hermes.plugins.model_router.eval_runner import eval_evidence_from_rows
 from hermes.plugins.model_router.models import RouterConfig
 from hermes.plugins.model_router.proxy_config import RoutingProxyConfig
 from hermes.plugins.model_router.runtime_adapters import (
@@ -108,6 +109,7 @@ def build_model_registry(
     proxy_config: RoutingProxyConfig | None = None,
     discovery: Any = None,
     runtime_models: Mapping[str, Any] | None = None,
+    eval_results: Sequence[Mapping[str, Any]] | None = None,
     user_models: Sequence[Mapping[str, Any]] = (),
 ) -> ModelRegistry:
     """Build a deterministic local registry without network calls.
@@ -127,7 +129,10 @@ def build_model_registry(
     if runtime_models:
         rows.extend(_models_from_runtime(proxy_config, runtime_models))
     rows.extend(_models_from_user_models(user_models))
-    return ModelRegistry(models=_merge_models(rows))
+    models = _merge_models(rows)
+    if eval_results is not None:
+        models = _models_with_eval_evidence(models, eval_results)
+    return ModelRegistry(models=models)
 
 
 def _models_from_router_config(config: RouterConfig) -> tuple[KnownModel, ...]:
@@ -431,6 +436,26 @@ def _merge_model(left: KnownModel, right: KnownModel) -> KnownModel:
         assigned_routes=_unique_strings((*left.assigned_routes, *right.assigned_routes)),
         last_seen_at=_prefer(left.last_seen_at, right.last_seen_at),
         metadata={**_json_safe_mapping(left.metadata), **_json_safe_mapping(right.metadata)},
+    )
+
+
+def _models_with_eval_evidence(
+    models: Sequence[KnownModel],
+    eval_results: Sequence[Mapping[str, Any]],
+) -> tuple[KnownModel, ...]:
+    return tuple(
+        replace(
+            model,
+            metadata={
+                **_json_safe_mapping(model.metadata),
+                "latest_eval_summary": eval_evidence_from_rows(
+                    model.model_id,
+                    eval_results,
+                    backend=model.backend,
+                ),
+            },
+        )
+        for model in models
     )
 
 

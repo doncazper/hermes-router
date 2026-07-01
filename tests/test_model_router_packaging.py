@@ -110,6 +110,15 @@ def test_packaged_pricing_catalog_resource_exists():
     assert pricing_resource.is_file()
 
 
+def test_packaged_eval_fixtures_resource_exists():
+    eval_resource = resources.files("hermes.plugins.model_router").joinpath(
+        "data",
+        "eval_fixtures.yaml",
+    )
+
+    assert eval_resource.is_file()
+
+
 def test_packaged_proxy_example_resource_exists():
     proxy_resource = resources.files("hermes.plugins.model_router").joinpath(
         "data",
@@ -184,6 +193,7 @@ def test_wheel_contains_console_scripts_generic_package_and_packaged_config(tmp_
     assert "hermes/plugins/model_router/data/model_router.yaml" in names
     assert "hermes/plugins/model_router/data/model_catalog.yaml" in names
     assert "hermes/plugins/model_router/data/pricing_catalog.yaml" in names
+    assert "hermes/plugins/model_router/data/eval_fixtures.yaml" in names
     assert "hermes/plugins/model_router/data/routing_proxy.example.yaml" in names
     for template_name in preset_template_names():
         assert f"hermes/plugins/model_router/data/{template_name}" in names

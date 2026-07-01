@@ -23,6 +23,7 @@ def build_model_library_state(
     recommendation: Any,
     download_plan: Any,
     benchmark_results: Any = None,
+    eval_results: Any = None,
     runtime_models: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a real model-library state block from scan/catalog/config data."""
@@ -33,6 +34,7 @@ def build_model_library_state(
             proxy_config=config,
             discovery=discovery,
             runtime_models=runtime_models,
+            eval_results=_eval_rows(eval_results),
         ).to_dict(),
         "installed": _installed_models(config, discovery, local_scores),
         "discover": _discover_state(
@@ -241,6 +243,19 @@ def _local_scores_by_repo(recommendation: Any) -> dict[str, dict[str, Any]]:
         if repo_id and score is not None:
             scores[repo_id] = score.to_dict()
     return scores
+
+
+def _eval_rows(eval_results: Any) -> tuple[Mapping[str, Any], ...] | None:
+    if eval_results is None:
+        return None
+    if isinstance(eval_results, Mapping):
+        rows = eval_results.get("results")
+        if isinstance(rows, list):
+            return tuple(row for row in rows if isinstance(row, Mapping))
+        return (eval_results,)
+    if isinstance(eval_results, (list, tuple)):
+        return tuple(row for row in eval_results if isinstance(row, Mapping))
+    return None
 
 
 def _assigned_routes(config: RoutingProxyConfig | None, model_id: str) -> list[str]:

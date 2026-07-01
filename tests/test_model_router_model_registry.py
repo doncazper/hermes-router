@@ -1,6 +1,10 @@
 import json
 
 from hermes.plugins.model_router.config import load_router_config
+from hermes.plugins.model_router.evals import (
+    EVAL_FIXTURE_SCHEMA_VERSION,
+    EVAL_SCORER_VERSION,
+)
 from hermes.plugins.model_router.model_registry import build_model_registry
 from hermes.plugins.model_router.policy import ModelRouter
 from hermes.plugins.model_router.product import initialize_product_config
@@ -13,6 +17,29 @@ from hermes.plugins.model_router.proxy_config import (
 )
 from hermes.plugins.model_router.runtime_adapters import RuntimeModel
 from hermes.plugins.model_router.setup_assistant import DiscoveredModel, SetupDiscovery
+
+
+def _eval_row(**overrides):
+    row = {
+        "version": 1,
+        "run_id": "evalrun_registry",
+        "created_at": "2026-06-30T12:00:00.000Z",
+        "backend": "fast",
+        "model": "mock-model",
+        "selected_engine": "fast_local",
+        "fixture_id": "strict_json_routing_control_decision",
+        "category": "structured_output",
+        "score_percent": 100.0,
+        "weighted_score": 1.0,
+        "exit_status": "passed",
+        "status": "completed",
+        "timeout": False,
+        "scorer_version": EVAL_SCORER_VERSION,
+        "fixture_version": EVAL_FIXTURE_SCHEMA_VERSION,
+        "failure_reasons": [],
+    }
+    row.update(overrides)
+    return row
 
 
 def _proxy_config(*backends: ProxyBackendConfig) -> RoutingProxyConfig:
@@ -345,6 +372,61 @@ def test_registry_allows_missing_runtime_metadata_and_marks_stale_models():
     json.dumps(registry.to_dict())
 
 
+def test_registry_can_attach_cached_eval_evidence_without_running_evals():
+    registry = build_model_registry(
+        user_models=(
+            {
+                "provider": "lmstudio",
+                "model": "mock-model",
+                "backend": "fast",
+                "runtime": "lmstudio",
+            },
+        ),
+        eval_results=(
+            _eval_row(),
+            _eval_row(
+                fixture_id="code_review_judgment",
+                category="code_review_judgment",
+                score_percent=50.0,
+                weighted_score=0.5,
+                exit_status="failed",
+                failure_reasons=("Required pattern was missing.",),
+            ),
+        ),
+    )
+
+    model = registry.to_dict()["models"][0]
+    summary = model["metadata"]["latest_eval_summary"]
+
+    assert summary["status"] == "evaluated"
+    assert summary["fixture_count"] == 2
+    assert summary["passed"] == 1
+    assert summary["failed"] == 1
+    assert summary["score_mean_percent"] == 75.0
+    assert any("advisory" in note for note in summary["notes"])
+    json.dumps(model)
+
+
+def test_registry_marks_missing_eval_evidence_as_not_evaluated():
+    registry = build_model_registry(
+        user_models=(
+            {
+                "provider": "lmstudio",
+                "model": "unevaluated-model",
+                "backend": "fast",
+                "runtime": "lmstudio",
+            },
+        ),
+        eval_results=(),
+    )
+
+    summary = registry.to_dict()["models"][0]["metadata"]["latest_eval_summary"]
+
+    assert summary["status"] == "not_evaluated"
+    assert summary["fixture_count"] == 0
+    assert any("does not block routing" in note for note in summary["notes"])
+
+
 def test_route_fast_does_not_depend_on_model_registry(monkeypatch, tmp_path):
     initialize_product_config(
         preset="lmstudio",
@@ -360,5 +442,26 @@ def test_route_fast_does_not_depend_on_model_registry(monkeypatch, tmp_path):
         raise AssertionError("route_fast must not build the model registry")
 
     monkeypatch.setattr(model_registry, "build_model_registry", fail_registry)
+
+    assert router.route_fast("rewrite this text") == "fast_local"
+
+
+def test_route_fast_does_not_load_eval_evidence(monkeypatch, tmp_path):
+    initialize_product_config(
+        preset="lmstudio",
+        config_dir=tmp_path,
+        force=False,
+        interactive=False,
+    )
+    router = ModelRouter.from_config(tmp_path / "model_router.yaml")
+
+    import hermes.plugins.model_router.eval_runner as eval_runner
+
+    def fail_eval(*_args, **_kwargs):
+        raise AssertionError("route_fast must not load or summarize eval evidence")
+
+    monkeypatch.setattr(eval_runner, "load_eval_results", fail_eval)
+    monkeypatch.setattr(eval_runner, "eval_evidence_for_model", fail_eval)
+    monkeypatch.setattr(eval_runner, "eval_evidence_from_rows", fail_eval)
 
     assert router.route_fast("rewrite this text") == "fast_local"

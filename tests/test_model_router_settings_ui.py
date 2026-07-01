@@ -15,6 +15,10 @@ from hermes.plugins.model_router.admin.actions import (
     run_admin_action,
 )
 from hermes.plugins.model_router.admin.state import build_admin_state
+from hermes.plugins.model_router.evals import (
+    EVAL_FIXTURE_SCHEMA_VERSION,
+    EVAL_SCORER_VERSION,
+)
 from hermes.plugins.model_router.model_benchmark import BenchmarkResult, BenchmarkTarget
 from hermes.plugins.model_router.product import initialize_product_config
 from hermes.plugins.model_router.proxy_config import load_proxy_config
@@ -453,6 +457,48 @@ def test_model_library_dashboard_renders_populated_surfaces(tmp_path, monkeypatc
     assert "/api/model/assign-route" in html
     assert "Plan downloads" in html
     assert "No local models found yet" not in html
+
+
+def test_model_library_dashboard_renders_cached_eval_evidence(tmp_path, monkeypatch):
+    _init_config(tmp_path)
+    _stub_scan(monkeypatch)
+    paths = settings_ui.settings_paths(tmp_path)
+    paths["eval_results"].parent.mkdir(parents=True, exist_ok=True)
+    paths["eval_results"].write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "run_id": "evalrun_settings",
+                "created_at": "2026-06-30T12:00:00.000Z",
+                "backend": "fast",
+                "model": "lmstudio-fast-model",
+                "selected_engine": "fast_local",
+                "fixture_id": "strict_json_routing_control_decision",
+                "category": "structured_output",
+                "score_percent": 100.0,
+                "weighted_score": 1.0,
+                "exit_status": "passed",
+                "status": "completed",
+                "timeout": False,
+                "scorer_version": EVAL_SCORER_VERSION,
+                "fixture_version": EVAL_FIXTURE_SCHEMA_VERSION,
+                "failure_reasons": [],
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    state = settings_ui.build_settings_state(paths)
+    html = settings_ui.render_dashboard_page(state)
+
+    assert "Eval evidence" in html
+    assert "lmstudio-fast-model" in html
+    assert "structured_output: 100.0 (1/1)" in html
+    assert "Advisory only; cached eval evidence does not change routing automatically." in html
+    assert "Return only JSON" not in html
+    assert '"route":"balanced"' not in html
 
 
 def test_settings_state_feeds_runtime_models_into_registry(tmp_path, monkeypatch):

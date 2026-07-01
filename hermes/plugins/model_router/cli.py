@@ -20,6 +20,14 @@ from hermes.plugins.model_router.catalog_update import (
 )
 from hermes.plugins.model_router.config import RouterConfigError, load_router_config
 from hermes.plugins.model_router.dispatch import build_dispatch_plan, dispatch_plan_to_json
+from hermes.plugins.model_router.eval_runner import (
+    DEFAULT_EVAL_RESULTS_PATH,
+    eval_evidence_for_model,
+    eval_fixture_summaries,
+    eval_report,
+    execute_eval_run,
+)
+from hermes.plugins.model_router.evals import EvalFixtureError
 from hermes.plugins.model_router.installer import (
     build_install_plan,
     options_from_namespace,
@@ -369,6 +377,107 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
     )
     workflow_benchmark.add_argument("--json", action="store_true", help="Emit JSON output")
     workflow_benchmark.set_defaults(func=_cmd_workflow_benchmark)
+
+    eval_cmd = subparsers.add_parser(
+        "eval",
+        help="Run privacy-safe local suitability evals against a configured backend",
+    )
+    eval_subparsers = eval_cmd.add_subparsers(dest="eval_command", required=True)
+    eval_list = eval_subparsers.add_parser(
+        "list",
+        help="List built-in eval fixtures without printing prompt bodies",
+    )
+    eval_list.add_argument(
+        "--category",
+        default=None,
+        help="Only list fixtures from one category",
+    )
+    eval_list.add_argument("--json", action="store_true", help="Emit JSON output")
+    eval_list.set_defaults(func=_cmd_eval_list)
+
+    eval_run = eval_subparsers.add_parser(
+        "run",
+        help="Execute eval fixtures against one explicitly selected backend",
+    )
+    eval_run.add_argument(
+        "--config",
+        type=Path,
+        default=Path(DEFAULT_CONFIG_DIR) / "routing_proxy.yaml",
+        help="Path to routing_proxy.yaml",
+    )
+    eval_run.add_argument(
+        "--backend",
+        required=True,
+        help="Backend name from routing_proxy.yaml",
+    )
+    eval_run.add_argument(
+        "--model",
+        default=None,
+        help="Model id to send upstream; defaults to the configured backend model",
+    )
+    fixture_selection = eval_run.add_mutually_exclusive_group(required=True)
+    fixture_selection.add_argument(
+        "--fixture",
+        default=None,
+        help="Fixture id or category to run",
+    )
+    fixture_selection.add_argument(
+        "--all",
+        action="store_true",
+        help="Run all built-in eval fixtures",
+    )
+    eval_run.add_argument(
+        "--output",
+        type=Path,
+        default=Path(DEFAULT_EVAL_RESULTS_PATH),
+        help="Path for eval result JSONL",
+    )
+    eval_run.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="Per-fixture backend timeout in seconds",
+    )
+    eval_run.add_argument(
+        "--run-id",
+        default=None,
+        help="Optional run id for automation; defaults to a timestamped id",
+    )
+    eval_run.add_argument("--json", action="store_true", help="Emit JSON output")
+    eval_run.set_defaults(func=_cmd_eval_run)
+
+    eval_report_cmd = eval_subparsers.add_parser(
+        "report",
+        help="Summarize eval JSONL results without raw prompts or outputs",
+    )
+    eval_report_cmd.add_argument("run_id", help="Run id to report, or latest")
+    eval_report_cmd.add_argument(
+        "--results",
+        type=Path,
+        default=Path(DEFAULT_EVAL_RESULTS_PATH),
+        help="Path to eval result JSONL",
+    )
+    eval_report_cmd.add_argument("--json", action="store_true", help="Emit JSON output")
+    eval_report_cmd.set_defaults(func=_cmd_eval_report)
+
+    eval_evidence = eval_subparsers.add_parser(
+        "evidence",
+        help="Show cached advisory eval evidence for one model",
+    )
+    eval_evidence.add_argument("--model", required=True, help="Model id to inspect")
+    eval_evidence.add_argument(
+        "--backend",
+        default=None,
+        help="Optional backend filter from routing_proxy.yaml",
+    )
+    eval_evidence.add_argument(
+        "--results",
+        type=Path,
+        default=Path(DEFAULT_EVAL_RESULTS_PATH),
+        help="Path to eval result JSONL",
+    )
+    eval_evidence.add_argument("--json", action="store_true", help="Emit JSON output")
+    eval_evidence.set_defaults(func=_cmd_eval_evidence)
 
     catalog = subparsers.add_parser(
         "catalog",
@@ -1197,6 +1306,76 @@ def _cmd_workflow_benchmark(args: argparse.Namespace) -> int:
     else:
         _print_workflow_benchmark_report(report)
     return 1 if args.fail_on_mismatch and not report.ok else 0
+
+
+def _cmd_eval_list(args: argparse.Namespace) -> int:
+    try:
+        fixtures = eval_fixture_summaries(category=args.category)
+    except EvalFixtureError as exc:
+        payload = {"ok": False, "error": str(exc)}
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print(f"Eval fixture list failed: {exc}", file=sys.stderr)
+        return 1
+    payload = {
+        "ok": True,
+        "fixtures": list(fixtures),
+        "privacy": "prompt bodies are not printed by eval list",
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        _print_eval_fixture_list(payload)
+    return 0
+
+
+def _cmd_eval_run(args: argparse.Namespace) -> int:
+    try:
+        execution = execute_eval_run(
+            config_path=args.config,
+            backend=args.backend,
+            model=args.model,
+            fixture_selector=args.fixture,
+            all_fixtures=args.all,
+            output_path=args.output,
+            timeout_seconds=args.timeout,
+            run_id=args.run_id,
+        )
+    except (EvalFixtureError, ProxyConfigError, OSError, ValueError) as exc:
+        payload = {"ok": False, "error": str(exc)}
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print(f"Eval run failed: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(execution.to_dict(), indent=2, sort_keys=True))
+    else:
+        _print_eval_run_execution(execution)
+    return 0 if execution.ok else 1
+
+
+def _cmd_eval_report(args: argparse.Namespace) -> int:
+    report = eval_report(args.run_id, result_path=args.results)
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+    else:
+        _print_eval_report(report)
+    return 0
+
+
+def _cmd_eval_evidence(args: argparse.Namespace) -> int:
+    evidence = eval_evidence_for_model(
+        args.model,
+        result_path=args.results,
+        backend=args.backend,
+    )
+    if args.json:
+        print(json.dumps(evidence, indent=2, sort_keys=True))
+    else:
+        _print_eval_evidence(evidence)
+    return 0
 
 
 def _cmd_catalog_status(args: argparse.Namespace) -> int:
@@ -2586,6 +2765,189 @@ def _print_workflow_benchmark_report(report) -> None:
     if not report.notes:
         print("- none")
     for note in report.notes:
+        print(f"- {note}")
+
+
+def _print_eval_fixture_list(payload: Mapping[str, Any]) -> None:
+    print("ModelRouter Evals")
+    fixtures = payload.get("fixtures") if isinstance(payload.get("fixtures"), list) else []
+    print(f"Fixtures: {len(fixtures)}")
+    if not fixtures:
+        print("- none")
+    for fixture in fixtures:
+        if not isinstance(fixture, Mapping):
+            continue
+        print(
+            "- "
+            f"{fixture.get('id')}: {fixture.get('category')} "
+            f"({fixture.get('task_profile')})"
+        )
+    print(f"Privacy: {payload.get('privacy')}")
+
+
+def _print_eval_run_execution(execution) -> None:
+    print("ModelRouter Eval Run")
+    print(f"Run id: {execution.run_id}")
+    print(f"Created: {execution.created_at}")
+    print(f"Backend: {execution.backend}")
+    print(f"Model: {execution.model}")
+    print(f"Output: {execution.output_path}")
+    print(f"OK: {str(execution.ok).lower()}")
+    print(f"Passed: {str(execution.passed).lower()}")
+    print("Results:")
+    if not execution.results:
+        print("- none")
+    for result in execution.results:
+        print(
+            f"- {result.fixture_id}: {result.exit_status} "
+            f"score={result.score_percent}% status={result.status}"
+        )
+        if result.latency_ms is not None:
+            print(f"  latency ms: {result.latency_ms}")
+        if result.failure_reasons:
+            print(f"  failures: {'; '.join(result.failure_reasons[:3])}")
+    print("Notes:")
+    if not execution.notes:
+        print("- none")
+    for note in execution.notes:
+        print(f"- {note}")
+
+
+def _print_eval_report(report) -> None:
+    print("ModelRouter Eval Report")
+    print(f"Run id: {report.run_id or 'none'}")
+    print(f"Results: {report.result_path}")
+    print(f"Backend: {report.backend or 'unknown'}")
+    print(f"Model: {report.model or 'unknown'}")
+    print(f"Selected engine: {report.selected_engine or 'unknown'}")
+    print(
+        "Summary: "
+        f"total={report.total}, completed={report.completed}, "
+        f"passed={report.passed}, failed={report.failed}, "
+        f"timeouts={report.timeouts}, unknown={report.unknown}, "
+        f"mean_score={report.score_mean_percent if report.score_mean_percent is not None else 'n/a'}, "
+        f"weighted={report.weighted_score_mean if report.weighted_score_mean is not None else 'n/a'}"
+    )
+    latency = report.latency_summary
+    print(
+        "Latency: "
+        f"count={latency.get('count', 0)} "
+        f"missing={latency.get('missing', 0)} "
+        f"mean_ms={latency.get('mean_ms') or 'n/a'} "
+        f"median_ms={latency.get('median_ms') or 'n/a'} "
+        f"min_ms={latency.get('min_ms') or 'n/a'} "
+        f"max_ms={latency.get('max_ms') or 'n/a'}"
+    )
+    usage = report.usage_summary
+    print(
+        "Usage: "
+        f"rows={usage.get('rows_with_usage', 0)} "
+        f"missing={usage.get('rows_missing_usage', 0)} "
+        f"prompt={usage.get('usage_prompt_tokens', 0)} "
+        f"completion={usage.get('usage_completion_tokens', 0)} "
+        f"total={usage.get('usage_total_tokens', 0)}"
+    )
+    print("By category:")
+    if not report.by_category:
+        print("- none")
+    for category, group in report.by_category.items():
+        print(
+            f"- {category}: total={group.get('total', 0)} "
+            f"passed={group.get('passed', 0)} failed={group.get('failed', 0)} "
+            f"timeouts={group.get('timeouts', 0)} "
+            f"mean={group.get('score_mean_percent')} "
+            f"weighted={group.get('weighted_score_mean')}"
+        )
+    print("Top failure reasons:")
+    if not report.top_failure_reasons:
+        print("- none")
+    for reason in report.top_failure_reasons:
+        print(f"- {reason.get('reason')}: {reason.get('count')}")
+    print("Suitability notes:")
+    if not report.suitability_notes:
+        print("- none")
+    for note in report.suitability_notes:
+        print(f"- {note}")
+    privacy = report.privacy
+    print(
+        "Privacy: "
+        f"prompt={privacy.get('prompt_retention', 'unknown')} "
+        f"output={privacy.get('output_retention', 'unknown')} "
+        f"artifacts={privacy.get('artifact_retention', 'unknown')}"
+    )
+    print("Results:")
+    if not report.results:
+        print("- none")
+    for row in report.results:
+        print(
+            f"- {row.get('fixture_id')}: {row.get('exit_status')} "
+            f"score={row.get('score_percent')} status={row.get('status')}"
+        )
+    print("Notes:")
+    if not report.notes:
+        print("- none")
+    for note in report.notes:
+        print(f"- {note}")
+
+
+def _print_eval_evidence(evidence: Mapping[str, Any]) -> None:
+    print("ModelRouter Eval Evidence")
+    print(f"Model: {evidence.get('model') or 'unknown'}")
+    print(f"Backend: {evidence.get('backend') or 'any'}")
+    print(f"Status: {evidence.get('status') or 'unknown'}")
+    print(f"Latest run: {evidence.get('latest_run_id') or 'none'}")
+    print(f"Last evaluated: {evidence.get('last_evaluated_at') or 'never'}")
+    print(
+        "Summary: "
+        f"fixtures={evidence.get('fixture_count', 0)} "
+        f"passed={evidence.get('passed', 0)} "
+        f"failed={evidence.get('failed', 0)} "
+        f"timeouts={evidence.get('timeouts', 0)} "
+        f"mean_score={evidence.get('score_mean_percent') or 'n/a'} "
+        f"weighted={evidence.get('weighted_score_mean') or 'n/a'}"
+    )
+    print(f"Stale: {str(bool(evidence.get('stale'))).lower()}")
+    stale_reasons = (
+        evidence.get("stale_reasons")
+        if isinstance(evidence.get("stale_reasons"), list)
+        else []
+    )
+    if stale_reasons:
+        print("Stale reasons:")
+        for reason in stale_reasons:
+            print(f"- {reason}")
+    categories = (
+        evidence.get("by_category")
+        if isinstance(evidence.get("by_category"), Mapping)
+        else {}
+    )
+    print("By category:")
+    if not categories:
+        print("- not evaluated")
+    for category, group in categories.items():
+        if not isinstance(group, Mapping):
+            continue
+        print(
+            f"- {category}: total={group.get('total', 0)} "
+            f"passed={group.get('passed', 0)} failed={group.get('failed', 0)} "
+            f"mean={group.get('score_mean_percent')}"
+        )
+    failures = (
+        evidence.get("top_failure_reasons")
+        if isinstance(evidence.get("top_failure_reasons"), list)
+        else []
+    )
+    print("Top failure reasons:")
+    if not failures:
+        print("- none")
+    for reason in failures:
+        if isinstance(reason, Mapping):
+            print(f"- {reason.get('reason')}: {reason.get('count')}")
+    print("Notes:")
+    notes = evidence.get("notes") if isinstance(evidence.get("notes"), list) else []
+    if not notes:
+        print("- Eval evidence is advisory and does not change routing automatically.")
+    for note in notes:
         print(f"- {note}")
 
 

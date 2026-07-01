@@ -616,6 +616,22 @@ model-router workflow-benchmark --json --fail-on-mismatch
 This command exercises sanitized route fixtures and emits prompt hashes, not
 prompt bodies. It does not call providers or local model servers.
 
+Run local model suitability evals when you want evidence for a configured
+backend/model on this machine:
+
+```bash
+model-router eval list
+model-router eval run --config ~/.model-router/routing_proxy.yaml --fixture structured_output --backend fast
+model-router eval report latest
+model-router eval evidence --model local-fast-model --backend fast
+```
+
+Evals execute only the explicitly selected backend, store hashes/scores/status,
+latency, usage when returned, and sanitized errors, and do not retain raw
+prompts or raw outputs by default. Eval reports are advisory local evidence for
+model recommendations and diagnostics; they do not automatically change
+`route_fast(...)`, `route(...)`, proxy forwarding, or route assignments.
+
 Inspect packaged catalog updates without changing local policy:
 
 ```bash
@@ -1557,6 +1573,7 @@ integration point.
 - [Runtime install flow](docs/runtime-install-flow.md)
 - [Bundled runtime roadmap](docs/bundled-runtime-roadmap.md)
 - [Runtime parity gap report](docs/runtime-parity-gap-report.md)
+- [ModelRouter evals](docs/model-router-evals.md)
 - [LM Studio parity roadmap](docs/lm-studio-parity-roadmap.md)
 - [Local server compatibility matrix](docs/local-server-compatibility.md)
 - [Business model](docs/business-model.md)
