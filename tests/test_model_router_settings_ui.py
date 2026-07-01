@@ -164,6 +164,7 @@ def test_settings_home_page_loads_without_chat_surface(tmp_path, monkeypatch):
     assert "No routing events yet" in response.text
     assert "Settings UI Follow-Through" in response.text
     assert "Telemetry Review" in response.text
+    assert "Catalog coverage" in response.text
     assert "Maturity" in response.text
     assert "TUI control center" in response.text
     assert "code_agent" in response.text
@@ -312,6 +313,19 @@ entries:
         "usage_total_tokens"
     ] == 30
     assert payload["telemetry"]["pricing_match_counts"] == {"matched": 1}
+    assert payload["telemetry"]["catalog_coverage"] == {
+        "active_catalog_source": "packaged+override:"
+        + str(tmp_path / "pricing_catalog.yaml"),
+        "active_catalog_version": 4,
+        "cost_confidence": "catalog_matched",
+        "rows_missing_provider_model_catalog_match": 0,
+        "rows_using_placeholder_pricing": 0,
+        "rows_with_catalog_match": 1,
+        "rows_with_estimated_cost": 1,
+        "rows_without_enough_usage_data": 1,
+        "total_routing_rows": 2,
+        "total_rows_with_usage": 1,
+    }
     assert payload["telemetry"]["estimated_total_cost"] == 0.000072
     assert payload["telemetry"]["estimated_cost_currency"] == "USD"
     assert payload["telemetry"]["recent_request_ids"] == ["req-1", "req-2"]
@@ -433,9 +447,12 @@ def test_dashboard_uses_latest_safe_route_receipt_without_prompt_leakage(
     assert state["recent_events"][0]["usage_tokens"] == "p=40 c=12 t=52 cache=8"
     assert state["review"]["items"][0]["request_id"] == "req-secret"
     assert state["review"]["items"][0]["usage_tokens"] == "p=40 c=12 t=52 cache=8"
+    assert state["review"]["catalog_coverage"]["total_rows_with_usage"] == 1
+    assert state["review"]["catalog_coverage"]["rows_missing_provider_model_catalog_match"] == 1
     assert "route.coding" in html
     assert "req-secret" in html
     assert "p=40 c=12 t=52 cache=8" in html
+    assert "Catalog coverage" in html
     assert "api_key=super-secret" not in serialized
     assert "api_key=super-secret" not in html
     assert "fix this repository" not in serialized

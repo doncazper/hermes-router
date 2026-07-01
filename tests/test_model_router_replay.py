@@ -35,6 +35,25 @@ entries:
     )
 
 
+def _write_placeholder_pricing_catalog(path):
+    path.write_text(
+        """catalog_version: 5
+updated_at: "2026-06-30T00:00:00Z"
+entries:
+  - provider: example
+    model: placeholder-model
+    input_per_1m: 1
+    output_per_1m: 3
+    cached_input_per_1m: 0.25
+    currency: USD
+    effective_date: "2026-06-30"
+    source: example-placeholder-not-current-pricing
+    notes: Non-authoritative placeholder for operator override shape.
+""",
+        encoding="utf-8",
+    )
+
+
 def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "-m", "hermes.plugins.model_router.cli", *args],
@@ -169,6 +188,12 @@ def test_replay_routing_log_summarizes_usage_without_prompt_text(tmp_path):
     assert summary["usage_by_model"]["actual-fast"]["usage_total_tokens"] == 15
     assert summary["usage_by_model"]["code-model"]["usage_total_tokens"] == 28
     assert summary["upstream_model_counts"] == {"actual-fast": 1}
+    coverage = summary["catalog_coverage"]
+    assert coverage["total_routing_rows"] == 3
+    assert coverage["total_rows_with_usage"] == 2
+    assert coverage["rows_without_enough_usage_data"] == 1
+    assert coverage["rows_missing_provider_model_catalog_match"] == 2
+    assert coverage["cost_confidence"] == "no_catalog_match"
     assert "secret-value" not in serialized
 
 
@@ -227,6 +252,57 @@ def test_replay_routing_log_estimates_cost_from_local_catalog(tmp_path):
     assert summary["estimated_total_cost"] == 0.0000355
     assert summary["estimated_cost_currency"] == "USD"
     assert summary["usage_by_model"]["actual-fast"]["estimated_total_cost"] == 0.0000355
+    coverage = summary["catalog_coverage"]
+    assert coverage["active_catalog_version"] == 3
+    assert coverage["total_rows_with_usage"] == 2
+    assert coverage["rows_with_catalog_match"] == 1
+    assert coverage["rows_missing_provider_model_catalog_match"] == 1
+    assert coverage["rows_using_placeholder_pricing"] == 0
+    assert coverage["rows_with_estimated_cost"] == 1
+    assert coverage["cost_confidence"] == "partial_catalog_match"
+    assert "secret-value" not in serialized
+
+
+def test_replay_routing_log_reports_placeholder_pricing_coverage(tmp_path):
+    events = tmp_path / "events.jsonl"
+    feedback = tmp_path / "feedback.jsonl"
+    pricing = tmp_path / "pricing_catalog.yaml"
+    _write_jsonl(feedback, [])
+    _write_placeholder_pricing_catalog(pricing)
+    _write_jsonl(
+        events,
+        [
+            {
+                "event_type": "routing_event",
+                "request_id": "placeholder",
+                "prompt": "rewrite token=secret-value",
+                "selected_engine": "fast_local",
+                "upstream_model": "placeholder-model",
+                "usage_prompt_tokens": 10,
+                "usage_completion_tokens": 5,
+                "usage_total_tokens": 15,
+            }
+        ],
+    )
+
+    summary = replay_events(
+        events_path=events,
+        feedback_path=feedback,
+        config_path=None,
+        pricing_catalog_path=pricing,
+    )
+    review = review_queue(
+        events_path=events,
+        feedback_path=feedback,
+        pricing_catalog_path=pricing,
+    )
+    serialized = json.dumps({"summary": summary, "review": review}, sort_keys=True)
+
+    assert summary["pricing_match_counts"] == {"matched": 1}
+    assert summary["catalog_coverage"]["rows_using_placeholder_pricing"] == 1
+    assert summary["catalog_coverage"]["cost_confidence"] == "placeholder_pricing"
+    assert review["catalog_coverage"]["rows_using_placeholder_pricing"] == 1
+    assert review["items"][0]["cost"]["pricing_is_placeholder"] is True
     assert "secret-value" not in serialized
 
 
@@ -304,6 +380,8 @@ def test_review_queue_includes_cost_without_prompt_or_response_text(tmp_path):
 
     assert item["cost"]["pricing_match_status"] == "matched"
     assert item["cost"]["estimated_total_cost"] == 0.0000355
+    assert summary["catalog_coverage"]["rows_with_catalog_match"] == 1
+    assert summary["catalog_coverage"]["rows_with_estimated_cost"] == 1
     assert "secret-value" not in serialized
     assert "rewrite this" not in serialized
 
@@ -361,11 +439,18 @@ def test_telemetry_cli_summary_and_review_show_usage_without_prompt_text(tmp_pat
     assert "fast: prompt=14, completion=6, total=20" in summary.stdout
     assert "Estimated cost events: 1" in summary.stdout
     assert "Estimated cost: 0.000052 USD events=1" in summary.stdout
+    assert "Catalog coverage:" in summary.stdout
+    assert "usage_rows=1" in summary.stdout
+    assert "matched=1" in summary.stdout
+    assert "confidence=catalog_matched" in summary.stdout
     assert "secret-value" not in summary.stdout
     assert "rewrite this" not in summary.stdout
     assert review.returncode == 0
     assert "usage: prompt=14, completion=6, total=20" in review.stdout
     assert "cost: 0.000052 USD" in review.stdout
+    assert "Catalog coverage:" in review.stdout
+    assert "usage_rows=1" in review.stdout
+    assert "confidence=catalog_matched" in review.stdout
     assert "secret-value" not in review.stdout
     assert "rewrite this" not in review.stdout
 

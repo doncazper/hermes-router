@@ -10,7 +10,11 @@ from typing import Any
 
 from hermes.plugins.model_router.policy import ModelRouter
 from hermes.plugins.model_router.pricing_catalog import (
+    PRICING_AMBIGUOUS_MODEL,
     PricingCatalog,
+    PRICING_MATCHED,
+    PRICING_MISSING_MODEL,
+    PRICING_MISSING_PRICE,
     estimate_usage_cost,
     load_pricing_catalog,
 )
@@ -278,12 +282,17 @@ def review_queue(
         rows.append(row)
         if len(rows) >= max_rows:
             break
+    usage_summary = usage_telemetry_summary(
+        events,
+        pricing_catalog=pricing_catalog,
+    )
     return {
         "reviewable": len(rows),
         "items": rows,
         "truncated": len(rows) >= max_rows,
         "skipped_labeled": skipped_labeled,
         "skipped_private": skipped_private,
+        "catalog_coverage": usage_summary["catalog_coverage"],
         "privacy": (
             "Prompts, prompt previews, request bodies, feedback notes, and "
             "secrets are hidden by default."
@@ -305,15 +314,28 @@ def usage_telemetry_summary(
     upstream_model_counts: Counter[str] = Counter()
     pricing_match_counts: Counter[str] = Counter()
     usage_events = 0
+    missing_catalog_match_rows = 0
+    placeholder_pricing_rows = 0
+    insufficient_usage_rows = 0
 
     for event in events:
         usage = event_usage_summary(event)
         has_usage = any(usage[field] > 0 for field in USAGE_TOKEN_FIELDS)
         if not has_usage:
+            insufficient_usage_rows += 1
             continue
         usage_events += 1
         cost = event_cost_summary(event, catalog)
-        pricing_match_counts[str(cost.get("pricing_match_status") or "unknown")] += 1
+        pricing_status = str(cost.get("pricing_match_status") or "unknown")
+        pricing_match_counts[pricing_status] += 1
+        if pricing_status in {
+            PRICING_AMBIGUOUS_MODEL,
+            PRICING_MISSING_MODEL,
+            PRICING_MISSING_PRICE,
+        }:
+            missing_catalog_match_rows += 1
+        if _pricing_is_placeholder(cost):
+            placeholder_pricing_rows += 1
         _merge_usage_totals(totals, usage)
         _merge_cost_totals(cost_totals, cost)
 
@@ -352,6 +374,16 @@ def usage_telemetry_summary(
         "pricing_catalog_version": catalog.catalog_version,
         "pricing_catalog_source": catalog.source,
         "pricing_match_counts": dict(sorted(pricing_match_counts.items())),
+        "catalog_coverage": _catalog_coverage_summary(
+            total_routing_rows=len(events),
+            usage_rows=usage_events,
+            matched_rows=pricing_match_counts.get(PRICING_MATCHED, 0),
+            missing_catalog_match_rows=missing_catalog_match_rows,
+            placeholder_pricing_rows=placeholder_pricing_rows,
+            estimated_cost_rows=cost_totals["estimated_cost_events"],
+            insufficient_usage_rows=insufficient_usage_rows,
+            catalog=catalog,
+        ),
         **cost_totals,
     }
 
@@ -540,6 +572,73 @@ def _merged_currency(current: Any, incoming: Any) -> str | None:
     if current == incoming:
         return current
     return "mixed"
+
+
+def _catalog_coverage_summary(
+    *,
+    total_routing_rows: int,
+    usage_rows: int,
+    matched_rows: int,
+    missing_catalog_match_rows: int,
+    placeholder_pricing_rows: int,
+    estimated_cost_rows: int,
+    insufficient_usage_rows: int,
+    catalog: PricingCatalog,
+) -> dict[str, Any]:
+    return {
+        "total_routing_rows": total_routing_rows,
+        "total_rows_with_usage": usage_rows,
+        "rows_with_catalog_match": matched_rows,
+        "rows_missing_provider_model_catalog_match": missing_catalog_match_rows,
+        "rows_using_placeholder_pricing": placeholder_pricing_rows,
+        "rows_with_estimated_cost": estimated_cost_rows,
+        "rows_without_enough_usage_data": insufficient_usage_rows,
+        "active_catalog_version": catalog.catalog_version,
+        "active_catalog_source": catalog.source,
+        "cost_confidence": _cost_confidence_label(
+            usage_rows=usage_rows,
+            matched_rows=matched_rows,
+            missing_catalog_match_rows=missing_catalog_match_rows,
+            placeholder_pricing_rows=placeholder_pricing_rows,
+        ),
+    }
+
+
+def _cost_confidence_label(
+    *,
+    usage_rows: int,
+    matched_rows: int,
+    missing_catalog_match_rows: int,
+    placeholder_pricing_rows: int,
+) -> str:
+    if usage_rows <= 0:
+        return "no_usage"
+    if matched_rows <= 0:
+        return "no_catalog_match"
+    if missing_catalog_match_rows > 0:
+        return "partial_catalog_match"
+    if placeholder_pricing_rows > 0:
+        return "placeholder_pricing"
+    return "catalog_matched"
+
+
+def _pricing_is_placeholder(cost: dict[str, Any]) -> bool:
+    value = cost.get("pricing_is_placeholder")
+    if isinstance(value, bool):
+        return value
+    source = cost.get("pricing_source")
+    if isinstance(source, str):
+        lowered = source.lower()
+        return any(
+            signal in lowered
+            for signal in (
+                "example",
+                "placeholder",
+                "non-authoritative",
+                "not-current-pricing",
+            )
+        )
+    return False
 
 
 def _outcome_label(value: Any) -> str | None:

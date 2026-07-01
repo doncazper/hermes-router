@@ -529,6 +529,9 @@ def render_settings_page(state: Mapping[str, Any]) -> str:
     telemetry_estimated_cost = escape(_format_cost_summary(telemetry))
     telemetry_outcomes = escape(_compact_counts(telemetry.get("outcome_label_counts", {})))
     telemetry_pricing_matches = escape(_compact_counts(telemetry.get("pricing_match_counts", {})))
+    telemetry_catalog_coverage = escape(
+        _format_catalog_coverage(telemetry.get("catalog_coverage"))
+    )
     engine_counts = escape(_compact_counts(telemetry.get("selected_engine_counts", {})))
     backend_counts = escape(_compact_counts(telemetry.get("backend_counts", {})))
     status_counts = escape(_compact_counts(telemetry.get("status_counts", {})))
@@ -811,6 +814,7 @@ def render_settings_page(state: Mapping[str, Any]) -> str:
           <div><h3>estimated cost</h3><span class="mono">{telemetry_estimated_cost}</span></div>
           <div><h3>outcomes</h3><span class="mono">{telemetry_outcomes}</span></div>
           <div><h3>pricing</h3><span class="mono">{telemetry_pricing_matches}</span></div>
+          <div><h3>catalog coverage</h3><span class="mono">{telemetry_catalog_coverage}</span></div>
           <div><h3>engines</h3><span class="mono">{engine_counts}</span></div>
           <div><h3>backends</h3><span class="mono">{backend_counts}</span></div>
           <div><h3>usage by backend</h3><span class="mono">{usage_backend_counts}</span></div>
@@ -3518,6 +3522,11 @@ def _pricing_catalog_panel(state: Mapping[str, Any]) -> str:
 
 def _recent_requests_table(state: Mapping[str, Any]) -> str:
     rows = state.get("recent_events") if isinstance(state.get("recent_events"), list) else []
+    telemetry = state.get("telemetry", {})
+    telemetry = telemetry if isinstance(telemetry, Mapping) else {}
+    catalog_coverage = escape(
+        _format_catalog_coverage(telemetry.get("catalog_coverage"))
+    )
     body = "\n".join(
         f"""<tr>
           <td>{escape(str(row.get("time") or "—"))}</td>
@@ -3534,7 +3543,8 @@ def _recent_requests_table(state: Mapping[str, Any]) -> str:
     )
     if not body:
         body = '<tr><td colspan="8" class="muted">No routing telemetry yet. Start the proxy and send a request.</td></tr>'
-    return f"""<table class="data-table">
+    return f"""<p class="muted">Catalog coverage: <span class="code">{catalog_coverage}</span></p>
+    <table class="data-table">
       <thead>
         <tr>
           <th>Time</th>
@@ -3851,6 +3861,8 @@ def _sanitize_telemetry_summary(summary: Mapping[str, Any]) -> dict[str, Any]:
             "usage_by_model",
         }:
             payload[key] = _safe_usage_group_mapping(value)
+        elif key == "catalog_coverage":
+            payload[key] = _safe_catalog_coverage(value)
         elif key in {
             "unlabeled_replayable_request_ids",
             "skipped_no_prompt_request_ids",
@@ -3956,6 +3968,7 @@ def _safe_cost_summary(value: Any) -> dict[str, Any]:
         ),
         "pricing_provider": _safe_event_string(value.get("pricing_provider")),
         "pricing_model": _safe_event_string(value.get("pricing_model")),
+        "pricing_is_placeholder": value.get("pricing_is_placeholder") is True,
     }
     return payload
 
@@ -3973,6 +3986,45 @@ def _empty_usage_summary() -> dict[str, Any]:
         "estimated_cached_input_cost": 0.0,
         "estimated_total_cost": 0.0,
         "estimated_cost_currency": None,
+    }
+
+
+def _safe_catalog_coverage(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return _empty_catalog_coverage()
+    coverage = _empty_catalog_coverage()
+    for field in (
+        "total_routing_rows",
+        "total_rows_with_usage",
+        "rows_with_catalog_match",
+        "rows_missing_provider_model_catalog_match",
+        "rows_using_placeholder_pricing",
+        "rows_with_estimated_cost",
+        "rows_without_enough_usage_data",
+        "active_catalog_version",
+    ):
+        coverage[field] = _safe_int(value.get(field))
+    source = _safe_event_string(value.get("active_catalog_source"), max_chars=160)
+    if source:
+        coverage["active_catalog_source"] = source
+    confidence = _safe_event_string(value.get("cost_confidence"), max_chars=80)
+    if confidence:
+        coverage["cost_confidence"] = confidence
+    return coverage
+
+
+def _empty_catalog_coverage() -> dict[str, Any]:
+    return {
+        "total_routing_rows": 0,
+        "total_rows_with_usage": 0,
+        "rows_with_catalog_match": 0,
+        "rows_missing_provider_model_catalog_match": 0,
+        "rows_using_placeholder_pricing": 0,
+        "rows_with_estimated_cost": 0,
+        "rows_without_enough_usage_data": 0,
+        "active_catalog_version": 0,
+        "active_catalog_source": "",
+        "cost_confidence": "no_usage",
     }
 
 
@@ -4302,6 +4354,7 @@ def _review_state(paths: Mapping[str, Path]) -> dict[str, Any]:
             "truncated": False,
             "skipped_labeled": 0,
             "skipped_private": 0,
+            "catalog_coverage": _empty_catalog_coverage(),
             "error": str(exc),
             "privacy": (
                 "Prompts, prompt previews, request bodies, feedback notes, and "
@@ -4349,6 +4402,7 @@ def _sanitize_review_state(
         "truncated": payload.get("truncated") is True,
         "skipped_labeled": _safe_int(payload.get("skipped_labeled")),
         "skipped_private": _safe_int(payload.get("skipped_private")),
+        "catalog_coverage": _safe_catalog_coverage(payload.get("catalog_coverage")),
         "privacy": _safe_event_string(
             payload.get("privacy"),
             max_chars=320,
@@ -4996,7 +5050,32 @@ def _format_cost_summary(value: Any) -> str:
     if total == 0 and events == 0:
         return "none"
     amount = f"{total:.8f}".rstrip("0").rstrip(".") or "0"
-    return " ".join(part for part in (amount, currency) if part)
+    parts = [part for part in (amount, currency) if part]
+    if cost.get("pricing_is_placeholder") is True:
+        parts.append("placeholder")
+    return " ".join(parts)
+
+
+def _format_catalog_coverage(value: Any) -> str:
+    coverage = _safe_catalog_coverage(value)
+    parts = [
+        f"usage={coverage['total_rows_with_usage']}",
+        f"matched={coverage['rows_with_catalog_match']}",
+        f"missing={coverage['rows_missing_provider_model_catalog_match']}",
+        f"placeholder={coverage['rows_using_placeholder_pricing']}",
+        f"estimated={coverage['rows_with_estimated_cost']}",
+        f"no_usage={coverage['rows_without_enough_usage_data']}",
+    ]
+    version = coverage.get("active_catalog_version")
+    if isinstance(version, int) and version > 0:
+        parts.append(f"v{version}")
+    source = coverage.get("active_catalog_source")
+    if isinstance(source, str) and source:
+        parts.append(source)
+    confidence = coverage.get("cost_confidence")
+    if isinstance(confidence, str) and confidence:
+        parts.append(confidence)
+    return " ".join(parts)
 
 
 def _download_row(item: Mapping[str, Any]) -> str:

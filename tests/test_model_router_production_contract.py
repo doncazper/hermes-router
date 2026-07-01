@@ -142,6 +142,17 @@ def test_route_fast_source_has_no_hot_path_logging_or_scorer_call():
     assert "score_prompt" not in source
     assert "logging" not in source
     assert "logger" not in source
+    assert "pricing" not in source
+
+
+def test_routing_policy_has_no_pricing_catalog_dependency():
+    source = inspect.getsource(policy)
+
+    assert "pricing_catalog" not in source
+    assert "load_pricing_catalog" not in source
+    assert "pricing_status" not in source
+    assert "pricing_diff" not in source
+    assert "apply_pricing_catalog" not in source
 
 
 def test_route_diagnostics_can_skip_alternatives(tmp_path):

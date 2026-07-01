@@ -2305,6 +2305,12 @@ def _print_pricing_status(status) -> None:
     print(f"Active source: {status.active_catalog_source}")
     print(f"Active entries: {status.active_entry_count}")
     print(f"Remote checks: {str(status.remote_checks_enabled).lower()}")
+    print(f"Validation state: {status.validation_state}")
+    print("Warnings:")
+    if not status.warnings:
+        print("- none")
+    for warning in status.warnings:
+        print(f"- {warning}")
     print("Validation:")
     if not status.validation_errors:
         print("- none")
@@ -2512,6 +2518,7 @@ def _print_telemetry_summary(summary: dict[str, Any]) -> None:
     cost = _format_cost_summary(summary)
     print(f"Estimated cost: {cost or 'none'}")
     print(f"Pricing catalog: {summary.get('pricing_catalog_source', 'unknown')}")
+    print(f"Catalog coverage: {_format_catalog_coverage(summary.get('catalog_coverage'))}")
     _print_counter("Outcome labels", summary.get("outcome_label_counts", {}))
     _print_counter("Pricing matches", summary.get("pricing_match_counts", {}))
     _print_counter("Selected engines", summary["selected_engine_counts"])
@@ -2566,6 +2573,7 @@ def _print_telemetry_review(summary: dict[str, Any]) -> None:
     print(f"Reviewable: {summary['reviewable']}")
     print(f"Skipped labeled: {summary['skipped_labeled']}")
     print(f"Skipped private/no-prompt: {summary['skipped_private']}")
+    print(f"Catalog coverage: {_format_catalog_coverage(summary.get('catalog_coverage'))}")
     print(f"Privacy: {summary['privacy']}")
     print("Items:")
     if not summary["items"]:
@@ -2651,6 +2659,32 @@ def _format_cost_summary(value: Any) -> str:
         parts.append(currency)
     if events:
         parts.append(f"events={events}")
+    if value.get("pricing_is_placeholder") is True:
+        parts.append("placeholder")
+    return " ".join(parts)
+
+
+def _format_catalog_coverage(value: Any) -> str:
+    if not isinstance(value, dict):
+        return "usage_rows=0 matched=0 missing=0 placeholder=0 estimated=0 no_usage=0"
+    parts = [
+        f"usage_rows={_safe_usage_int(value.get('total_rows_with_usage'))}",
+        f"matched={_safe_usage_int(value.get('rows_with_catalog_match'))}",
+        "missing="
+        f"{_safe_usage_int(value.get('rows_missing_provider_model_catalog_match'))}",
+        f"placeholder={_safe_usage_int(value.get('rows_using_placeholder_pricing'))}",
+        f"estimated={_safe_usage_int(value.get('rows_with_estimated_cost'))}",
+        f"no_usage={_safe_usage_int(value.get('rows_without_enough_usage_data'))}",
+    ]
+    version = value.get("active_catalog_version")
+    source = value.get("active_catalog_source")
+    if isinstance(version, int) and version > 0:
+        parts.append(f"catalog=v{version}")
+    if isinstance(source, str) and source:
+        parts.append(f"source={source}")
+    confidence = value.get("cost_confidence")
+    if isinstance(confidence, str) and confidence:
+        parts.append(f"confidence={confidence}")
     return " ".join(parts)
 
 

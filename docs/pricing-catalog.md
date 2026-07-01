@@ -72,11 +72,36 @@ routing or forwarding requests. A later maintenance command can preview and
 apply packaged defaults, but provider price updates should remain an operator
 action.
 
-Create the default override file from packaged metadata:
+Inspect the active catalog and the packaged-vs-override diff without mutating
+anything:
+
+```bash
+model-router pricing status --override ~/.model-router/pricing_catalog.yaml
+model-router pricing diff --override ~/.model-router/pricing_catalog.yaml
+```
+
+`status` reports the active catalog version/source, override path, validation
+state, validation errors, and warnings for placeholder/example pricing entries.
+`diff` previews what the packaged catalog would write. Both commands read local
+package data and the local override only; they perform no network checks and do
+not create or update files.
+
+Create the default override file from packaged metadata only after explicit
+confirmation:
+
+```bash
+model-router pricing apply --override ~/.model-router/pricing_catalog.yaml
+```
+
+Use `--yes` only for deliberate non-interactive maintenance:
 
 ```bash
 model-router pricing apply --override ~/.model-router/pricing_catalog.yaml --yes
 ```
+
+`apply` writes packaged metadata to the local override path, backing up an
+existing override first. It never fetches provider pricing, and it is not called
+from `route_fast(...)`, `route(...)`, proxy forwarding, or default routing.
 
 Then edit `~/.model-router/pricing_catalog.yaml` with prices you have verified
 against your provider contract, invoice, or official pricing page. Do not rely

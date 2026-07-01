@@ -104,17 +104,20 @@ class PricingStatus:
     override_path: str
     override_exists: bool
     override_valid: bool
+    validation_state: str
     override_catalog_version: int | None
     active_catalog_version: int | None
     active_catalog_source: str
     active_entry_count: int
     remote_checks_enabled: bool = False
+    warnings: tuple[str, ...] = ()
     validation_errors: tuple[str, ...] = ()
     notes: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
             **asdict(self),
+            "warnings": list(self.warnings),
             "validation_errors": list(self.validation_errors),
             "notes": list(self.notes),
         }
@@ -227,10 +230,12 @@ def pricing_status(
         override_path=str(path),
         override_exists=path.exists(),
         override_valid=override_valid,
+        validation_state="valid" if override_valid and not validation_errors else "invalid",
         override_catalog_version=override_version,
         active_catalog_version=active.catalog_version if active else None,
         active_catalog_source=active.source if active else "unavailable",
         active_entry_count=len(active.entries) if active else 0,
+        warnings=_pricing_catalog_warnings(active),
         validation_errors=tuple(validation_errors),
         notes=(
             "Pricing status uses local packaged/override files only; no remote checks were made.",
@@ -400,6 +405,7 @@ def _estimate_from_entry(
         "pricing_effective_date": entry.effective_date,
         "pricing_provider": entry.provider,
         "pricing_model": entry.model,
+        "pricing_is_placeholder": _pricing_entry_uses_placeholder(entry),
     }
 
 
@@ -543,3 +549,38 @@ def _non_negative_int(value: Any) -> int:
 def _backup_path(path: Path) -> Path:
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     return path.with_name(f"{path.name}.bak-{timestamp}")
+
+
+def _pricing_catalog_warnings(catalog: PricingCatalog | None) -> tuple[str, ...]:
+    if catalog is None:
+        return ()
+    warnings: list[str] = []
+    for note in catalog.notes:
+        lowered = note.lower()
+        if _contains_placeholder_pricing_signal(lowered):
+            warnings.append(note)
+    for entry in catalog.entries:
+        text = " ".join((entry.source, entry.notes)).lower()
+        if _contains_placeholder_pricing_signal(text):
+            warnings.append(
+                f"{entry.provider}/{entry.model} uses placeholder or example pricing; "
+                "verify an operator override before spend reporting."
+            )
+    return tuple(dict.fromkeys(warnings))
+
+
+def _pricing_entry_uses_placeholder(entry: PricingCatalogEntry) -> bool:
+    text = " ".join((entry.source, entry.notes)).lower()
+    return _contains_placeholder_pricing_signal(text)
+
+
+def _contains_placeholder_pricing_signal(text: str) -> bool:
+    return any(
+        signal in text
+        for signal in (
+            "example",
+            "placeholder",
+            "non-authoritative",
+            "not-current-pricing",
+        )
+    )

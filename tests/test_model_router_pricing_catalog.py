@@ -135,14 +135,19 @@ def test_pricing_status_diff_and_apply_are_local_only(tmp_path):
     status = pricing_status(path)
     diff = pricing_diff(path)
     unconfirmed = apply_pricing_catalog(path, confirmed=False)
-    applied = apply_pricing_catalog(path, confirmed=True)
+    exists_after_preview = path.exists()
 
     assert status.remote_checks_enabled is False
+    assert status.validation_state == "valid"
     assert status.override_exists is False
+    assert any("placeholder" in warning.lower() for warning in status.warnings)
     assert diff.action == "create"
     assert diff.has_changes is True
+    assert exists_after_preview is False
     assert unconfirmed.ok is False
     assert unconfirmed.executed is False
+    assert path.exists() is False
+    applied = apply_pricing_catalog(path, confirmed=True)
     assert applied.ok is True
     assert applied.executed is True
     assert path.exists()
@@ -171,6 +176,7 @@ def test_pricing_cli_status_diff_apply_and_invalid_catalog(tmp_path):
     status = _run_cli("pricing", "status", "--override", str(path), "--json")
     diff = _run_cli("pricing", "diff", "--override", str(path), "--json")
     blocked = _run_cli("pricing", "apply", "--override", str(path), "--json")
+    exists_after_blocked_apply = path.exists()
     applied = _run_cli(
         "pricing",
         "apply",
@@ -182,12 +188,44 @@ def test_pricing_cli_status_diff_apply_and_invalid_catalog(tmp_path):
     bad_status = _run_cli("pricing", "status", "--override", str(invalid), "--json")
 
     assert status.returncode == 0
-    assert json.loads(status.stdout)["remote_checks_enabled"] is False
+    status_payload = json.loads(status.stdout)
+    assert status_payload["remote_checks_enabled"] is False
+    assert status_payload["validation_state"] == "valid"
+    assert status_payload["warnings"]
     assert diff.returncode == 0
     assert json.loads(diff.stdout)["action"] == "create"
     assert blocked.returncode == 1
     assert json.loads(blocked.stdout)["ok"] is False
+    assert exists_after_blocked_apply is False
     assert applied.returncode == 0
     assert json.loads(applied.stdout)["executed"] is True
     assert bad_status.returncode == 1
-    assert json.loads(bad_status.stdout)["validation_errors"]
+    bad_payload = json.loads(bad_status.stdout)
+    assert bad_payload["validation_state"] == "invalid"
+    assert bad_payload["validation_errors"]
+
+
+def test_pricing_cli_apply_requires_interactive_confirmation(tmp_path):
+    path = tmp_path / "pricing_catalog.yaml"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "hermes.plugins.model_router.cli",
+            "pricing",
+            "apply",
+            "--override",
+            str(path),
+        ],
+        cwd=ROOT,
+        text=True,
+        input="n\n",
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "Apply packaged pricing metadata locally?" in result.stdout
+    assert "OK: false" in result.stdout
+    assert path.exists() is False

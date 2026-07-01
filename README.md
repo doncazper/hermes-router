@@ -866,11 +866,14 @@ the local override explicitly:
 ```bash
 model-router pricing status
 model-router pricing diff
-model-router pricing apply --yes
+model-router pricing apply
 ```
 
-These commands read packaged/local files only. They do not scrape provider pages
-or run during routing/proxy forwarding. See
+`pricing status` and `pricing diff` are read-only previews. `pricing apply` is
+the only writer, requires interactive confirmation unless `--yes` is supplied,
+and backs up an existing override before writing packaged metadata. These
+commands read packaged/local files only. They do not scrape provider pages or
+run during routing/proxy forwarding. See
 [Versioned pricing catalog](docs/pricing-catalog.md) for the override file
 shape and an operator-verified provider example.
 
