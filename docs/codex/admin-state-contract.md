@@ -14,6 +14,7 @@ proxy
 routes
 model_aliases
 backends
+provider_runtime
 model_library
 installer
 telemetry
@@ -49,6 +50,9 @@ model.download.run
 model.assign_route
 runtime.load_model
 runtime.unload_model
+runtime.status
+runtime.models
+runtime.loaded_models
 doctor.run
 benchmark.plan
 benchmark.run

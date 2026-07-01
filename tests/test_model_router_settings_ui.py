@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 import pytest
 import yaml
 
+import hermes.plugins.model_router.admin.actions as admin_actions
 import hermes.plugins.model_router.settings_ui as settings_ui
 from hermes.plugins.model_router.admin.actions import (
     AdminActionError,
@@ -17,6 +18,15 @@ from hermes.plugins.model_router.admin.state import build_admin_state
 from hermes.plugins.model_router.model_benchmark import BenchmarkResult, BenchmarkTarget
 from hermes.plugins.model_router.product import initialize_product_config
 from hermes.plugins.model_router.proxy_config import load_proxy_config
+from hermes.plugins.model_router.runtime_adapters import (
+    AdapterSupport,
+    RuntimeActionResult,
+    RuntimeCapabilities,
+    RuntimeDetection,
+    RuntimeHealth,
+    RuntimeLogInfo,
+    RuntimeModel,
+)
 from hermes.plugins.model_router.setup_assistant import DiscoveredModel, SetupDiscovery
 
 
@@ -40,9 +50,82 @@ class _FakeProcess:
         self.returncode = -9
 
     def wait(self, timeout: float | None = None) -> int:
+        del timeout
         if self.returncode is None:
             self.returncode = 0
         return self.returncode
+
+
+class _RuntimeActionAdapter:
+    def __init__(self, backend, calls: list[str], *, support: bool = True) -> None:
+        self.backend = backend
+        self.calls = calls
+        self.support = support
+
+    def endpoint_url(self):
+        return self.backend.base_url.rstrip("/")
+
+    def capabilities(self):
+        supported = AdapterSupport(True)
+        mutating = (
+            AdapterSupport(True)
+            if self.support
+            else AdapterSupport(False, "adapter disabled this operation")
+        )
+        return RuntimeCapabilities(
+            provider="fake",
+            runtime_kind="fake",
+            endpoint_url=self.endpoint_url(),
+            detect_runtime=supported,
+            health=supported,
+            discover_models=supported,
+            list_loaded_models=supported,
+            start_server=mutating,
+            stop_server=mutating,
+            load_model=mutating,
+            unload_model=mutating,
+            logs=supported,
+        )
+
+    def detect(self):
+        return RuntimeDetection(
+            provider="fake",
+            runtime_kind="fake",
+            endpoint_url=self.endpoint_url(),
+            installed=True,
+            available=True,
+            detail="fake runtime",
+        )
+
+    def health(self, *, timeout_seconds: float = 0.25):
+        return RuntimeHealth("ready", True, True, f"ready {timeout_seconds}")
+
+    def discover_models(self, *, timeout_seconds: float = 0.25):
+        del timeout_seconds
+        return (RuntimeModel("fake-model", loaded=False),)
+
+    def list_loaded_models(self, *, timeout_seconds: float = 0.25):
+        del timeout_seconds
+        return (RuntimeModel("fake-model", loaded=True),)
+
+    def start_server(self):
+        self.calls.append("start_server")
+        return RuntimeActionResult(True, "started", "fake started")
+
+    def stop_server(self):
+        self.calls.append("stop_server")
+        return RuntimeActionResult(True, "stopped", "fake stopped")
+
+    def load_model(self, model_id: str):
+        self.calls.append(f"load_model:{model_id}")
+        return RuntimeActionResult(True, "loaded", f"loaded {model_id}")
+
+    def unload_model(self, model_id: str):
+        self.calls.append(f"unload_model:{model_id}")
+        return RuntimeActionResult(True, "unloaded", f"unloaded {model_id}")
+
+    def logs(self):
+        return RuntimeLogInfo(supported=True, paths=("/tmp/fake-runtime.log",))
 
 
 class _DoctorReport:
@@ -425,6 +508,169 @@ def test_settings_state_feeds_runtime_models_into_registry(tmp_path, monkeypatch
     assert runtime_model["backend"] == "fast"
 
 
+def test_runtime_status_panel_renders_compact_available_runtime(
+    tmp_path,
+    monkeypatch,
+):
+    _init_config(tmp_path)
+    _stub_empty_scan(monkeypatch)
+
+    def fake_runtime_state(backend, *, timeout_seconds=0.25):
+        del timeout_seconds
+        return {
+            "adapter": "FakeRuntimeAdapter",
+            "runtime_id": "ollama",
+            "provider": "ollama",
+            "runtime_kind": "ollama",
+            "runtime_mode": "external_managed",
+            "endpoint": backend.base_url,
+            "endpoint_url": backend.base_url,
+            "version": "0.9.0",
+            "detected": True,
+            "last_checked_at": "2026-06-30T12:00:00Z",
+            "detection": {
+                "provider": "ollama",
+                "runtime_kind": "ollama",
+                "endpoint": backend.base_url,
+                "detected": True,
+                "installed": True,
+                "available": True,
+            },
+            "health": {
+                "status": "ready",
+                "reachable": True,
+                "ok": True,
+                "detail": "server ready",
+            },
+            "models": [],
+            "loaded_models": [],
+            "capabilities": {
+                "discover_models": {"supported": True},
+                "list_loaded_models": {"supported": True},
+                "start_server": {
+                    "supported": False,
+                    "disabled_reason": "Already managed outside ModelRouter.",
+                },
+                "stop_server": {
+                    "supported": False,
+                    "disabled_reason": "Already managed outside ModelRouter.",
+                },
+                "load_model": {
+                    "supported": False,
+                    "disabled_reason": "Use the runtime's own model controls.",
+                },
+                "unload_model": {
+                    "supported": False,
+                    "disabled_reason": "Use the runtime's own model controls.",
+                },
+                "logs": {"supported": True},
+            },
+            "logs": {"supported": True},
+        }
+
+    monkeypatch.setattr(settings_ui, "runtime_state_for_backend", fake_runtime_state)
+
+    state = settings_ui.build_settings_state(settings_ui.settings_paths(tmp_path))
+    html = settings_ui.render_dashboard_page(state)
+
+    assert 'class="inspector-card runtime-status-card"' in html
+    assert "Runtime Status" in html
+    assert "ollama / code" in html
+    assert "detected · health ready" in html
+    assert "capabilities: models, loaded, logs" in html
+    assert '<span class="runtime-next-action">view details</span>' in html
+    assert '<details class="runtime-status-details">' in html
+    assert "Configured runtimes (" in html
+    assert "api_key=runtime-panel-secret" not in html
+
+
+def test_runtime_status_panel_guides_missing_runtime_without_install_claim(
+    tmp_path,
+    monkeypatch,
+):
+    _init_config(tmp_path)
+    _stub_empty_scan(monkeypatch)
+
+    def fake_runtime_state(backend, *, timeout_seconds=0.25):
+        del timeout_seconds
+        return {
+            "adapter": "FakeRuntimeAdapter",
+            "runtime_id": "ollama",
+            "provider": "ollama",
+            "runtime_kind": "ollama",
+            "runtime_mode": "external_managed",
+            "endpoint": backend.base_url,
+            "endpoint_url": backend.base_url,
+            "version": None,
+            "detected": False,
+            "missing_dependency": "ollama CLI not found",
+            "install_hint": "Install Ollama or point this backend at an existing server.",
+            "last_checked_at": "2026-06-30T12:00:00Z",
+            "detection": {
+                "provider": "ollama",
+                "runtime_kind": "ollama",
+                "endpoint": backend.base_url,
+                "detected": False,
+                "installed": False,
+                "available": False,
+            },
+            "health": {
+                "status": "unreachable",
+                "reachable": False,
+                "ok": False,
+                "detail": "connection refused",
+            },
+            "models": [],
+            "loaded_models": [],
+            "capabilities": {
+                "discover_models": {
+                    "supported": False,
+                    "disabled_reason": "Runtime is not reachable.",
+                },
+                "list_loaded_models": {
+                    "supported": False,
+                    "disabled_reason": "Runtime is not reachable.",
+                },
+                "start_server": {
+                    "supported": False,
+                    "disabled_reason": "Start this external runtime outside ModelRouter.",
+                },
+                "stop_server": {
+                    "supported": False,
+                    "disabled_reason": "Stop this external runtime outside ModelRouter.",
+                },
+                "load_model": {
+                    "supported": False,
+                    "disabled_reason": "Runtime is not reachable.",
+                },
+                "unload_model": {
+                    "supported": False,
+                    "disabled_reason": "Runtime is not reachable.",
+                },
+                "logs": {
+                    "supported": False,
+                    "disabled_reason": "Runtime is not reachable.",
+                },
+            },
+            "logs": {
+                "supported": False,
+                "disabled_reason": "Runtime is not reachable.",
+            },
+        }
+
+    monkeypatch.setattr(settings_ui, "runtime_state_for_backend", fake_runtime_state)
+
+    state = settings_ui.build_settings_state(settings_ui.settings_paths(tmp_path))
+    html = settings_ui.render_dashboard_page(state)
+
+    assert "Runtime Status" in html
+    assert "not detected · health unreachable" in html
+    assert "Install Ollama or point this backend at an existing server." in html
+    assert '<span class="runtime-next-action">install guide</span>' in html
+    assert "capabilities disabled: models, loaded" in html
+    assert "installed · health" not in html
+
+
 def test_model_library_dashboard_renders_useful_empty_states(tmp_path, monkeypatch):
     _stub_empty_scan(monkeypatch)
 
@@ -794,6 +1040,108 @@ def test_proxy_supervisor_endpoints_start_stop_restart_without_shell(tmp_path, m
     assert kwargs[0]["shell"] is False
     assert kwargs[0]["stdin"] == subprocess.DEVNULL
     assert processes[0].terminated is True
+
+
+def test_runtime_actions_status_models_and_mutation_are_explicit(
+    tmp_path,
+    monkeypatch,
+):
+    _init_config(tmp_path)
+    _stub_scan(monkeypatch)
+    calls: list[str] = []
+
+    def fake_adapter(backend, *, requester=None):
+        del requester
+        return _RuntimeActionAdapter(backend, calls)
+
+    monkeypatch.setattr(admin_actions, "adapter_for_backend", fake_adapter)
+    app = settings_ui.create_settings_app(config_dir=tmp_path)
+    client = TestClient(app)
+
+    status = client.post(
+        "/api/action",
+        json={"action_id": "runtime.status", "backend": "fast"},
+    )
+    models = client.post(
+        "/api/action",
+        json={"action_id": "runtime.models", "backend": "fast"},
+    )
+    blocked = client.post(
+        "/api/action",
+        json={"action_id": "runtime.unload_model", "backend": "fast", "model": "fake-model"},
+    )
+    unloaded = client.post(
+        "/api/action",
+        json={
+            "action_id": "runtime.unload_model",
+            "backend": "fast",
+            "model": "fake-model",
+            "confirm": True,
+        },
+    )
+
+    assert status.status_code == 200
+    assert status.json()["payload"]["runtime"]["provider"] == "fake"
+    assert status.json()["payload"]["runtime"]["runtime_id"] == "fake"
+    assert status.json()["payload"]["runtime"]["runtime_mode"] == "external_managed"
+    assert status.json()["payload"]["runtime"]["detected"] is True
+    assert status.json()["payload"]["runtime"]["endpoint"] == "http://127.0.0.1:1234/v1"
+    assert status.json()["payload"]["runtime"]["last_checked_at"]
+    assert models.status_code == 200
+    assert models.json()["payload"]["models"][0]["model_id"] == "fake-model"
+    assert blocked.status_code == 400
+    assert blocked.json()["error"] == "Runtime unload model requires confirm=true."
+    assert unloaded.status_code == 200
+    assert unloaded.json()["payload"]["result"]["status"] == "unloaded"
+    assert calls == ["unload_model:fake-model"]
+
+
+def test_runtime_action_unsupported_returns_disabled_reason(tmp_path, monkeypatch):
+    _init_config(tmp_path)
+    _stub_scan(monkeypatch)
+    calls: list[str] = []
+
+    def fake_adapter(backend, *, requester=None):
+        del requester
+        return _RuntimeActionAdapter(backend, calls, support=False)
+
+    monkeypatch.setattr(admin_actions, "adapter_for_backend", fake_adapter)
+    response = run_admin_action(
+        "runtime.stop_server",
+        settings_ui.settings_paths(tmp_path),
+        {"backend": "fast", "confirm": True},
+    )
+
+    assert response["payload"]["ok"] is False
+    assert response["payload"]["status"] == "unsupported"
+    assert response["payload"]["disabled_reason"] == "adapter disabled this operation"
+    assert calls == []
+
+
+def test_settings_render_does_not_invoke_mutating_runtime_actions(
+    tmp_path,
+    monkeypatch,
+):
+    _init_config(tmp_path)
+    _stub_scan(monkeypatch)
+    calls: list[str] = []
+
+    def fake_adapter(backend, *, requester=None):
+        del requester
+        return _RuntimeActionAdapter(backend, calls)
+
+    monkeypatch.setattr(admin_actions, "adapter_for_backend", fake_adapter)
+    app = settings_ui.create_settings_app(config_dir=tmp_path)
+
+    response = TestClient(app).get("/")
+
+    assert response.status_code == 200
+    assert "runtime.status" in response.text
+    assert (
+        "External runtimes own execution. Runtime actions are explicit, confirmed, "
+        "and adapter-gated."
+    ) in response.text
+    assert calls == []
 
 
 def test_download_run_requires_explicit_confirmation(tmp_path, monkeypatch):

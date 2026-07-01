@@ -6,6 +6,8 @@ privacy-safe telemetry above local or hosted model servers. This compatibility
 layer is a proxy/control-plane boundary. It does not become an inference engine,
 does not run tools, does not translate every provider-native API, and does not
 route based on live pricing, runtime discovery, or telemetry side effects.
+Runtime adapters can report status and expose explicit lifecycle actions in
+admin surfaces, but endpoint forwarding does not depend on them.
 
 Status meanings:
 
@@ -45,8 +47,8 @@ flags, loaded model, and provider gateway.
 | Ollama OpenAI-compatible server | Supported by ModelRouter listing; upstream used by `doctor`/health when configured | Supported passthrough | Partial passthrough | Partial passthrough | Partial passthrough | Partial passthrough if upstream supports it | Partial passthrough if upstream supports it | Presets target `http://127.0.0.1:11434/v1`; model pulls remain an Ollama/operator action. |
 | llama.cpp / `llama-server` | Supported by ModelRouter listing; upstream used by readiness checks | Supported passthrough | Partial passthrough | Partial passthrough | Partial passthrough | Partial passthrough if upstream supports it | Partial passthrough if upstream supports it | Managed runtime support starts/stops configured argv commands only. It does not infer model paths or download GGUF files. |
 | MLX-LM managed server | Supported for listing/readiness | Supported passthrough | Partial passthrough | Partial passthrough | Partial passthrough | Unsupported for managed `mlx-lm` backends | Unsupported for managed `mlx-lm` backends | Current managed MLX-LM support is chat/models-first. Use another upstream when clients need Responses or embeddings. |
-| LocalAI | Supported by ModelRouter listing; upstream used by `doctor`/health when configured | Supported passthrough | Partial passthrough | Partial passthrough | Partial passthrough | Partial passthrough if upstream supports it | Partial passthrough if upstream supports it | Treated as a generic OpenAI-compatible backend unless a future native adapter adds explicit capabilities. |
-| vLLM OpenAI-compatible server | Supported by ModelRouter listing; upstream used by `doctor`/health when configured | Supported passthrough | Partial passthrough | Partial passthrough | Partial passthrough | Partial passthrough if upstream supports it | Partial passthrough if upstream supports it | Treated as a generic OpenAI-compatible backend unless a future native adapter adds explicit capabilities. |
+| LocalAI | Supported by ModelRouter listing; upstream used by `doctor`/health when configured | Supported passthrough | Partial passthrough | Partial passthrough | Partial passthrough | Partial passthrough if upstream supports it | Partial passthrough if upstream supports it | LocalAI-shaped configs report LocalAI identity, health, model discovery, and disabled lifecycle reasons. Model loading and server lifecycle stay owned by LocalAI or its deployment supervisor. |
+| vLLM OpenAI-compatible server | Supported by ModelRouter listing; upstream used by `doctor`/health when configured | Supported passthrough | Partial passthrough | Partial passthrough | Partial passthrough | Partial passthrough if upstream supports it | Partial passthrough if upstream supports it | vLLM-shaped configs report vLLM identity, health, model discovery, and disabled lifecycle reasons. Model loading and server lifecycle stay owned by the vLLM process or deployment supervisor. |
 | Hosted OpenAI-compatible backends | Supported by ModelRouter listing; upstream used by `doctor`/health when configured | Supported passthrough | Partial passthrough | Partial passthrough | Partial passthrough | Partial passthrough if upstream supports it | Partial passthrough if upstream supports it | API keys are configured per backend and forwarded as `Authorization: Bearer ...`; secrets are never included in model lists, health output, or telemetry logs. |
 
 ## Auth And Error Shape

@@ -24,7 +24,9 @@ workflows, but it is runtime-neutral. It should work alongside or above LM
 Studio, Ollama, LocalAI, llama.cpp servers, MLX/MLX-LM, vLLM, generic
 OpenAI-compatible backends, and hosted providers. It should not build a custom
 inference engine from scratch when proven runtimes can be wrapped, supervised,
-or integrated through explicit adapters.
+or integrated through explicit adapters. The runtime strategy in
+`docs/runtime-strategy.md` defines the `external_managed`, `external_cli`, and
+future `bundled_future` modes.
 
 ## Product Truth
 
@@ -355,7 +357,8 @@ externally managed local runtimes report that their lifecycle is outside
 ModelRouter unless a configured managed process owns it. Settings/admin
 surfaces may use bounded adapter calls to populate runtime status and
 runtime-discovered models; `route_fast(...)`, `route(...)`, and proxy forwarding
-do not require runtime adapters to decide a route.
+do not require runtime adapters to decide a route. The target adapter shape is
+documented in `docs/runtime-adapter-contract.md`.
 
 Optional local backend benchmarks are explicit:
 

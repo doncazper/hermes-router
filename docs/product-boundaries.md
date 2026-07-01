@@ -10,6 +10,10 @@ clear model/provider policy, explicit safety gates, route receipts, local-first
 telemetry, cost/outcome reporting, and an OpenAI-compatible endpoint that can
 sit above many runtimes without locking users into one.
 
+The runtime mode taxonomy lives in `docs/runtime-strategy.md`: externally
+managed runtimes, external CLI/API-controlled runtimes, and future bundled
+runtime packaging.
+
 ## Roles
 
 ### ModelRouter As Local AI Control Center
@@ -32,6 +36,11 @@ receipts, exposes safety gates, and emits telemetry. `route_fast(...)` remains
 the small production decision path; richer receipts and reporting belong to
 diagnostic, proxy, and admin surfaces.
 
+Runtime discovery, health checks, model lists, and lifecycle capability reports
+are advisory operator state. They must not become hidden inputs to
+`route_fast(...)`, `route(...)`, or default proxy forwarding. A configured
+backend can be routed to even when its runtime adapter is unavailable.
+
 Fusion-like or other multi-agent harnesses can use ModelRouter as their
 routing/control layer. They remain responsible for task execution, context
 management, delegation, monitoring, synthesis, and final review.
@@ -48,6 +57,10 @@ appropriate.
 When a runtime exposes load/unload/list/status APIs, ModelRouter can surface
 those controls. When it does not, ModelRouter should show the capability gap
 instead of pretending the action exists.
+
+Lifecycle actions for external runtimes are explicit maintenance actions. They
+require operator confirmation when mutating, and they must never run as a side
+effect of rendering settings, deciding a route, or forwarding a request.
 
 ### Host Agents As Executors And Orchestrators
 
@@ -87,6 +100,7 @@ boundaries, but it should not hide a planner/worker system inside the proxy.
 - A custom inference engine built from scratch when proven runtimes can be used
   through adapters or proxy boundaries.
 - Lock-in to ModelRouter-only runtimes or model storage.
+- Runtime adapter discovery as an implicit routing signal.
 - Live pricing fetches during `route_fast(...)`, `route(...)`, proxy
   forwarding, or default routing paths.
 - Benchmark, cost-reduction, or performance-superiority claims without

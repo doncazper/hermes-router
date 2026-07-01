@@ -1,10 +1,16 @@
-"""Runtime adapter foundation for ModelRouter admin surfaces."""
+"""Optional runtime adapter foundation for ModelRouter admin/operator surfaces.
+
+Adapters coordinate proven runtimes; they are not a custom inference engine and
+must not be required by route_fast or normal proxy forwarding.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 import shutil
+import subprocess
 from typing import Any, Mapping, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
@@ -14,6 +20,15 @@ from hermes.plugins.model_router.proxy_config import ProxyBackendConfig
 
 
 JsonRequester = Any
+CommandRunner = Any
+CommandResolver = Any
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    returncode: int
+    stdout: str = ""
+    stderr: str = ""
 
 
 @dataclass(frozen=True)
@@ -81,14 +96,19 @@ class RuntimeDetection:
     available: bool | None
     detail: str
     command: tuple[str, ...] = ()
+    version: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "runtime_id": self.provider,
             "provider": self.provider,
             "runtime_kind": self.runtime_kind,
+            "detected": self.installed is True or self.available is True,
             "endpoint_url": self.endpoint_url,
+            "endpoint": self.endpoint_url,
             "installed": self.installed,
             "available": self.available,
+            "version": self.version,
             "detail": self.detail,
             "command": list(self.command),
         }
@@ -215,13 +235,33 @@ class GenericOpenAICompatibleAdapter:
         backend: ProxyBackendConfig,
         *,
         requester: JsonRequester | None = None,
+        command_runner: CommandRunner | None = None,
+        command_resolver: CommandResolver | None = None,
         provider: str | None = None,
         runtime_kind: str | None = None,
     ) -> None:
         self.backend = backend
         self._requester = requester or _request_json
+        self._command_runner = command_runner or _run_command
+        self._command_resolver = command_resolver or _resolve_command
         self._provider = provider or provider_for_backend(backend)
         self._runtime_kind = runtime_kind or runtime_kind_for_backend(backend)
+
+    def _available_command(self, *candidates: str) -> tuple[str, ...]:
+        for candidate in candidates:
+            if self._command_resolver(candidate):
+                return (candidate,)
+        return ()
+
+    def _run_native_command(
+        self,
+        command: tuple[str, ...],
+        *,
+        timeout_seconds: float = 2.0,
+    ) -> CommandResult:
+        if not command:
+            return CommandResult(127, stderr="runtime command unavailable")
+        return self._command_runner(command, timeout_seconds)
 
     def endpoint_url(self) -> str:
         return self.backend.base_url.rstrip("/")
@@ -425,16 +465,45 @@ class LMStudioAdapter(GenericOpenAICompatibleAdapter):
         backend: ProxyBackendConfig,
         *,
         requester: JsonRequester | None = None,
+        command_runner: CommandRunner | None = None,
+        command_resolver: CommandResolver | None = None,
     ) -> None:
         super().__init__(
             backend,
             requester=requester,
+            command_runner=command_runner,
+            command_resolver=command_resolver,
             provider="lmstudio",
             runtime_kind="lmstudio",
         )
 
+    def capabilities(self) -> RuntimeCapabilities:
+        capabilities = super().capabilities()
+        lifecycle_reason = (
+            "LM Studio native lifecycle commands are not wired until a stable "
+            "local CLI/API contract is confirmed."
+        )
+        return RuntimeCapabilities(
+            provider=capabilities.provider,
+            runtime_kind=capabilities.runtime_kind,
+            endpoint_url=capabilities.endpoint_url,
+            detect_runtime=capabilities.detect_runtime,
+            health=capabilities.health,
+            discover_models=capabilities.discover_models,
+            list_loaded_models=AdapterSupport(
+                False,
+                "LM Studio loaded-model state is not exposed through the stable OpenAI-compatible API.",
+            ),
+            load_model=AdapterSupport(False, lifecycle_reason),
+            unload_model=AdapterSupport(False, lifecycle_reason),
+            start_server=AdapterSupport(False, lifecycle_reason),
+            stop_server=AdapterSupport(False, lifecycle_reason),
+            logs=capabilities.logs,
+        )
+
     def detect(self) -> RuntimeDetection:
-        installed = _command_available("lms") or _command_available("lmstudio")
+        command = self._available_command("lms", "lmstudio")
+        installed = bool(command)
         return RuntimeDetection(
             provider="lmstudio",
             runtime_kind="lmstudio",
@@ -442,7 +511,7 @@ class LMStudioAdapter(GenericOpenAICompatibleAdapter):
             installed=installed,
             available=True,
             detail="LM Studio endpoint configured; health check determines whether the server is running.",
-            command=("lms",) if installed else (),
+            command=command,
         )
 
 
@@ -452,16 +521,58 @@ class OllamaAdapter(GenericOpenAICompatibleAdapter):
         backend: ProxyBackendConfig,
         *,
         requester: JsonRequester | None = None,
+        command_runner: CommandRunner | None = None,
+        command_resolver: CommandResolver | None = None,
     ) -> None:
         super().__init__(
             backend,
             requester=requester,
+            command_runner=command_runner,
+            command_resolver=command_resolver,
             provider="ollama",
             runtime_kind="ollama",
         )
 
+    def capabilities(self) -> RuntimeCapabilities:
+        capabilities = super().capabilities()
+        command = self._available_command("ollama")
+        cli_reason = "Ollama CLI not found; install Ollama or use /v1/models discovery."
+        lifecycle_reason = (
+            "External Ollama server lifecycle is managed by the Ollama app, "
+            "OS service, or a future confirmation-gated supervisor."
+        )
+        load_reason = (
+            "Ollama load/run and pull/download are separate actions; ModelRouter "
+            "does not run or pull models silently."
+        )
+        return RuntimeCapabilities(
+            provider=capabilities.provider,
+            runtime_kind=capabilities.runtime_kind,
+            endpoint_url=capabilities.endpoint_url,
+            detect_runtime=capabilities.detect_runtime,
+            health=capabilities.health,
+            discover_models=AdapterSupport(
+                capabilities.discover_models.supported or bool(command),
+                None
+                if capabilities.discover_models.supported or command
+                else cli_reason,
+            ),
+            list_loaded_models=AdapterSupport(bool(command), None if command else cli_reason),
+            load_model=AdapterSupport(False, load_reason),
+            unload_model=AdapterSupport(
+                bool(command),
+                None
+                if command
+                else "Ollama unload requires the ollama CLI for `ollama stop <model>`.",
+            ),
+            start_server=AdapterSupport(False, lifecycle_reason),
+            stop_server=AdapterSupport(False, lifecycle_reason),
+            logs=capabilities.logs,
+        )
+
     def detect(self) -> RuntimeDetection:
-        installed = _command_available("ollama")
+        command = self._available_command("ollama")
+        installed = bool(command)
         return RuntimeDetection(
             provider="ollama",
             runtime_kind="ollama",
@@ -469,7 +580,175 @@ class OllamaAdapter(GenericOpenAICompatibleAdapter):
             installed=installed,
             available=True,
             detail="Ollama endpoint configured; health check determines whether ollama serve is running.",
-            command=("ollama",) if installed else (),
+            command=command,
+        )
+
+    def discover_models(
+        self,
+        *,
+        timeout_seconds: float = 0.25,
+    ) -> tuple[RuntimeModel, ...]:
+        command = self._available_command("ollama")
+        if command:
+            result = self._run_native_command(
+                (*command, "list"),
+                timeout_seconds=timeout_seconds,
+            )
+            if result.returncode == 0:
+                models = _models_from_ollama_table(result.stdout, loaded=False)
+                if models:
+                    return models
+        return super().discover_models(timeout_seconds=timeout_seconds)
+
+    def list_loaded_models(
+        self,
+        *,
+        timeout_seconds: float = 0.25,
+    ) -> tuple[RuntimeModel, ...]:
+        command = self._available_command("ollama")
+        if not command:
+            return ()
+        result = self._run_native_command(
+            (*command, "ps"),
+            timeout_seconds=timeout_seconds,
+        )
+        if result.returncode != 0:
+            return ()
+        return _models_from_ollama_table(result.stdout, loaded=True)
+
+    def unload_model(self, model_id: str) -> RuntimeActionResult:
+        command = self._available_command("ollama")
+        if not command:
+            reason = self.capabilities().unload_model.disabled_reason
+            return RuntimeActionResult(
+                ok=False,
+                status="unsupported",
+                message=reason or "Ollama unload unsupported.",
+                disabled_reason=reason,
+            )
+        model = model_id.strip()
+        if not model:
+            return RuntimeActionResult(
+                ok=False,
+                status="invalid_request",
+                message="Ollama unload requires a non-empty model id.",
+            )
+        result = self._run_native_command((*command, "stop", model), timeout_seconds=10.0)
+        if result.returncode == 0:
+            return RuntimeActionResult(
+                ok=True,
+                status="unloaded",
+                message=f"Ollama stop requested for {model}.",
+            )
+        detail = (result.stderr or result.stdout or "ollama stop failed").strip()
+        return RuntimeActionResult(
+            ok=False,
+            status="error",
+            message=detail,
+        )
+
+
+class LocalAIAdapter(GenericOpenAICompatibleAdapter):
+    def __init__(
+        self,
+        backend: ProxyBackendConfig,
+        *,
+        requester: JsonRequester | None = None,
+    ) -> None:
+        super().__init__(
+            backend,
+            requester=requester,
+            provider="localai",
+            runtime_kind="localai",
+        )
+
+    def capabilities(self) -> RuntimeCapabilities:
+        capabilities = super().capabilities()
+        lifecycle_reason = (
+            "LocalAI lifecycle and model loading are managed by the LocalAI server "
+            "or its deployment supervisor."
+        )
+        return RuntimeCapabilities(
+            provider=capabilities.provider,
+            runtime_kind=capabilities.runtime_kind,
+            endpoint_url=capabilities.endpoint_url,
+            detect_runtime=capabilities.detect_runtime,
+            health=capabilities.health,
+            discover_models=capabilities.discover_models,
+            list_loaded_models=AdapterSupport(
+                False,
+                "LocalAI OpenAI-compatible /models does not distinguish loaded models.",
+            ),
+            load_model=AdapterSupport(False, lifecycle_reason),
+            unload_model=AdapterSupport(False, lifecycle_reason),
+            start_server=AdapterSupport(False, lifecycle_reason),
+            stop_server=AdapterSupport(False, lifecycle_reason),
+            logs=capabilities.logs,
+        )
+
+    def detect(self) -> RuntimeDetection:
+        return RuntimeDetection(
+            provider="localai",
+            runtime_kind="localai",
+            endpoint_url=self.endpoint_url(),
+            installed=None,
+            available=True,
+            detail=(
+                "LocalAI-compatible endpoint configured; health check determines "
+                "whether the server is running."
+            ),
+        )
+
+
+class VLLMAdapter(GenericOpenAICompatibleAdapter):
+    def __init__(
+        self,
+        backend: ProxyBackendConfig,
+        *,
+        requester: JsonRequester | None = None,
+    ) -> None:
+        super().__init__(
+            backend,
+            requester=requester,
+            provider="vllm",
+            runtime_kind="vllm",
+        )
+
+    def capabilities(self) -> RuntimeCapabilities:
+        capabilities = super().capabilities()
+        lifecycle_reason = (
+            "vLLM lifecycle and model loading are managed by the vLLM server "
+            "process or its deployment supervisor."
+        )
+        return RuntimeCapabilities(
+            provider=capabilities.provider,
+            runtime_kind=capabilities.runtime_kind,
+            endpoint_url=capabilities.endpoint_url,
+            detect_runtime=capabilities.detect_runtime,
+            health=capabilities.health,
+            discover_models=capabilities.discover_models,
+            list_loaded_models=AdapterSupport(
+                False,
+                "vLLM OpenAI-compatible /models does not distinguish loaded models.",
+            ),
+            load_model=AdapterSupport(False, lifecycle_reason),
+            unload_model=AdapterSupport(False, lifecycle_reason),
+            start_server=AdapterSupport(False, lifecycle_reason),
+            stop_server=AdapterSupport(False, lifecycle_reason),
+            logs=capabilities.logs,
+        )
+
+    def detect(self) -> RuntimeDetection:
+        return RuntimeDetection(
+            provider="vllm",
+            runtime_kind="vllm",
+            endpoint_url=self.endpoint_url(),
+            installed=None,
+            available=True,
+            detail=(
+                "vLLM OpenAI-compatible endpoint configured; health check determines "
+                "whether the server is running."
+            ),
         )
 
 
@@ -553,6 +832,10 @@ def adapter_for_backend(
         return LMStudioAdapter(backend, requester=requester)
     if provider == "ollama":
         return OllamaAdapter(backend, requester=requester)
+    if provider == "localai":
+        return LocalAIAdapter(backend, requester=requester)
+    if provider == "vllm":
+        return VLLMAdapter(backend, requester=requester)
     return GenericOpenAICompatibleAdapter(backend, requester=requester)
 
 
@@ -561,15 +844,17 @@ def runtime_state_for_backend(
     *,
     timeout_seconds: float = 0.25,
     requester: JsonRequester | None = None,
+    checked_at: str | None = None,
 ) -> dict[str, Any]:
+    last_checked_at = checked_at or _utc_timestamp()
     try:
         adapter = adapter_for_backend(backend, requester=requester)
     except Exception as exc:
-        return _adapter_error_state(backend, exc)
+        return _adapter_error_state(backend, exc, checked_at=last_checked_at)
     try:
         capabilities = adapter.capabilities()
     except Exception as exc:
-        return _adapter_error_state(backend, exc)
+        return _adapter_error_state(backend, exc, checked_at=last_checked_at)
     endpoint_url = _safe_endpoint_url(adapter, backend)
     try:
         detection = adapter.detect()
@@ -603,11 +888,28 @@ def runtime_state_for_backend(
         logs = adapter.logs()
     except Exception as exc:
         logs = RuntimeLogInfo(supported=False, error=exc.__class__.__name__)
+    detected = _runtime_detected(backend, detection, health)
+    missing_dependency = _missing_dependency(backend, detection, capabilities)
     return {
         "adapter": adapter.__class__.__name__,
+        "runtime_id": capabilities.provider,
         "provider": capabilities.provider,
         "runtime_kind": capabilities.runtime_kind,
+        "runtime_mode": runtime_mode_for_backend(backend),
         "endpoint_url": endpoint_url,
+        "endpoint": endpoint_url,
+        "version": detection.version,
+        "detected": detected,
+        "last_checked_at": last_checked_at,
+        "health_status": health.status,
+        "missing_dependency": missing_dependency,
+        "install_hint": _install_hint(
+            backend,
+            provider=capabilities.provider,
+            detection=detection,
+            health=health,
+            missing_dependency=missing_dependency,
+        ),
         "detection": detection.to_dict(),
         "health": health.to_dict(),
         "models": [model.to_dict() for model in models],
@@ -627,10 +929,19 @@ def provider_for_backend(backend: ProxyBackendConfig) -> str:
     parsed = urlparse(backend.base_url)
     host = parsed.hostname or ""
     port = parsed.port
+    fingerprint = " ".join(
+        part.lower()
+        for part in (backend.name, backend.model, host)
+        if isinstance(part, str)
+    )
     if _local_host(host) and port == 1234:
         return "lmstudio"
     if _local_host(host) and port == 11434:
         return "ollama"
+    if "localai" in fingerprint:
+        return "localai"
+    if "vllm" in fingerprint:
+        return "vllm"
     if _is_local_base_url(backend.base_url):
         return "openai_compatible_local"
     return "openai_compatible_hosted"
@@ -643,34 +954,62 @@ def runtime_kind_for_backend(backend: ProxyBackendConfig) -> str:
     return provider
 
 
+def runtime_mode_for_backend(backend: ProxyBackendConfig) -> str:
+    if backend.runtime.enabled:
+        return "external_cli"
+    return "external_managed"
+
+
 def _adapter_error_state(
     backend: ProxyBackendConfig,
     exc: Exception,
+    *,
+    checked_at: str,
 ) -> dict[str, Any]:
+    provider = provider_for_backend(backend)
+    runtime_kind = runtime_kind_for_backend(backend)
+    endpoint_url = backend.base_url.rstrip("/")
+    health = RuntimeHealth(
+        status="error",
+        reachable=False,
+        ok=False,
+        detail=exc.__class__.__name__,
+    )
+    detection = RuntimeDetection(
+        provider=provider,
+        runtime_kind=runtime_kind,
+        endpoint_url=endpoint_url,
+        installed=None,
+        available=None,
+        detail=exc.__class__.__name__,
+    )
     return {
         "adapter": "error",
-        "provider": provider_for_backend(backend),
-        "runtime_kind": runtime_kind_for_backend(backend),
-        "endpoint_url": backend.base_url.rstrip("/"),
-        "detection": RuntimeDetection(
-            provider=provider_for_backend(backend),
-            runtime_kind=runtime_kind_for_backend(backend),
-            endpoint_url=backend.base_url.rstrip("/"),
-            installed=None,
-            available=None,
-            detail=exc.__class__.__name__,
-        ).to_dict(),
-        "health": RuntimeHealth(
-            status="error",
-            reachable=False,
-            ok=False,
-            detail=exc.__class__.__name__,
-        ).to_dict(),
+        "runtime_id": provider,
+        "provider": provider,
+        "runtime_kind": runtime_kind,
+        "runtime_mode": runtime_mode_for_backend(backend),
+        "endpoint_url": endpoint_url,
+        "endpoint": endpoint_url,
+        "version": None,
+        "detected": False,
+        "last_checked_at": checked_at,
+        "health_status": health.status,
+        "missing_dependency": None,
+        "install_hint": _install_hint(
+            backend,
+            provider=provider,
+            detection=detection,
+            health=health,
+            missing_dependency=None,
+        ),
+        "detection": detection.to_dict(),
+        "health": health.to_dict(),
         "models": [],
         "loaded_models": [],
         "capabilities": RuntimeCapabilities(
-            provider=provider_for_backend(backend),
-            runtime_kind=runtime_kind_for_backend(backend),
+            provider=provider,
+            runtime_kind=runtime_kind,
             health=AdapterSupport(False, "Adapter failed."),
             discover_models=AdapterSupport(False, "Adapter failed."),
             list_loaded_models=AdapterSupport(False, "Adapter failed."),
@@ -690,6 +1029,90 @@ def _safe_endpoint_url(adapter: RuntimeAdapter, backend: ProxyBackendConfig) -> 
     except Exception:
         endpoint = backend.base_url
     return endpoint.rstrip("/")
+
+
+def _utc_timestamp() -> str:
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _runtime_detected(
+    backend: ProxyBackendConfig,
+    detection: RuntimeDetection,
+    health: RuntimeHealth,
+) -> bool:
+    if provider_for_backend(backend) == "openai_compatible_hosted":
+        return True
+    return (
+        detection.installed is True
+        or detection.available is True
+        or health.reachable
+        or bool(backend.base_url)
+    )
+
+
+def _missing_dependency(
+    backend: ProxyBackendConfig,
+    detection: RuntimeDetection,
+    capabilities: RuntimeCapabilities,
+) -> str | None:
+    if backend.runtime.enabled and detection.installed is False and detection.command:
+        return detection.command[0]
+    if capabilities.provider == "ollama" and (
+        not capabilities.list_loaded_models.supported
+        or not capabilities.unload_model.supported
+    ):
+        return "ollama CLI"
+    if capabilities.provider == "lmstudio" and detection.installed is False:
+        return "lms CLI (optional)"
+    return None
+
+
+def _install_hint(
+    backend: ProxyBackendConfig,
+    *,
+    provider: str,
+    detection: RuntimeDetection,
+    health: RuntimeHealth,
+    missing_dependency: str | None,
+) -> str | None:
+    if provider == "openai_compatible_hosted":
+        return "Hosted backend is configured; ModelRouter does not probe provider availability by default."
+    if provider == "lmstudio":
+        if not health.reachable:
+            return (
+                "Start the LM Studio local server at "
+                f"{backend.base_url.rstrip('/')} and use exact model ids it lists."
+            )
+        if missing_dependency:
+            return "Install the LM Studio CLI only if native lifecycle commands are needed."
+        return None
+    if provider == "ollama":
+        if not health.reachable:
+            return "Start Ollama with `ollama serve` or update the backend base_url."
+        if missing_dependency:
+            return "Install the Ollama CLI for loaded-model and explicit unload actions."
+        return None
+    if provider == "llamacpp":
+        if missing_dependency:
+            return "Install llama.cpp so `llama-server` is on PATH, or update runtime.command."
+        if not health.reachable:
+            return "Start the configured llama.cpp server or let the proxy manage it when enabled."
+        return None
+    if provider == "mlx_lm":
+        if missing_dependency:
+            return "Install MLX-LM so `mlx_lm.server` is on PATH, or update runtime.command."
+        if not health.reachable:
+            return "Start the configured MLX-LM server or let the proxy manage it when enabled."
+        return None
+    if provider in {"localai", "vllm", "openai_compatible_local"}:
+        if not health.reachable:
+            return "Start the configured local OpenAI-compatible server or update backend base_url."
+        return None
+    if detection.installed is False and detection.command:
+        return f"Install `{detection.command[0]}` or update runtime.command."
+    if not health.reachable and _is_local_base_url(backend.base_url):
+        return "Start the configured local runtime or update backend base_url."
+    return None
 
 
 def _request_json(
@@ -731,6 +1154,29 @@ def _models_from_payload(payload: Any) -> tuple[RuntimeModel, ...]:
     return tuple(models)
 
 
+def _models_from_ollama_table(output: str, *, loaded: bool) -> tuple[RuntimeModel, ...]:
+    models: list[RuntimeModel] = []
+    seen: set[str] = set()
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        first = stripped.split(maxsplit=1)[0]
+        if first.upper() in {"NAME", "MODEL"}:
+            continue
+        if first in seen:
+            continue
+        seen.add(first)
+        models.append(
+            RuntimeModel(
+                model_id=first,
+                loaded=loaded,
+                source="ollama_cli",
+            )
+        )
+    return tuple(models)
+
+
 def _is_local_base_url(base_url: str) -> bool:
     parsed = urlparse(base_url)
     return _local_host(parsed.hostname or "")
@@ -741,9 +1187,39 @@ def _local_host(host: str) -> bool:
 
 
 def _command_available(command: str) -> bool:
+    return _resolve_command(command) is not None
+
+
+def _resolve_command(command: str) -> str | None:
     if not command:
-        return False
+        return None
     expanded = Path(command).expanduser()
     if expanded.is_absolute() or "/" in command:
-        return expanded.exists()
-    return shutil.which(command) is not None
+        return str(expanded) if expanded.exists() else None
+    return shutil.which(command)
+
+
+def _run_command(command: tuple[str, ...], timeout_seconds: float) -> CommandResult:
+    try:
+        completed = subprocess.run(
+            list(command),
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except FileNotFoundError as exc:
+        return CommandResult(127, stderr=str(exc))
+    except subprocess.TimeoutExpired as exc:
+        return CommandResult(
+            124,
+            stdout=exc.stdout if isinstance(exc.stdout, str) else "",
+            stderr=exc.stderr if isinstance(exc.stderr, str) else "command timed out",
+        )
+    except OSError as exc:
+        return CommandResult(1, stderr=f"{exc.__class__.__name__}: {exc}")
+    return CommandResult(
+        completed.returncode,
+        stdout=completed.stdout,
+        stderr=completed.stderr,
+    )

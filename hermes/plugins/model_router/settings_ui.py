@@ -1111,6 +1111,7 @@ def render_dashboard_page(state: Mapping[str, Any]) -> str:
         </div>
 
         <aside class="inspector-column" aria-label="Inspectors">
+          {_runtime_status_panel(state)}
           {_route_receipt_panel(state)}
           {_safety_panel()}
           {_maturity_panel(state)}
@@ -1797,6 +1798,86 @@ button.icon-only:hover, a.icon-only:hover {
   border-bottom: 1px solid var(--line-soft);
 }
 .receipt-body { padding: 14px 16px 16px; }
+.runtime-status-body {
+  padding: 12px 14px 14px;
+  display: grid;
+  gap: 10px;
+}
+.runtime-status-active {
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: #fbfcfe;
+  padding: 8px 9px;
+  display: grid;
+  gap: 6px;
+}
+.runtime-status-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.runtime-status-heading strong,
+.runtime-row-main strong {
+  color: #172033;
+}
+.runtime-status-meta,
+.runtime-row-meta {
+  color: #5d6b80;
+  font-size: 10.5px;
+  line-height: 1.25;
+}
+.runtime-next-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: #fff;
+  color: var(--accent-strong);
+  font-size: 10px;
+  font-weight: 720;
+  min-height: 22px;
+  padding: 2px 6px;
+  white-space: nowrap;
+}
+.runtime-status-details {
+  border-top: 1px solid var(--line-soft);
+  padding-top: 8px;
+}
+.runtime-status-details summary {
+  cursor: pointer;
+  color: var(--accent-strong);
+  font-weight: 720;
+  list-style: none;
+}
+.runtime-status-details summary::-webkit-details-marker { display: none; }
+.runtime-status-details summary::after {
+  content: "Expand";
+  float: right;
+  color: var(--muted);
+  font-size: 10px;
+}
+.runtime-status-details[open] summary::after { content: "Collapse"; }
+.runtime-status-list {
+  display: grid;
+  gap: 7px;
+  margin-top: 8px;
+}
+.runtime-status-row {
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: #fff;
+  padding: 7px;
+  display: grid;
+  gap: 4px;
+}
+.runtime-row-main {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
 .receipt-summary {
   margin: 0 0 12px;
   color: #1d2b3f;
@@ -2139,6 +2220,22 @@ async function planBenchmark() {
   const target = document.getElementById('benchmark-output');
   if (target) target.textContent = JSON.stringify(data.targets || data, null, 2);
 }
+async function runtimeAction(actionId, backend, model = '', confirm = false) {
+  const mutates = actionId === 'runtime.start_server' ||
+    actionId === 'runtime.stop_server' ||
+    actionId === 'runtime.load_model' ||
+    actionId === 'runtime.unload_model';
+  if (mutates && !window.confirm('Run ' + actionId + ' for backend ' + backend + '?')) {
+    return;
+  }
+  const payload = {action_id: actionId, backend: backend};
+  if (model) payload.model = model;
+  if (confirm || mutates) payload.confirm = true;
+  const output = document.getElementById('runtime-output');
+  if (output) output.textContent = 'Running ' + actionId + '...';
+  const data = await postAction('/api/action', payload);
+  if (output) output.textContent = JSON.stringify(data.payload || data, null, 2);
+}
 async function copyText(text) {
   if (!text) return;
   try {
@@ -2445,6 +2542,188 @@ def _provider_glyph(provider: str) -> str:
     return f'<span class="row-icon">{_icon(icon_name)}</span>'
 
 
+def _runtime_status_panel(state: Mapping[str, Any]) -> str:
+    provider_state = state.get("provider_runtime", {})
+    if not isinstance(provider_state, Mapping):
+        provider_state = {}
+    providers = [
+        item
+        for item in provider_state.get("providers", [])
+        if isinstance(item, Mapping)
+    ]
+    detail = (
+        provider_state.get("detail")
+        if isinstance(provider_state.get("detail"), Mapping)
+        else {}
+    )
+    active = (
+        detail
+        if detail
+        else (providers[0].get("runtime_adapter", {}) if providers else {})
+    )
+    active_backend = str(
+        (detail.get("backend") if isinstance(detail, Mapping) else "")
+        or provider_state.get("selected_backend")
+        or "none"
+    )
+    active_name = str(
+        (detail.get("adapter_provider") if isinstance(detail, Mapping) else "")
+        or _runtime_item_adapter(active).get("provider")
+        or "unconfigured"
+    )
+    active_health = str(
+        (detail.get("health_status") if isinstance(detail, Mapping) else "")
+        or _runtime_item_health(active).get("status")
+        or "unknown"
+    )
+    active_detected = _detected_label(
+        detail.get("detected")
+        if isinstance(detail, Mapping)
+        else active.get("detected")
+    )
+    active_action = _runtime_next_action(detail if isinstance(detail, Mapping) else active)
+    active_capabilities = _runtime_capability_summary(
+        detail.get("capabilities")
+        if isinstance(detail, Mapping)
+        else active.get("capabilities")
+    )
+    hint = str(
+        (detail.get("install_hint") if isinstance(detail, Mapping) else "")
+        or (detail.get("missing_dependency") if isinstance(detail, Mapping) else "")
+        or "Runtime detection is advisory; routing uses configured backend policy."
+    )
+    rows = "\n".join(_runtime_status_row(item) for item in providers)
+    if not rows:
+        rows = (
+            '<div class="runtime-status-row">'
+            '<span class="muted">No configured runtimes.</span></div>'
+        )
+    return f"""<section class="inspector-card runtime-status-card" aria-labelledby="runtime-status-title">
+      <header>
+        <h2 id="runtime-status-title">{_icon("runtime")} Runtime Status</h2>
+        <button class="text-button" type="button" onclick="jumpTo('runtimes')">View details {_icon("arrow-right")}</button>
+      </header>
+      <div class="runtime-status-body">
+        <div class="runtime-status-active">
+          <div class="runtime-status-heading">
+            <strong>{escape(active_name)} / {escape(active_backend)}</strong>
+            <span class="runtime-next-action">{escape(active_action)}</span>
+          </div>
+          <div class="runtime-status-meta">
+            {escape(active_detected)} · health {escape(active_health)} · {escape(active_capabilities)}
+          </div>
+          <div class="runtime-status-meta">{escape(hint)}</div>
+        </div>
+        <details class="runtime-status-details">
+          <summary>Configured runtimes ({len(providers)})</summary>
+          <div class="runtime-status-list">{rows}</div>
+        </details>
+      </div>
+    </section>"""
+
+
+def _runtime_status_row(item: Mapping[str, Any]) -> str:
+    adapter = _runtime_item_adapter(item)
+    health = _runtime_item_health(adapter)
+    name = str(item.get("name") or item.get("backend") or adapter.get("provider") or "runtime")
+    backend = str(item.get("backend") or "")
+    detected = _detected_label(adapter.get("detected"))
+    status = str(health.get("status") or item.get("status") or "unknown")
+    action_input = dict(adapter)
+    action_input["backend"] = backend
+    action = _runtime_next_action(action_input)
+    capabilities = _runtime_capability_summary(adapter.get("capabilities"))
+    hint = str(adapter.get("install_hint") or adapter.get("missing_dependency") or "")
+    hint_html = (
+        f'<div class="runtime-row-meta">{escape(hint)}</div>' if hint else ""
+    )
+    dot = escape(
+        str(item.get("dot") or _adapter_dot(adapter, active=False, managed=False))
+    )
+    return f"""<div class="runtime-status-row">
+      <div class="runtime-row-main">
+        <strong><i class="dot {dot}"></i>{escape(name)}</strong>
+        <span class="runtime-next-action">{escape(action)}</span>
+      </div>
+      <div class="runtime-row-meta">{escape(detected)} · health {escape(status)} · {escape(capabilities)}</div>
+      {hint_html}
+    </div>"""
+
+
+def _runtime_item_adapter(item: Mapping[str, Any]) -> Mapping[str, Any]:
+    adapter = item.get("runtime_adapter") if isinstance(item.get("runtime_adapter"), Mapping) else item
+    return adapter if isinstance(adapter, Mapping) else {}
+
+
+def _runtime_item_health(item: Mapping[str, Any]) -> Mapping[str, Any]:
+    health = item.get("health") if isinstance(item.get("health"), Mapping) else {}
+    return health
+
+
+def _detected_label(value: Any) -> str:
+    if value is True:
+        return "detected"
+    if value is False:
+        return "not detected"
+    return "unknown"
+
+
+def _runtime_next_action(item: Mapping[str, Any]) -> str:
+    health = _runtime_item_health(item)
+    health_status = str(item.get("health_status") or health.get("status") or "").lower()
+    capabilities = (
+        item.get("capabilities") if isinstance(item.get("capabilities"), Mapping) else {}
+    )
+    start = (
+        capabilities.get("start_server")
+        if isinstance(capabilities.get("start_server"), Mapping)
+        else {}
+    )
+    if item.get("install_hint") or item.get("missing_dependency"):
+        return "install guide"
+    if item.get("detected") is False:
+        return "configure"
+    if start.get("supported") is True and health_status in {
+        "unreachable",
+        "stopped",
+        "error",
+    }:
+        return "start"
+    if health_status in {"unreachable", "error"}:
+        return "connect"
+    if health_status in {"unsupported", "unknown", ""}:
+        return "configure"
+    return "view details"
+
+
+def _runtime_capability_summary(value: Any) -> str:
+    capabilities = value if isinstance(value, Mapping) else {}
+    labels = (
+        ("discover_models", "models"),
+        ("list_loaded_models", "loaded"),
+        ("load_model", "load"),
+        ("unload_model", "unload"),
+        ("logs", "logs"),
+    )
+    supported = [
+        label
+        for key, label in labels
+        if isinstance(capabilities.get(key), Mapping)
+        and capabilities[key].get("supported") is True
+    ]
+    if supported:
+        return "capabilities: " + ", ".join(supported[:3])
+    disabled = [
+        label
+        for key, label in labels
+        if isinstance(capabilities.get(key), Mapping)
+        and capabilities[key].get("disabled_reason")
+    ]
+    if disabled:
+        return "capabilities disabled: " + ", ".join(disabled[:2])
+    return "capabilities unknown"
+
+
 def _providers_runtime_section(state: Mapping[str, Any]) -> str:
     provider_state = state.get("provider_runtime", {})
     providers = provider_state.get("providers") if isinstance(provider_state, dict) else []
@@ -2469,10 +2748,15 @@ def _providers_runtime_section(state: Mapping[str, Any]) -> str:
     capabilities = detail.get("capabilities") if isinstance(detail.get("capabilities"), dict) else {}
     load_support = capabilities.get("load_model") if isinstance(capabilities.get("load_model"), dict) else {}
     unload_support = capabilities.get("unload_model") if isinstance(capabilities.get("unload_model"), dict) else {}
+    start_support = capabilities.get("start_server") if isinstance(capabilities.get("start_server"), dict) else {}
+    stop_support = capabilities.get("stop_server") if isinstance(capabilities.get("stop_server"), dict) else {}
     discovered_models = detail.get("discovered_models") if isinstance(detail.get("discovered_models"), list) else []
     loaded_models = detail.get("loaded_models") if isinstance(detail.get("loaded_models"), list) else []
     logs = detail.get("logs") if isinstance(detail.get("logs"), dict) else {}
     log_paths = logs.get("paths") if isinstance(logs.get("paths"), list) else []
+    backend_name = str(detail.get("backend") or "")
+    model_id = str(detail.get("model") or "")
+    backend_js = _js_string(backend_name)
     return f"""<div class="runtime-grid" id="providers">
       <div class="provider-list">{provider_rows}</div>
       <div class="runtime-detail" id="runtime-detail">
@@ -2491,6 +2775,10 @@ def _providers_runtime_section(state: Mapping[str, Any]) -> str:
         <div class="detail-field">
           <label>Runtime kind</label>
           <span>{escape(str(detail.get("runtime_kind") or "unmanaged"))}</span>
+        </div>
+        <div class="detail-field">
+          <label>Detection</label>
+          <span>{escape(_runtime_detection_label(detail))}</span>
         </div>
         <div class="detail-field">
           <label>Port</label>
@@ -2524,6 +2812,10 @@ def _providers_runtime_section(state: Mapping[str, Any]) -> str:
           <label>Adapter health</label>
           <span>{escape(str(detail.get("health_status") or "unknown"))}; {escape(str(detail.get("health_detail") or "not checked"))}</span>
         </div>
+        <div class="detail-field detail-wide">
+          <label>Install hint</label>
+          <span>{escape(str(detail.get("install_hint") or detail.get("missing_dependency") or "no action needed"))}</span>
+        </div>
         <div class="detail-field">
           <label>Models visible</label>
           <span>{escape(str(len(discovered_models)))} discovered; {escape(str(len(loaded_models)))} loaded</span>
@@ -2548,11 +2840,19 @@ def _providers_runtime_section(state: Mapping[str, Any]) -> str:
             <button class="button-blue" type="button" onclick="postAction('/api/proxy/restart', {{confirm: true}})">{_icon("refresh")} Restart</button>
           </div>
           <div class="action-group">
-            <button type="button">{_icon("document")} Logs</button>
-            <button class="icon-only" type="button" aria-label="More runtime actions">{_icon("more")}</button>
+            <button type="button" onclick="runtimeAction('runtime.status', {backend_js})">{_icon("pulse")} Status</button>
+            <button type="button" onclick="runtimeAction('runtime.models', {backend_js})">{_icon("server")} Models</button>
+            <button type="button" onclick="runtimeAction('runtime.loaded_models', {backend_js})">{_icon("database")} Loaded</button>
+          </div>
+          <div class="action-group">
+            {_runtime_action_button("runtime.start_server", "Start runtime", "play", backend_name, model_id, start_support, confirm=True)}
+            {_runtime_action_button("runtime.stop_server", "Stop runtime", "stop", backend_name, model_id, stop_support, confirm=True)}
+            {_runtime_action_button("runtime.load_model", "Load model", "download", backend_name, model_id, load_support, confirm=True)}
+            {_runtime_action_button("runtime.unload_model", "Unload model", "close", backend_name, model_id, unload_support, confirm=True)}
           </div>
         </div>
         <div id="last-action" class="muted detail-wide" aria-live="polite"></div>
+        <pre id="runtime-output" class="catalog-output detail-wide">External runtimes own execution. Runtime actions are explicit, confirmed, and adapter-gated.</pre>
       </div>
     </div>"""
 
@@ -3019,6 +3319,20 @@ def _runtime_panel_summary(state: Mapping[str, Any]) -> str:
     return f"{backend} is selected from config/telemetry; runtime is {status}."
 
 
+def _runtime_detection_label(detail: Mapping[str, Any]) -> str:
+    detected = detail.get("detected")
+    detected_label = (
+        "detected"
+        if detected is True
+        else "not detected"
+        if detected is False
+        else "unknown"
+    )
+    mode = str(detail.get("runtime_mode") or "external")
+    checked = str(detail.get("last_checked_at") or "not checked")
+    return f"{detected_label}; {mode}; {checked}"
+
+
 def _adapter_dot(
     adapter: Mapping[str, Any],
     *,
@@ -3040,6 +3354,35 @@ def _support_label(value: Mapping[str, Any]) -> str:
         return "supported"
     reason = value.get("disabled_reason")
     return f"disabled: {reason}" if reason else "disabled"
+
+
+def _runtime_action_button(
+    action_id: str,
+    label: str,
+    icon: str,
+    backend: str,
+    model: str,
+    support: Mapping[str, Any],
+    *,
+    confirm: bool,
+) -> str:
+    disabled_reason = str(support.get("disabled_reason") or "").strip()
+    if support.get("supported") is not True:
+        title = escape(disabled_reason or "Runtime adapter does not support this action.")
+        return (
+            f'<button type="button" disabled title="{title}">'
+            f'{_icon(icon)} {escape(label)}</button>'
+        )
+    return (
+        '<button type="button" '
+        f"onclick=\"runtimeAction({_js_string(action_id)}, {_js_string(backend)}, "
+        f"{_js_string(model)}, {str(confirm).lower()})\">"
+        f"{_icon(icon)} {escape(label)}</button>"
+    )
+
+
+def _js_string(value: str) -> str:
+    return json.dumps(str(value))
 
 
 def _runtime_link(value: Any) -> str:
@@ -4331,6 +4674,14 @@ def _runtime_detail_state(
         "runtime_status": "managed-by-proxy" if runtime.enabled else "unmanaged",
         "adapter": adapter.get("adapter"),
         "adapter_provider": adapter.get("provider"),
+        "runtime_id": adapter.get("runtime_id"),
+        "runtime_mode": adapter.get("runtime_mode"),
+        "detected": adapter.get("detected"),
+        "endpoint": adapter.get("endpoint") or adapter.get("endpoint_url"),
+        "version": adapter.get("version"),
+        "missing_dependency": adapter.get("missing_dependency"),
+        "install_hint": adapter.get("install_hint"),
+        "last_checked_at": adapter.get("last_checked_at"),
         "health_status": health.get("status"),
         "health_detail": health.get("detail"),
         "health_ok": health.get("ok") is True,

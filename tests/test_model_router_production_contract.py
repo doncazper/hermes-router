@@ -5,6 +5,7 @@ import yaml
 
 import hermes.plugins.model_router as public_api
 import hermes.plugins.model_router.policy as policy
+import hermes.plugins.model_router.proxy as proxy
 from hermes.plugins.model_router import ModelRouter
 from hermes.plugins.model_router.config import REQUIRED_ENGINE_CATEGORIES
 from hermes.plugins.model_router.models import RoutingDecision
@@ -153,6 +154,16 @@ def test_routing_policy_has_no_pricing_catalog_dependency():
     assert "pricing_status" not in source
     assert "pricing_diff" not in source
     assert "apply_pricing_catalog" not in source
+
+
+def test_hot_paths_do_not_depend_on_runtime_adapters():
+    policy_source = inspect.getsource(policy)
+    proxy_source = inspect.getsource(proxy)
+
+    for source in (policy_source, proxy_source):
+        assert "runtime_adapters" not in source
+        assert "adapter_for_backend" not in source
+        assert "runtime_state_for_backend" not in source
 
 
 def test_route_diagnostics_can_skip_alternatives(tmp_path):

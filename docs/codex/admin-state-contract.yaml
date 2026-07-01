@@ -478,6 +478,18 @@ required_actions:
   label: Assign model to route
   mutating: true
   confirmation_required: true
+- id: runtime.status
+  label: Runtime status
+  mutating: false
+  confirmation_required: false
+- id: runtime.models
+  label: Runtime models
+  mutating: false
+  confirmation_required: false
+- id: runtime.loaded_models
+  label: Loaded models
+  mutating: false
+  confirmation_required: false
 - id: runtime.load_model
   label: Load model
   mutating: true
@@ -535,6 +547,7 @@ render_bindings:
     proxy_status: proxy.state + proxy.pid
     routing_mode_cards: proxy.routing_mode + proxy.decision_layer_enabled
     latest_receipt: latest_receipt
+    runtime_status_panel: provider_runtime
     health_table: backends
     doctor_button: actions[doctor.run]
     restart_button: actions[proxy.restart]
@@ -561,8 +574,9 @@ render_bindings:
     safety_gate_select: proxy.safety_gate_mode
     aliases_table: model_aliases
   runtimes_tab:
-    runtime_rows: backends
+    runtime_rows: provider_runtime.providers + backends
     capability_details: backends.capabilities
+    status_buttons: runtime.status/runtime.models/runtime.loaded_models actions
     load_unload_buttons: runtime.load_model/runtime.unload_model actions enabled by
       capabilities
   tui:

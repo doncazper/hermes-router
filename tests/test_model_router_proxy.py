@@ -488,6 +488,29 @@ def test_proxy_routes_to_backend_and_overrides_model(monkeypatch):
     assert _FakeAsyncClient.requests[0]["body"]["model"] == "fast-model"
 
 
+def test_proxy_forwarding_does_not_require_runtime_adapters(monkeypatch):
+    import hermes.plugins.model_router.runtime_adapters as runtime_adapters
+
+    def explode(*_args, **_kwargs):
+        raise AssertionError("runtime adapters must not run during proxy forwarding")
+
+    monkeypatch.setattr(runtime_adapters, "adapter_for_backend", explode)
+    monkeypatch.setattr(runtime_adapters, "runtime_state_for_backend", explode)
+
+    with _client(monkeypatch, _config()) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "client-visible-model",
+                "messages": [{"role": "user", "content": "rewrite this text"}],
+            },
+        )
+
+    assert response.status_code == 200
+    _assert_route_headers(response, engine="fast_local", backend="fast")
+    assert _FakeAsyncClient.requests[0]["backend"] == "fast"
+
+
 def test_proxy_auth_rejects_models_without_upstream_call(monkeypatch):
     with _client(monkeypatch, _config(api_key="proxy-secret")) as client:
         response = client.get("/v1/models")

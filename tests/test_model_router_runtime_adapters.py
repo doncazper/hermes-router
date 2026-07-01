@@ -7,8 +7,10 @@ from hermes.plugins.model_router.proxy_config import (
 import hermes.plugins.model_router.runtime_adapters as runtime_adapters
 from hermes.plugins.model_router.runtime_adapters import (
     AdapterSupport,
+    CommandResult,
     GenericOpenAICompatibleAdapter,
     LMStudioAdapter,
+    LocalAIAdapter,
     ManagedRuntimeAdapter,
     OllamaAdapter,
     RuntimeActionResult,
@@ -18,6 +20,7 @@ from hermes.plugins.model_router.runtime_adapters import (
     RuntimeHealth,
     RuntimeLogInfo,
     RuntimeModel,
+    VLLMAdapter,
     adapter_for_backend,
     runtime_state_for_backend,
 )
@@ -73,6 +76,102 @@ def test_generic_openai_adapter_health_and_model_discovery_use_fake_http():
     assert "outside ModelRouter" in capabilities["start_server"]["disabled_reason"]
     assert load.ok is False
     assert load.status == "unsupported"
+
+
+def test_runtime_detection_report_contains_mvp_fields():
+    def requester(_url, _headers, _timeout):
+        return 200, {"data": [{"id": "fast-model"}]}
+
+    state = runtime_state_for_backend(
+        _backend(base_url="http://127.0.0.1:8090/v1", model="fast-model"),
+        requester=requester,
+        checked_at="2026-06-30T12:00:00Z",
+    )
+
+    assert state["runtime_id"] == "openai_compatible_local"
+    assert state["runtime_kind"] == "openai_compatible_local"
+    assert state["runtime_mode"] == "external_managed"
+    assert state["detected"] is True
+    assert state["endpoint"] == "http://127.0.0.1:8090/v1"
+    assert state["version"] is None
+    assert state["health_status"] == "ready"
+    assert state["missing_dependency"] is None
+    assert state["install_hint"] is None
+    assert state["last_checked_at"] == "2026-06-30T12:00:00Z"
+    assert state["detection"]["runtime_id"] == "openai_compatible_local"
+    assert state["detection"]["detected"] is True
+
+
+def test_runtime_detection_reports_missing_ollama_cli_and_unreachable_server(
+    monkeypatch,
+):
+    def requester(_url, _headers, _timeout):
+        raise URLError("offline")
+
+    monkeypatch.setattr(runtime_adapters, "_resolve_command", lambda _command: None)
+
+    state = runtime_state_for_backend(
+        _backend(base_url="http://127.0.0.1:11434/v1", model="qwen3:4b"),
+        requester=requester,
+        checked_at="2026-06-30T12:00:00Z",
+    )
+
+    assert state["runtime_id"] == "ollama"
+    assert state["detected"] is True
+    assert state["health"]["status"] == "unreachable"
+    assert state["missing_dependency"] == "ollama CLI"
+    assert "Start Ollama" in state["install_hint"]
+
+
+def test_runtime_detection_reports_unhealthy_but_reachable_runtime():
+    def requester(_url, _headers, _timeout):
+        return 500, {"data": [{"id": "other-model"}]}
+
+    state = runtime_state_for_backend(
+        _backend(base_url="http://127.0.0.1:8090/v1", model="fast-model"),
+        requester=requester,
+        checked_at="2026-06-30T12:00:00Z",
+    )
+
+    assert state["detected"] is True
+    assert state["health"]["status"] == "degraded"
+    assert state["health"]["reachable"] is True
+    assert state["health"]["ok"] is False
+    assert state["health"]["status_code"] == 500
+
+
+def test_runtime_detection_reports_configured_but_unreachable_runtime():
+    def requester(_url, _headers, _timeout):
+        raise URLError("offline")
+
+    state = runtime_state_for_backend(
+        _backend(base_url="http://127.0.0.1:8090/v1", model="fast-model"),
+        requester=requester,
+        checked_at="2026-06-30T12:00:00Z",
+    )
+
+    assert state["detected"] is True
+    assert state["health"]["status"] == "unreachable"
+    assert state["install_hint"] == (
+        "Start the configured local OpenAI-compatible server or update backend base_url."
+    )
+
+
+def test_runtime_detection_reports_hosted_backend_without_network_call():
+    def requester(_url, _headers, _timeout):
+        raise AssertionError("hosted detection should not call the network")
+
+    state = runtime_state_for_backend(
+        _backend(base_url="https://api.openai.example/v1", model="hosted-model"),
+        requester=requester,
+        checked_at="2026-06-30T12:00:00Z",
+    )
+
+    assert state["runtime_id"] == "openai_compatible_hosted"
+    assert state["runtime_mode"] == "external_managed"
+    assert state["detected"] is True
+    assert state["health"]["status"] == "unsupported"
+    assert "does not probe provider availability" in state["install_hint"]
 
 
 def test_runtime_state_supports_mocked_full_support_adapter(monkeypatch):
@@ -169,6 +268,10 @@ def test_runtime_state_supports_mocked_full_support_adapter(monkeypatch):
     adapter = captured["adapter"]
 
     assert state["endpoint_url"] == "http://127.0.0.1:7777/v1"
+    assert state["runtime_id"] == "mock"
+    assert state["runtime_mode"] == "external_managed"
+    assert state["detected"] is True
+    assert state["last_checked_at"]
     assert state["detection"]["installed"] is True
     assert state["detection"]["available"] is True
     assert state["health"]["status"] == "ready"
@@ -193,6 +296,245 @@ def test_lmstudio_and_ollama_adapters_are_detected_from_local_ports():
     assert lmstudio.capabilities().provider == "lmstudio"
     assert isinstance(ollama, OllamaAdapter)
     assert ollama.capabilities().provider == "ollama"
+
+
+def test_localai_adapter_detected_from_template_model_hint():
+    calls: list[tuple[str, dict[str, str], float]] = []
+
+    def requester(url, headers, timeout):
+        calls.append((url, dict(headers), timeout))
+        return 200, {"data": [{"id": "localai-fast-model"}]}
+
+    backend = _backend(
+        name="fast",
+        base_url="http://127.0.0.1:8080/v1",
+        model="localai-fast-model",
+    )
+    adapter = adapter_for_backend(backend, requester=requester)
+
+    assert isinstance(adapter, LocalAIAdapter)
+    assert adapter.detect().provider == "localai"
+    assert adapter.capabilities().provider == "localai"
+    assert adapter.capabilities().runtime_kind == "localai"
+    assert adapter.health(timeout_seconds=0.05).ok is True
+    assert [model.model_id for model in adapter.discover_models()] == [
+        "localai-fast-model"
+    ]
+    assert adapter.list_loaded_models() == ()
+    assert adapter.load_model("localai-fast-model").status == "unsupported"
+    assert "LocalAI lifecycle" in adapter.capabilities().load_model.disabled_reason
+    assert calls[0][0] == "http://127.0.0.1:8080/v1/models"
+
+
+def test_vllm_adapter_detected_from_backend_name_or_host_hint():
+    calls: list[tuple[str, dict[str, str], float]] = []
+
+    def requester(url, headers, timeout):
+        calls.append((url, dict(headers), timeout))
+        return 200, {"data": [{"id": "meta-llama/Llama-3.1-8B-Instruct"}]}
+
+    by_name = _backend(
+        name="vllm",
+        base_url="http://127.0.0.1:8000/v1",
+        model="meta-llama/Llama-3.1-8B-Instruct",
+    )
+    by_host = _backend(
+        name="fast",
+        base_url="http://vllm.local/v1",
+        model="meta-llama/Llama-3.1-8B-Instruct",
+    )
+
+    adapter = adapter_for_backend(by_name, requester=requester)
+    host_adapter = adapter_for_backend(by_host, requester=requester)
+    state = runtime_state_for_backend(by_name, requester=requester)
+
+    assert isinstance(adapter, VLLMAdapter)
+    assert isinstance(host_adapter, VLLMAdapter)
+    assert adapter.detect().provider == "vllm"
+    assert adapter.capabilities().runtime_kind == "vllm"
+    assert adapter.health(timeout_seconds=0.05).ok is True
+    assert [model.model_id for model in adapter.discover_models()] == [
+        "meta-llama/Llama-3.1-8B-Instruct"
+    ]
+    assert adapter.unload_model("meta-llama/Llama-3.1-8B-Instruct").status == (
+        "unsupported"
+    )
+    assert "vLLM lifecycle" in adapter.capabilities().unload_model.disabled_reason
+    assert state["provider"] == "vllm"
+    assert state["runtime_kind"] == "vllm"
+    assert calls[0][0] == "http://127.0.0.1:8000/v1/models"
+
+
+def test_unknown_local_openai_backend_keeps_generic_adapter():
+    backend = _backend(
+        name="custom",
+        base_url="http://127.0.0.1:8000/v1",
+        model="custom-model",
+    )
+    adapter = adapter_for_backend(backend, requester=lambda *_args: (200, {"data": []}))
+
+    assert isinstance(adapter, GenericOpenAICompatibleAdapter)
+    assert not isinstance(adapter, VLLMAdapter)
+    assert adapter.capabilities().provider == "openai_compatible_local"
+    assert adapter.capabilities().runtime_kind == "openai_compatible_local"
+
+
+def test_lmstudio_adapter_detects_cli_and_keeps_native_lifecycle_disabled():
+    commands: list[tuple[str, ...]] = []
+
+    def requester(_url, _headers, _timeout):
+        return 200, {"data": [{"id": "lmstudio-fast"}, {"id": "lmstudio-code"}]}
+
+    def command_runner(command, timeout):
+        del timeout
+        commands.append(tuple(command))
+        return CommandResult(0)
+
+    adapter = LMStudioAdapter(
+        _backend(base_url="http://127.0.0.1:1234/v1", model="lmstudio-fast"),
+        requester=requester,
+        command_runner=command_runner,
+        command_resolver=lambda command: f"/usr/local/bin/{command}"
+        if command == "lms"
+        else None,
+    )
+
+    detection = adapter.detect()
+    capabilities = adapter.capabilities().to_dict()
+    models = adapter.discover_models()
+    loaded = adapter.list_loaded_models()
+    load = adapter.load_model("lmstudio-fast")
+    unload = adapter.unload_model("lmstudio-fast")
+    start = adapter.start_server()
+
+    assert detection.installed is True
+    assert detection.command == ("lms",)
+    assert [model.model_id for model in models] == ["lmstudio-fast", "lmstudio-code"]
+    assert loaded == ()
+    assert capabilities["list_loaded_models"]["supported"] is False
+    assert "stable OpenAI-compatible API" in capabilities["list_loaded_models"][
+        "disabled_reason"
+    ]
+    assert capabilities["load_model"]["supported"] is False
+    assert "stable local CLI/API contract" in capabilities["load_model"][
+        "disabled_reason"
+    ]
+    assert load.status == "unsupported"
+    assert unload.status == "unsupported"
+    assert start.status == "unsupported"
+    assert commands == []
+
+
+def test_ollama_adapter_lists_models_and_loaded_models_with_mocked_cli():
+    commands: list[tuple[str, ...]] = []
+
+    def requester(_url, _headers, _timeout):
+        raise AssertionError("ollama CLI inventory should avoid HTTP fallback")
+
+    def command_runner(command, timeout):
+        del timeout
+        commands.append(tuple(command))
+        if tuple(command) == ("ollama", "list"):
+            return CommandResult(
+                0,
+                stdout=(
+                    "NAME              ID          SIZE      MODIFIED\n"
+                    "qwen3:4b          abc123      2.5 GB    1 hour ago\n"
+                    "llama3.2:latest   def456      2.0 GB    2 days ago\n"
+                ),
+            )
+        if tuple(command) == ("ollama", "ps"):
+            return CommandResult(
+                0,
+                stdout=(
+                    "NAME              ID          SIZE      PROCESSOR    UNTIL\n"
+                    "qwen3:4b          abc123      2.5 GB    100% GPU      4 minutes\n"
+                ),
+            )
+        raise AssertionError(f"unexpected command: {command!r}")
+
+    adapter = OllamaAdapter(
+        _backend(base_url="http://127.0.0.1:11434/v1", model="qwen3:4b"),
+        requester=requester,
+        command_runner=command_runner,
+        command_resolver=lambda command: f"/usr/local/bin/{command}"
+        if command == "ollama"
+        else None,
+    )
+
+    detection = adapter.detect()
+    capabilities = adapter.capabilities().to_dict()
+    models = adapter.discover_models()
+    loaded = adapter.list_loaded_models()
+
+    assert detection.installed is True
+    assert detection.command == ("ollama",)
+    assert capabilities["discover_models"]["supported"] is True
+    assert capabilities["list_loaded_models"]["supported"] is True
+    assert capabilities["unload_model"]["supported"] is True
+    assert capabilities["load_model"]["supported"] is False
+    assert "does not run or pull models silently" in capabilities["load_model"][
+        "disabled_reason"
+    ]
+    assert [model.to_dict() for model in models] == [
+        {"model_id": "qwen3:4b", "loaded": False, "source": "ollama_cli"},
+        {"model_id": "llama3.2:latest", "loaded": False, "source": "ollama_cli"},
+    ]
+    assert [model.to_dict() for model in loaded] == [
+        {"model_id": "qwen3:4b", "loaded": True, "source": "ollama_cli"}
+    ]
+    assert commands == [("ollama", "list"), ("ollama", "ps")]
+
+
+def test_ollama_unload_is_explicit_and_does_not_load_or_pull():
+    commands: list[tuple[str, ...]] = []
+
+    def command_runner(command, timeout):
+        del timeout
+        commands.append(tuple(command))
+        if tuple(command) == ("ollama", "stop", "qwen3:4b"):
+            return CommandResult(0, stdout="")
+        raise AssertionError(f"unexpected command: {command!r}")
+
+    adapter = OllamaAdapter(
+        _backend(base_url="http://127.0.0.1:11434/v1", model="qwen3:4b"),
+        command_runner=command_runner,
+        command_resolver=lambda command: f"/usr/local/bin/{command}"
+        if command == "ollama"
+        else None,
+    )
+
+    load = adapter.load_model("qwen3:4b")
+    start = adapter.start_server()
+    unload = adapter.unload_model("qwen3:4b")
+
+    assert load.status == "unsupported"
+    assert start.status == "unsupported"
+    assert unload.ok is True
+    assert unload.status == "unloaded"
+    assert commands == [("ollama", "stop", "qwen3:4b")]
+
+
+def test_ollama_adapter_reports_disabled_reasons_without_cli():
+    adapter = OllamaAdapter(
+        _backend(base_url="http://127.0.0.1:11434/v1", model="qwen3:4b"),
+        command_resolver=lambda _command: None,
+    )
+
+    capabilities = adapter.capabilities().to_dict()
+    loaded = adapter.list_loaded_models()
+    unload = adapter.unload_model("qwen3:4b")
+
+    assert adapter.detect().installed is False
+    assert capabilities["discover_models"]["supported"] is True
+    assert capabilities["list_loaded_models"]["supported"] is False
+    assert "Ollama CLI not found" in capabilities["list_loaded_models"][
+        "disabled_reason"
+    ]
+    assert capabilities["unload_model"]["supported"] is False
+    assert "ollama CLI" in capabilities["unload_model"]["disabled_reason"]
+    assert loaded == ()
+    assert unload.status == "unsupported"
 
 
 def test_hosted_generic_adapter_does_not_call_network_by_default():

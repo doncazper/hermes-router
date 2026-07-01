@@ -72,7 +72,9 @@ storage.
 Boundary: the runtime manager can own explicit lifecycle actions for configured
 managed processes and status/advice for external runtimes. It must not change
 route decisions, silently mutate config, download models, enable hosted
-providers, or perform agent work.
+providers, or perform agent work. Mutating lifecycle actions must stay
+confirmation-gated, and default settings-state rendering must not start, stop,
+load, or unload runtimes.
 
 ### Stage 3: Mid-Term Model Library And Operations
 

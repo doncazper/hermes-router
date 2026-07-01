@@ -15,10 +15,13 @@ These are implementation wireframes, not decorative mockups. The current setting
    vLLM, generic OpenAI-compatible services, and hosted providers.
 8. Do not imply ModelRouter builds its own inference engine; adapter capability
    gaps and unsupported actions must be visible.
-9. Recommendation and download surfaces are operational controls. Keep them
+9. Runtime discovery/status is advisory operator state. It must not imply route
+   decisions are based on live runtime discovery, and rendering the UI must not
+   start, stop, load, or unload runtimes.
+10. Recommendation and download surfaces are operational controls. Keep them
    compact by default and expand only for install details, alternatives, logs,
    or confirmed download actions.
-10. Chat/playground surfaces, if added later, are secondary to control-plane
+11. Chat/playground surfaces, if added later, are secondary to control-plane
    operations and must not dominate the main viewport.
 
 ## Web UI navigation
@@ -316,6 +319,8 @@ Required behavior:
 - If a runtime cannot load/unload models through an API, the button is disabled with a reason.
 - If a runtime is managed by ModelRouter, start/stop controls call the managed runtime manager.
 - If a runtime is external, show exact external command or docs hint where known.
+- Mutating runtime actions require confirmation and never run from status render
+  or routing/proxy forwarding.
 - If a runtime owns inference, ModelRouter should show status and supported
   adapter controls rather than pretending to execute the model itself.
 

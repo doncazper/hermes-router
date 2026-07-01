@@ -22,7 +22,10 @@ ModelRouter should work in three shapes:
 - Prefer adapters around proven runtimes over a custom inference engine.
 - Preserve provider/runtime neutrality and avoid ModelRouter-only lock-in.
 - Keep downloads, config writes, hosted-provider enablement, runtime starts,
-  tool calls, and benchmark runs explicit.
+  runtime stops, model load/unload, tool calls, and benchmark runs explicit and
+  confirmation-gated where they mutate operator state.
+- Treat runtime discovery, health, model lists, and loaded-model state as
+  operator diagnostics, not routing-decision inputs.
 - Do not fetch live pricing during `route_fast(...)`, `route(...)`, proxy
   forwarding, or default routing paths.
 - Do not claim benchmark parity, cost reductions, frontier performance, or
@@ -198,7 +201,7 @@ claims:
 - **Priority**: P2.
 - **Owner surface**: future plugin, settings UI, proxy, runtime adapter.
 
-### 10. Runtime Management For llama.cpp, MLX, Ollama, LM Studio, LocalAI
+### 10. Runtime Management For llama.cpp, MLX, Ollama, LM Studio, LocalAI, vLLM
 
 - **LM Studio baseline**: manages its own runtimes, supports llama.cpp/GGUF and
   MLX on Apple Silicon, exposes runtime management through app and CLI.
@@ -211,6 +214,8 @@ claims:
 - **Parity requirement**: formalize runtime adapters that expose detect,
   health, list models, list loaded models, start, stop, load, unload, endpoint,
   capabilities, and unsupported-operation reasons where each runtime allows it.
+  These adapters are optional admin/operator surfaces; `route_fast(...)` and
+  ordinary proxy forwarding must not require them.
 - **ModelRouter advantage opportunity**: coordinate several proven runtimes from
   one control center without forcing users to abandon the runtime app that
   already works for them.

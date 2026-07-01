@@ -45,6 +45,7 @@ ModelRouter should not build a custom inference engine from scratch when proven
 runtimes already exist. It should coordinate, configure, observe, and route
 across those runtimes through explicit adapters and managed process boundaries.
 The ownership boundary is defined in `docs/product-boundaries.md`.
+The runtime mode strategy is defined in `docs/runtime-strategy.md`.
 The staged path for turning this into a fuller one-app local control-center
 experience lives in `docs/roadmap.md`.
 The detailed local-model app parity path lives in

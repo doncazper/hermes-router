@@ -221,6 +221,83 @@ def test_settings_cli_help_exposes_local_admin_command():
     assert "--port" in result.stdout
 
 
+def test_runtime_cli_help_exposes_lifecycle_commands():
+    result = _run_cli("runtime", "--help")
+
+    assert result.returncode == 0
+    help_text = " ".join(result.stdout.split())
+    assert "not required for route_fast or proxy forwarding" in help_text
+    assert "status" in result.stdout
+    assert "models" in result.stdout
+    assert "unload" in result.stdout
+
+
+def test_runtime_cli_status_json_uses_proxy_config(tmp_path):
+    init = _run_cli(
+        "init",
+        "--preset",
+        "localai",
+        "--yes",
+        "--config-dir",
+        str(tmp_path),
+        "--json",
+    )
+    assert init.returncode == 0
+
+    result = _run_cli(
+        "runtime",
+        "status",
+        "--config",
+        str(tmp_path / "routing_proxy.yaml"),
+        "--backend",
+        "fast",
+        "--timeout",
+        "0.05",
+        "--json",
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["action_id"] == "runtime.status"
+    assert payload["payload"]["backend"] == "fast"
+    assert payload["payload"]["runtime"]["provider"] == "localai"
+    assert payload["payload"]["runtime"]["runtime_id"] == "localai"
+    assert payload["payload"]["runtime"]["runtime_mode"] == "external_managed"
+    assert "detected" in payload["payload"]["runtime"]
+    assert payload["payload"]["runtime"]["endpoint"]
+    assert payload["payload"]["runtime"]["last_checked_at"]
+
+
+def test_runtime_cli_mutating_json_requires_yes(tmp_path):
+    init = _run_cli(
+        "init",
+        "--preset",
+        "ollama",
+        "--yes",
+        "--config-dir",
+        str(tmp_path),
+        "--json",
+    )
+    assert init.returncode == 0
+
+    result = _run_cli(
+        "runtime",
+        "unload",
+        "--config",
+        str(tmp_path / "routing_proxy.yaml"),
+        "--backend",
+        "fast",
+        "--model",
+        "qwen3:0.6b",
+        "--json",
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert payload["error"] == "Runtime unload model requires confirm=true."
+
+
 def test_tui_cli_help_exposes_terminal_control_center():
     result = _run_cli("tui", "--help")
 

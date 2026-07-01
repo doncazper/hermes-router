@@ -32,9 +32,15 @@ for task execution, context management, delegation, and final review. ModelRoute
 should wrap or supervise proven runtimes where possible rather than building a
 custom inference engine from scratch.
 
+Runtime discovery and lifecycle controls are operator surfaces. They do not
+change routing decisions, and neither `route_fast(...)` nor normal proxy
+forwarding requires runtime adapters to be available.
+
 See [Product boundaries](docs/product-boundaries.md) for the ownership model:
 what ModelRouter owns as a local control center, what external runtimes own, and
 what host agents own.
+See [Runtime strategy](docs/runtime-strategy.md) for the runtime modes:
+`external_managed`, `external_cli`, and `bundled_future`.
 
 For the local-model app roadmap, see
 [LM Studio parity roadmap](docs/lm-studio-parity-roadmap.md). LM Studio is the
@@ -671,7 +677,9 @@ it warm, stops it after the idle timeout, and stops all managed child processes
 on proxy shutdown. Model loading/unloading is process-level: starting
 `llama-server` or `mlx_lm.server` loads the model, and stopping that process
 unloads it from memory. ModelRouter does not download models automatically and
-does not infer or execute arbitrary commands.
+does not infer or execute arbitrary commands. Adapter-reported status, model
+lists, and loaded-model state are diagnostics for operators; routing still uses
+configured backend/model policy rather than live discovery.
 
 Packaged presets:
 
@@ -1542,6 +1550,8 @@ integration point.
 - [Model router details](docs/model-router.md)
 - [Product north star](docs/product-north-star.md)
 - [Product boundaries](docs/product-boundaries.md)
+- [Runtime strategy](docs/runtime-strategy.md)
+- [Runtime adapter contract](docs/runtime-adapter-contract.md)
 - [LM Studio parity roadmap](docs/lm-studio-parity-roadmap.md)
 - [Local server compatibility matrix](docs/local-server-compatibility.md)
 - [Business model](docs/business-model.md)

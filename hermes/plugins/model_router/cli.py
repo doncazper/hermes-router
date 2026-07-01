@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
@@ -10,6 +11,7 @@ import subprocess
 import sys
 from typing import Any
 
+from hermes.plugins.model_router.admin.actions import AdminActionError, run_admin_action
 from hermes.plugins.model_router.availability import validate_router_availability
 from hermes.plugins.model_router.catalog_update import (
     apply_catalog_update,
@@ -584,6 +586,85 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
         help="Directory containing routing_proxy.yaml and telemetry files",
     )
     tui.set_defaults(func=_cmd_tui)
+
+    runtime = subparsers.add_parser(
+        "runtime",
+        help="Inspect or explicitly invoke runtime adapter maintenance actions",
+        description=(
+            "Inspect or explicitly invoke runtime adapter maintenance actions. "
+            "Runtime adapters coordinate external/proven runtimes for operators; "
+            "they are not required for route_fast or proxy forwarding."
+        ),
+    )
+    runtime_subparsers = runtime.add_subparsers(
+        dest="runtime_command",
+        required=True,
+    )
+    runtime_status = runtime_subparsers.add_parser(
+        "status",
+        help="Show runtime adapter detection, health, and capabilities",
+    )
+    _add_runtime_common_args(runtime_status, backend_required=False)
+    runtime_status.set_defaults(
+        func=_cmd_runtime_action,
+        runtime_action_id="runtime.status",
+    )
+    runtime_models = runtime_subparsers.add_parser(
+        "models",
+        help="List models visible to a runtime adapter",
+    )
+    _add_runtime_common_args(runtime_models)
+    runtime_models.set_defaults(
+        func=_cmd_runtime_action,
+        runtime_action_id="runtime.models",
+    )
+    runtime_loaded = runtime_subparsers.add_parser(
+        "loaded",
+        help="List loaded models when the runtime supports it",
+    )
+    _add_runtime_common_args(runtime_loaded)
+    runtime_loaded.set_defaults(
+        func=_cmd_runtime_action,
+        runtime_action_id="runtime.loaded_models",
+    )
+    runtime_start = runtime_subparsers.add_parser(
+        "start",
+        help="Explicitly start a runtime only when the adapter supports it",
+    )
+    _add_runtime_common_args(runtime_start, mutating=True)
+    runtime_start.set_defaults(
+        func=_cmd_runtime_action,
+        runtime_action_id="runtime.start_server",
+    )
+    runtime_stop = runtime_subparsers.add_parser(
+        "stop",
+        help="Explicitly stop a runtime only when the adapter supports it",
+    )
+    _add_runtime_common_args(runtime_stop, mutating=True)
+    runtime_stop.set_defaults(
+        func=_cmd_runtime_action,
+        runtime_action_id="runtime.stop_server",
+    )
+    runtime_load = runtime_subparsers.add_parser(
+        "load",
+        help="Explicitly load a model only when the adapter supports it",
+    )
+    _add_runtime_common_args(runtime_load, mutating=True)
+    runtime_load.add_argument("--model", required=True, help="Runtime model id")
+    runtime_load.set_defaults(
+        func=_cmd_runtime_action,
+        runtime_action_id="runtime.load_model",
+    )
+    runtime_unload = runtime_subparsers.add_parser(
+        "unload",
+        help="Explicitly unload a model only when the adapter supports it",
+    )
+    _add_runtime_common_args(runtime_unload, mutating=True)
+    runtime_unload.add_argument("--model", required=True, help="Runtime model id")
+    runtime_unload.set_defaults(
+        func=_cmd_runtime_action,
+        runtime_action_id="runtime.unload_model",
+    )
 
     feedback = subparsers.add_parser(
         "feedback",
@@ -1236,6 +1317,50 @@ def _add_pricing_maintenance_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_runtime_common_args(
+    parser: argparse.ArgumentParser,
+    *,
+    backend_required: bool = True,
+    mutating: bool = False,
+) -> None:
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=Path(DEFAULT_CONFIG_DIR) / "routing_proxy.yaml",
+        help="Path to routing_proxy.yaml",
+    )
+    parser.add_argument(
+        "--backend",
+        required=backend_required,
+        help="Backend name from routing_proxy.yaml",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=0.25,
+        help="Bounded runtime status/model-list timeout in seconds",
+    )
+    parser.add_argument("--json", action="store_true", help="Emit JSON output")
+    if mutating:
+        parser.add_argument(
+            "--yes",
+            action="store_true",
+            help="Confirm the explicit runtime maintenance operation.",
+        )
+
+
+def _runtime_cli_paths(config_path: Path) -> dict[str, Path]:
+    config_dir = config_path.expanduser().parent
+    return {
+        "proxy_config": config_path,
+        "model_router_config": config_dir / "model_router.yaml",
+        "benchmarks": config_dir / "benchmarks.json",
+        "models": config_dir / "models",
+        "pricing": config_dir / DEFAULT_PRICING_CATALOG_NAME,
+        "feedback": Path(DEFAULT_FEEDBACK_PATH),
+    }
+
+
 def _cmd_validate_config(args: argparse.Namespace) -> int:
     try:
         config = load_router_config(args.config)
@@ -1368,6 +1493,46 @@ def _cmd_tui(args: argparse.Namespace) -> int:
     from hermes.plugins.model_router.tui import run_tui
 
     return run_tui(config_dir=args.config_dir)
+
+
+def _cmd_runtime_action(args: argparse.Namespace) -> int:
+    action_id = args.runtime_action_id
+    mutating = action_id in {
+        "runtime.start_server",
+        "runtime.stop_server",
+        "runtime.load_model",
+        "runtime.unload_model",
+    }
+    confirmed = bool(getattr(args, "yes", False))
+    if mutating and not confirmed and not args.json:
+        backend = getattr(args, "backend", "")
+        answer = input(f"Run {action_id} for backend {backend}? [y/N] ").strip().lower()
+        confirmed = answer in {"y", "yes"}
+    payload: dict[str, Any] = {
+        "backend": getattr(args, "backend", "") or "",
+        "timeout_seconds": getattr(args, "timeout", 0.25),
+    }
+    model = getattr(args, "model", None)
+    if model:
+        payload["model"] = model
+    if mutating:
+        payload["confirm"] = confirmed
+    try:
+        result = run_admin_action(action_id, _runtime_cli_paths(args.config), payload)
+    except AdminActionError as exc:
+        error_payload = {"ok": False, "error": str(exc), "details": exc.details}
+        if args.json:
+            print(json.dumps(error_payload, indent=2, sort_keys=True))
+        else:
+            print(f"Runtime action failed: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        _print_runtime_action_result(result)
+    body = result.get("payload")
+    ok = isinstance(body, dict) and body.get("ok", result.get("ok")) is not False
+    return 0 if ok else 1
 
 
 def _cmd_feedback(args: argparse.Namespace) -> int:
@@ -2377,6 +2542,68 @@ def _print_pricing_apply_result(result) -> None:
         print("- none")
     for note in result.notes:
         print(f"- {note}")
+
+
+def _print_runtime_action_result(result: Mapping[str, Any]) -> None:
+    body = result.get("payload")
+    body = body if isinstance(body, Mapping) else {}
+    print("Runtime Action")
+    print(f"Action: {result.get('action_id', 'unknown')}")
+    print(f"OK: {str(body.get('ok', result.get('ok', False))).lower()}")
+    if body.get("backend"):
+        print(f"Backend: {body['backend']}")
+    if body.get("status"):
+        print(f"Status: {body['status']}")
+    if body.get("disabled_reason"):
+        print(f"Disabled: {body['disabled_reason']}")
+    runtime = body.get("runtime")
+    if isinstance(runtime, Mapping):
+        print(f"Runtime id: {runtime.get('runtime_id', runtime.get('provider', 'unknown'))}")
+        print(f"Provider: {runtime.get('provider', 'unknown')}")
+        print(f"Runtime kind: {runtime.get('runtime_kind', 'unknown')}")
+        if runtime.get("runtime_mode"):
+            print(f"Runtime mode: {runtime['runtime_mode']}")
+        if "detected" in runtime:
+            print(f"Detected: {str(runtime.get('detected')).lower()}")
+        if runtime.get("endpoint"):
+            print(f"Endpoint: {runtime['endpoint']}")
+        health = runtime.get("health")
+        if isinstance(health, Mapping):
+            print(f"Health: {health.get('status', 'unknown')} ({health.get('detail', '')})")
+        if runtime.get("missing_dependency"):
+            print(f"Missing dependency: {runtime['missing_dependency']}")
+        if runtime.get("install_hint"):
+            print(f"Install hint: {runtime['install_hint']}")
+        if runtime.get("last_checked_at"):
+            print(f"Last checked: {runtime['last_checked_at']}")
+    backends = body.get("backends")
+    if isinstance(backends, list):
+        print("Backends:")
+        for item in backends:
+            if not isinstance(item, Mapping):
+                continue
+            health = item.get("health") if isinstance(item.get("health"), Mapping) else {}
+            detected = item.get("detected")
+            suffix = f", detected={str(detected).lower()}" if detected is not None else ""
+            print(
+                f"- {item.get('backend', item.get('provider', 'unknown'))}: "
+                f"{health.get('status', 'unknown')}{suffix}"
+            )
+    models = body.get("models") or body.get("loaded_models")
+    if isinstance(models, list):
+        print("Models:")
+        if not models:
+            print("- none")
+        for item in models:
+            if isinstance(item, Mapping):
+                loaded = item.get("loaded")
+                suffix = "" if loaded is None else f" loaded={str(loaded).lower()}"
+                print(f"- {item.get('model_id', 'unknown')}{suffix}")
+    action_result = body.get("result")
+    if isinstance(action_result, Mapping):
+        print(f"Result: {action_result.get('status', 'unknown')}")
+        if action_result.get("message"):
+            print(f"Message: {action_result['message']}")
 
 
 def _print_dogfood_report(report) -> None:

@@ -31,6 +31,16 @@ from hermes.plugins.model_router.pricing_catalog import (
 from hermes.plugins.model_router.product import doctor_proxy_config as _doctor_proxy_config
 from hermes.plugins.model_router.proxy_config import ProxyConfigError, load_proxy_config
 from hermes.plugins.model_router.routing_log import RoutingLogWriter, build_feedback
+from hermes.plugins.model_router.runtime_adapters import (
+    RuntimeActionResult,
+    _install_hint as _runtime_install_hint,
+    _missing_dependency as _runtime_missing_dependency,
+    _runtime_detected,
+    _utc_timestamp as _runtime_checked_at,
+    adapter_for_backend,
+    runtime_mode_for_backend,
+    runtime_state_for_backend,
+)
 from hermes.plugins.model_router.setup_assistant import (
     DownloadPlan,
     execute_download_plan,
@@ -73,6 +83,14 @@ ACTION_ALIASES = {
     "catalog_apply": "catalog.apply",
     "pricing_diff": "pricing.diff",
     "pricing_apply": "pricing.apply",
+    "runtime_detect": "runtime.status",
+    "runtime_status": "runtime.status",
+    "runtime_models": "runtime.models",
+    "runtime_loaded": "runtime.loaded_models",
+    "runtime_start": "runtime.start_server",
+    "runtime_stop": "runtime.stop_server",
+    "runtime_load": "runtime.load_model",
+    "runtime_unload": "runtime.unload_model",
     "feedback": "telemetry.feedback.write",
 }
 
@@ -86,6 +104,10 @@ MUTATING_ACTIONS = {
     "proxy.start",
     "proxy.stop",
     "pricing.apply",
+    "runtime.load_model",
+    "runtime.start_server",
+    "runtime.stop_server",
+    "runtime.unload_model",
     "telemetry.feedback.write",
 }
 
@@ -99,6 +121,10 @@ CONFIRMATION_ERRORS = {
     "proxy.start": "Proxy start requires confirm=true.",
     "proxy.stop": "Proxy stop requires confirm=true.",
     "pricing.apply": "Pricing catalog apply requires confirm=true.",
+    "runtime.load_model": "Runtime load model requires confirm=true.",
+    "runtime.start_server": "Runtime start server requires confirm=true.",
+    "runtime.stop_server": "Runtime stop server requires confirm=true.",
+    "runtime.unload_model": "Runtime unload model requires confirm=true.",
     "telemetry.feedback.write": "Feedback submission requires confirm=true.",
 }
 
@@ -222,6 +248,55 @@ _ACTION_DESCRIPTORS: tuple[dict[str, Any], ...] = (
         "requires_confirm": True,
         "description": "Run confirmed local benchmarks using a synthetic prompt.",
     },
+    {
+        "id": "runtime.status",
+        "label": "Runtime status",
+        "mutates": False,
+        "requires_confirm": False,
+        "description": "Inspect runtime adapter detection, health, and capabilities.",
+    },
+    {
+        "id": "runtime.models",
+        "label": "Runtime models",
+        "mutates": False,
+        "requires_confirm": False,
+        "description": "List models visible through the selected runtime adapter.",
+    },
+    {
+        "id": "runtime.loaded_models",
+        "label": "Loaded models",
+        "mutates": False,
+        "requires_confirm": False,
+        "description": "List loaded models when the runtime can distinguish them.",
+    },
+    {
+        "id": "runtime.start_server",
+        "label": "Start runtime",
+        "mutates": True,
+        "requires_confirm": True,
+        "description": "Start a runtime only when the adapter explicitly supports it.",
+    },
+    {
+        "id": "runtime.stop_server",
+        "label": "Stop runtime",
+        "mutates": True,
+        "requires_confirm": True,
+        "description": "Stop a runtime only when the adapter explicitly supports it.",
+    },
+    {
+        "id": "runtime.load_model",
+        "label": "Load model",
+        "mutates": True,
+        "requires_confirm": True,
+        "description": "Load a model only when the adapter explicitly supports it.",
+    },
+    {
+        "id": "runtime.unload_model",
+        "label": "Unload model",
+        "mutates": True,
+        "requires_confirm": True,
+        "description": "Unload a model only when the adapter explicitly supports it.",
+    },
 )
 
 
@@ -278,6 +353,15 @@ def run_admin_action(
         body = _pricing_diff_action(paths)
     elif normalized == "pricing.apply":
         body = _pricing_apply_action(paths)
+    elif normalized in {"runtime.status", "runtime.models", "runtime.loaded_models"}:
+        body = _runtime_read_action(paths, action_payload, normalized)
+    elif normalized in {
+        "runtime.start_server",
+        "runtime.stop_server",
+        "runtime.load_model",
+        "runtime.unload_model",
+    }:
+        body = _runtime_mutating_action(paths, action_payload, normalized)
     elif normalized == "telemetry.feedback.write":
         body = _feedback_action(paths, action_payload)
     else:
@@ -501,6 +585,195 @@ def _pricing_apply_action(paths: Mapping[str, Path]) -> dict[str, Any]:
     }
 
 
+def _runtime_read_action(
+    paths: Mapping[str, Path],
+    payload: Mapping[str, Any],
+    action_id: str,
+) -> dict[str, Any]:
+    config = _load_runtime_proxy_config(paths)
+    backend_name = str(payload.get("backend", "")).strip()
+    timeout_seconds = _payload_float(payload, "timeout_seconds", default=0.25)
+    if not backend_name:
+        states = [
+            runtime_state_for_backend(backend, timeout_seconds=timeout_seconds)
+            | {"backend": backend.name}
+            for backend in config.backends.values()
+        ]
+        return {"ok": True, "backends": states}
+    backend = _backend_for_runtime_action(config, backend_name)
+    adapter = adapter_for_backend(backend)
+    if action_id == "runtime.status":
+        return {
+            "ok": True,
+            "backend": backend.name,
+            "runtime": _runtime_state_from_adapter(
+                backend,
+                adapter,
+                timeout_seconds=timeout_seconds,
+            ),
+        }
+    if action_id == "runtime.models":
+        capability = adapter.capabilities().discover_models
+        if not capability.supported:
+            return _runtime_disabled_payload(backend.name, capability.disabled_reason)
+        models = adapter.discover_models(timeout_seconds=timeout_seconds)
+        return {
+            "ok": True,
+            "backend": backend.name,
+            "models": [model.to_dict() for model in models],
+        }
+    capability = adapter.capabilities().list_loaded_models
+    if not capability.supported:
+        return _runtime_disabled_payload(backend.name, capability.disabled_reason)
+    models = adapter.list_loaded_models(timeout_seconds=timeout_seconds)
+    return {
+        "ok": True,
+        "backend": backend.name,
+        "loaded_models": [model.to_dict() for model in models],
+    }
+
+
+def _runtime_mutating_action(
+    paths: Mapping[str, Path],
+    payload: Mapping[str, Any],
+    action_id: str,
+) -> dict[str, Any]:
+    config = _load_runtime_proxy_config(paths)
+    backend = _backend_for_runtime_action(
+        config,
+        str(payload.get("backend", "")).strip(),
+    )
+    adapter = adapter_for_backend(backend)
+    capabilities = adapter.capabilities()
+    if action_id == "runtime.start_server":
+        capability = capabilities.start_server
+        if not capability.supported:
+            return _runtime_disabled_payload(backend.name, capability.disabled_reason)
+        result = adapter.start_server()
+    elif action_id == "runtime.stop_server":
+        capability = capabilities.stop_server
+        if not capability.supported:
+            return _runtime_disabled_payload(backend.name, capability.disabled_reason)
+        result = adapter.stop_server()
+    elif action_id == "runtime.load_model":
+        capability = capabilities.load_model
+        if not capability.supported:
+            return _runtime_disabled_payload(backend.name, capability.disabled_reason)
+        result = adapter.load_model(_runtime_model_from_payload(payload))
+    elif action_id == "runtime.unload_model":
+        capability = capabilities.unload_model
+        if not capability.supported:
+            return _runtime_disabled_payload(backend.name, capability.disabled_reason)
+        result = adapter.unload_model(_runtime_model_from_payload(payload))
+    else:  # pragma: no cover - dispatch protects this branch.
+        raise AdminActionError(f"Unknown runtime action: {action_id}")
+    return _runtime_action_payload(backend.name, result)
+
+
+def _load_runtime_proxy_config(paths: Mapping[str, Path]) -> Any:
+    try:
+        return load_proxy_config(paths["proxy_config"])
+    except (OSError, ProxyConfigError) as exc:
+        raise AdminActionError(str(exc), status_code=400) from exc
+
+
+def _backend_for_runtime_action(config: Any, backend_name: str) -> Any:
+    if not backend_name:
+        raise AdminActionError("backend is required.", status_code=400)
+    backend = config.backends.get(backend_name)
+    if backend is None:
+        raise AdminActionError(
+            f"backend {backend_name!r} is not configured.",
+            status_code=400,
+        )
+    return backend
+
+
+def _runtime_model_from_payload(payload: Mapping[str, Any]) -> str:
+    model = str(payload.get("model") or payload.get("model_id") or "").strip()
+    if not model:
+        raise AdminActionError("model is required.", status_code=400)
+    return model
+
+
+def _runtime_disabled_payload(
+    backend: str,
+    disabled_reason: str | None,
+) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "backend": backend,
+        "status": "unsupported",
+        "disabled_reason": disabled_reason or "Runtime adapter does not support this action.",
+    }
+
+
+def _runtime_action_payload(
+    backend: str,
+    result: RuntimeActionResult,
+) -> dict[str, Any]:
+    return {
+        "ok": result.ok,
+        "backend": backend,
+        "result": result.to_dict(),
+        "status": result.status,
+        "disabled_reason": result.disabled_reason,
+    }
+
+
+def _runtime_state_from_adapter(
+    backend: Any,
+    adapter: Any,
+    *,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    last_checked_at = _runtime_checked_at()
+    capabilities = adapter.capabilities()
+    detection = adapter.detect()
+    health = adapter.health(timeout_seconds=timeout_seconds)
+    models = (
+        adapter.discover_models(timeout_seconds=timeout_seconds)
+        if capabilities.discover_models.supported
+        else ()
+    )
+    loaded = (
+        adapter.list_loaded_models(timeout_seconds=timeout_seconds)
+        if capabilities.list_loaded_models.supported
+        else ()
+    )
+    logs = adapter.logs()
+    missing_dependency = _runtime_missing_dependency(backend, detection, capabilities)
+    endpoint_url = adapter.endpoint_url()
+    return {
+        "adapter": adapter.__class__.__name__,
+        "runtime_id": capabilities.provider,
+        "provider": capabilities.provider,
+        "runtime_kind": capabilities.runtime_kind,
+        "runtime_mode": runtime_mode_for_backend(backend),
+        "endpoint_url": endpoint_url,
+        "endpoint": endpoint_url,
+        "version": detection.version,
+        "detected": _runtime_detected(backend, detection, health),
+        "last_checked_at": last_checked_at,
+        "health_status": health.status,
+        "missing_dependency": missing_dependency,
+        "install_hint": _runtime_install_hint(
+            backend,
+            provider=capabilities.provider,
+            detection=detection,
+            health=health,
+            missing_dependency=missing_dependency,
+        ),
+        "detection": detection.to_dict(),
+        "health": health.to_dict(),
+        "models": [model.to_dict() for model in models],
+        "loaded_models": [model.to_dict() for model in loaded],
+        "capabilities": capabilities.to_dict(),
+        "logs": logs.to_dict(),
+        "backend": backend.name,
+    }
+
+
 def _feedback_action(
     paths: Mapping[str, Path],
     payload: Mapping[str, Any],
@@ -568,6 +841,15 @@ def _payload_bool(payload: Mapping[str, Any], key: str, *, default: bool) -> boo
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return bool(value)
+
+
+def _payload_float(payload: Mapping[str, Any], key: str, *, default: float) -> float:
+    value = payload.get(key, default)
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0.05, min(parsed, 10.0))
 
 
 def _scan_local_environment_compat() -> Any:
