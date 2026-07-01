@@ -75,6 +75,87 @@ def test_init_auto_selects_ollama_and_reports_missing_model_pulls(
         assert f"- ollama pull {model}" in result.messages
 
 
+def test_init_auto_lmstudio_reports_detected_model_ids(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        product,
+        "detect_first_run_environment",
+        lambda: FirstRunSignals(
+            ollama_installed=False,
+            ollama_running=False,
+            lmstudio_running=True,
+            lmstudio_models=(
+                "lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF",
+                "qwen2.5-coder-7b-instruct",
+            ),
+            recommended_preset="lmstudio",
+            notes=("Recommended preset: lmstudio.",),
+        ),
+    )
+
+    result = initialize_product_config(
+        auto_detect=True,
+        config_dir=tmp_path,
+        force=False,
+        interactive=False,
+    )
+
+    assert result.preset == "lmstudio"
+    assert (
+        "LM Studio detected models: "
+        "lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF, "
+        "qwen2.5-coder-7b-instruct."
+    ) in result.messages
+    assert any(
+        "Replace lmstudio-fast-model" in message
+        and "qwen2.5-coder-7b-instruct" in message
+        for message in result.messages
+    )
+
+
+def test_backend_model_detail_reports_detected_model_replacement_guidance(tmp_path):
+    initialize_product_config(
+        preset="lmstudio",
+        config_dir=tmp_path,
+        force=False,
+        interactive=False,
+    )
+    config = load_proxy_config(tmp_path / "routing_proxy.yaml")
+    body = json.dumps(
+        {
+            "data": [
+                {"id": "lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF"},
+                {"id": "qwen2.5-coder-7b-instruct"},
+            ]
+        }
+    ).encode("utf-8")
+
+    ok, detail = product._backend_model_detail(config.backends["fast"], body)
+
+    assert ok is False
+    assert "detected models:" in str(detail)
+    assert "replace lmstudio-fast-model with one of:" in str(detail)
+    assert "qwen2.5-coder-7b-instruct" in str(detail)
+
+
+def test_backend_model_detail_reports_empty_model_list_guidance(tmp_path):
+    initialize_product_config(
+        preset="lmstudio",
+        config_dir=tmp_path,
+        force=False,
+        interactive=False,
+    )
+    config = load_proxy_config(tmp_path / "routing_proxy.yaml")
+
+    ok, detail = product._backend_model_detail(
+        config.backends["fast"],
+        b'{"data": []}',
+    )
+
+    assert ok is False
+    assert "no models detected" in str(detail)
+    assert "start the local server or configure endpoint" in str(detail)
+
+
 def test_first_run_auto_can_recommend_mlx_lm_on_apple_silicon(monkeypatch):
     monkeypatch.setattr(
         product,
@@ -527,6 +608,49 @@ def test_doctor_includes_first_run_remediation_for_ollama(tmp_path, monkeypatch)
         report.remediation
     )
     assert any("model-router telemetry summary" in item for item in report.remediation)
+
+
+def test_doctor_includes_lmstudio_detected_model_replacement(tmp_path, monkeypatch):
+    initialize_product_config(
+        preset="lmstudio",
+        config_dir=tmp_path,
+        force=False,
+        interactive=False,
+    )
+
+    def fake_health(backend, *, timeout_seconds):
+        del timeout_seconds
+        if backend.name == "fast":
+            return BackendHealth(
+                backend=backend.name,
+                reachable=True,
+                ok=False,
+                status_code=200,
+                detail=(
+                    "reachable: HTTP 200; configured model 'lmstudio-fast-model' "
+                    "not listed; detected models: qwen2.5-coder-7b-instruct; "
+                    "replace lmstudio-fast-model with one of: "
+                    "qwen2.5-coder-7b-instruct"
+                ),
+            )
+        return BackendHealth(
+            backend=backend.name,
+            reachable=True,
+            ok=True,
+            status_code=200,
+            detail=f"reachable: HTTP 200; configured model {backend.model!r} listed",
+        )
+
+    monkeypatch.setattr(product, "check_backend_health", fake_health)
+    report = doctor_proxy_config(tmp_path / "routing_proxy.yaml")
+
+    assert report.ok is False
+    assert any(
+        "Backend fast model 'lmstudio-fast-model' is not listed; "
+        "replace lmstudio-fast-model with one of: qwen2.5-coder-7b-instruct."
+        == message
+        for message in report.remediation
+    )
 
 
 def test_check_backend_health_reports_listed_model(monkeypatch):

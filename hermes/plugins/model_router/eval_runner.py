@@ -6,7 +6,9 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import json
+import math
 from pathlib import Path
+import re
 from time import perf_counter
 from typing import Any, Callable, Mapping, Sequence
 from urllib.error import HTTPError, URLError
@@ -30,6 +32,41 @@ from hermes.plugins.model_router.proxy_config import (
 
 DEFAULT_EVAL_RESULTS_PATH = "~/.model-router/evals/results.jsonl"
 EVAL_RESULT_VERSION = 1
+EVAL_COMPARISON_CONFIRM_REQUEST_THRESHOLD = 8
+LEGACY_RAW_EVAL_FIELDS = {
+    "prompt",
+    "system_prompt",
+    "raw_prompt",
+    "output",
+    "raw_output",
+    "request",
+    "request_body",
+    "messages",
+    "response",
+    "response_body",
+    "response_text",
+    "completion",
+    "choices",
+    "error_message",
+}
+LEGACY_PROMPT_FIELDS = {
+    "prompt",
+    "system_prompt",
+    "raw_prompt",
+    "request",
+    "request_body",
+    "messages",
+}
+LEGACY_OUTPUT_FIELDS = {
+    "output",
+    "raw_output",
+    "response",
+    "response_body",
+    "response_text",
+    "completion",
+    "choices",
+    "error_message",
+}
 
 
 @dataclass(frozen=True)
@@ -81,6 +118,8 @@ class EvalRunResult:
     total_checks: int
     checks: tuple[dict[str, Any], ...]
     failure_reasons: tuple[str, ...]
+    comparison_id: str | None = None
+    candidate: str | None = None
     usage_prompt_tokens: int | None = None
     usage_completion_tokens: int | None = None
     usage_total_tokens: int | None = None
@@ -116,6 +155,8 @@ class EvalRunResult:
             "total_checks": self.total_checks,
             "checks": list(self.checks),
             "failure_reasons": list(self.failure_reasons),
+            "comparison_id": self.comparison_id,
+            "candidate": self.candidate,
             "usage_prompt_tokens": self.usage_prompt_tokens,
             "usage_completion_tokens": self.usage_completion_tokens,
             "usage_total_tokens": self.usage_total_tokens,
@@ -209,6 +250,127 @@ class EvalRunReport:
         }
 
 
+@dataclass(frozen=True)
+class EvalCandidate:
+    backend: str
+    model: str
+
+    @property
+    def candidate_id(self) -> str:
+        return f"{self.backend}:{self.model}"
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "candidate": self.candidate_id,
+            "backend": self.backend,
+            "model": self.model,
+        }
+
+
+@dataclass(frozen=True)
+class EvalCandidateComparisonSummary:
+    candidate: str
+    backend: str
+    model: str
+    run_id: str
+    selected_engine: str | None
+    total: int
+    completed: int
+    failed: int
+    passed: int
+    timeouts: int
+    unknown: int
+    score_mean_percent: float | None
+    weighted_score_mean: float | None
+    latency_summary: Mapping[str, Any]
+    usage_summary: Mapping[str, Any]
+    top_failure_reasons: tuple[dict[str, Any], ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "candidate": self.candidate,
+            "backend": self.backend,
+            "model": self.model,
+            "run_id": self.run_id,
+            "selected_engine": self.selected_engine,
+            "total": self.total,
+            "completed": self.completed,
+            "failed": self.failed,
+            "passed": self.passed,
+            "timeouts": self.timeouts,
+            "unknown": self.unknown,
+            "score_mean_percent": self.score_mean_percent,
+            "weighted_score_mean": self.weighted_score_mean,
+            "latency_summary": dict(self.latency_summary),
+            "usage_summary": dict(self.usage_summary),
+            "top_failure_reasons": list(self.top_failure_reasons),
+        }
+
+
+@dataclass(frozen=True)
+class EvalComparisonExecution:
+    comparison_id: str
+    created_at: str
+    output_path: str
+    fixture_selector: str | None
+    all_fixtures: bool
+    fixture_count: int
+    request_count: int
+    estimated_timeout_seconds: float
+    candidates: tuple[EvalCandidate, ...]
+    candidate_summaries: tuple[EvalCandidateComparisonSummary, ...]
+    winner: Mapping[str, Any] | None
+    notes: tuple[str, ...] = field(default_factory=tuple)
+
+    @property
+    def ok(self) -> bool:
+        return all(
+            summary.completed == summary.total
+            for summary in self.candidate_summaries
+        )
+
+    @property
+    def passed(self) -> bool:
+        return all(
+            summary.total > 0 and summary.passed == summary.total
+            for summary in self.candidate_summaries
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "version": EVAL_RESULT_VERSION,
+            "comparison_id": self.comparison_id,
+            "created_at": self.created_at,
+            "ok": self.ok,
+            "passed": self.passed,
+            "output_path": self.output_path,
+            "fixture_selector": self.fixture_selector,
+            "all_fixtures": self.all_fixtures,
+            "fixture_count": self.fixture_count,
+            "request_count": self.request_count,
+            "estimated_timeout_seconds": self.estimated_timeout_seconds,
+            "candidates": [candidate.to_dict() for candidate in self.candidates],
+            "candidate_summaries": [
+                summary.to_dict() for summary in self.candidate_summaries
+            ],
+            "winner": dict(self.winner) if self.winner else None,
+            "privacy": _privacy_summary(),
+            "notes": list(self.notes),
+        }
+
+
+def parse_eval_candidate(value: str) -> EvalCandidate:
+    candidate = value.strip()
+    backend, separator, model = candidate.partition(":")
+    backend = backend.strip()
+    model = model.strip()
+    if not separator or not backend or not model:
+        raise EvalFixtureError(
+            "eval candidate must use backend:model with both parts present"
+        )
+    return EvalCandidate(backend=backend, model=model)
+
+
 def eval_evidence_for_model(
     model: str,
     *,
@@ -291,6 +453,33 @@ def eval_fixture_summaries(
     return tuple(_fixture_summary(fixture) for fixture in fixtures)
 
 
+def eval_comparison_summaries_from_rows(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    limit: int | None = 10,
+) -> tuple[dict[str, Any], ...]:
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    for row in rows:
+        comparison_id = _row_comparison_id(row)
+        if comparison_id is None:
+            continue
+        grouped.setdefault(comparison_id, []).append(row)
+    summaries = [
+        _comparison_summary_from_rows(comparison_id, tuple(group_rows))
+        for comparison_id, group_rows in grouped.items()
+    ]
+    summaries.sort(
+        key=lambda summary: (
+            str(summary.get("created_at") or ""),
+            str(summary.get("comparison_id") or ""),
+        ),
+        reverse=True,
+    )
+    if limit is not None:
+        return tuple(summaries[:max(0, limit)])
+    return tuple(summaries)
+
+
 def execute_eval_run(
     *,
     config_path: str | Path,
@@ -356,6 +545,131 @@ def execute_eval_run(
         backend=backend,
         model=selected_model,
         results=results,
+        notes=tuple(notes),
+    )
+
+
+def execute_eval_comparison(
+    *,
+    config_path: str | Path,
+    candidates: Sequence[str | EvalCandidate],
+    fixture_selector: str | None = None,
+    all_fixtures: bool = False,
+    output_path: str | Path = DEFAULT_EVAL_RESULTS_PATH,
+    timeout_seconds: float | None = None,
+    comparison_id: str | None = None,
+    confirm_large_run: bool = False,
+    runner: Callable[[EvalBackendRequest], EvalBackendResponse] | None = None,
+) -> EvalComparisonExecution:
+    parsed_candidates = tuple(
+        candidate
+        if isinstance(candidate, EvalCandidate)
+        else parse_eval_candidate(candidate)
+        for candidate in candidates
+    )
+    if len(parsed_candidates) < 2:
+        raise EvalFixtureError(
+            "eval compare requires at least two explicit --candidate backend:model values"
+        )
+    duplicate_candidates = [
+        candidate_id
+        for candidate_id, count in Counter(
+            item.candidate_id for item in parsed_candidates
+        ).items()
+        if count > 1
+    ]
+    if duplicate_candidates:
+        raise EvalFixtureError(
+            "duplicate eval comparison candidate(s): "
+            + ", ".join(sorted(duplicate_candidates))
+        )
+
+    config = load_proxy_config(config_path)
+    fixtures = _fixtures_for_selector(fixture_selector, all_fixtures=all_fixtures)
+    backend_configs = tuple(
+        _backend(config, candidate.backend)
+        for candidate in parsed_candidates
+    )
+    request_count = len(parsed_candidates) * len(fixtures)
+    estimated_timeout = round(
+        sum(
+            len(fixtures) * (timeout_seconds or backend.timeout_seconds)
+            for backend in backend_configs
+        ),
+        2,
+    )
+    broad_run = (
+        all_fixtures
+        or request_count > EVAL_COMPARISON_CONFIRM_REQUEST_THRESHOLD
+    )
+    if broad_run and not confirm_large_run:
+        raise EvalFixtureError(
+            "eval comparison requires --confirm-large-run after reviewing "
+            f"time/cost risk ({len(parsed_candidates)} candidates x "
+            f"{len(fixtures)} fixtures = {request_count} backend requests; "
+            f"timeout budget up to {estimated_timeout}s). Comparisons are "
+            "bounded to explicit candidates and never sweep discovered models."
+        )
+
+    created_at = _now_iso()
+    resolved_comparison_id = comparison_id or _new_comparison_id(created_at)
+    invoke = runner or run_backend_eval_request
+    all_results: list[EvalRunResult] = []
+    summaries: list[EvalCandidateComparisonSummary] = []
+    for index, (candidate, backend_config) in enumerate(
+        zip(parsed_candidates, backend_configs, strict=True),
+        start=1,
+    ):
+        run_id = (
+            f"{resolved_comparison_id}_{index:02d}_"
+            f"{_candidate_run_slug(candidate)}"
+        )
+        selected_engine = _selected_engine_for_backend(config, candidate.backend)
+        request_timeout = timeout_seconds or backend_config.timeout_seconds
+        results = tuple(
+            _run_fixture(
+                fixture,
+                backend=backend_config,
+                selected_engine=selected_engine,
+                model=candidate.model,
+                run_id=run_id,
+                created_at=created_at,
+                timeout_seconds=request_timeout,
+                comparison_id=resolved_comparison_id,
+                candidate=candidate.candidate_id,
+                runner=invoke,
+            )
+            for fixture in fixtures
+        )
+        all_results.extend(results)
+        summaries.append(_candidate_summary(candidate, run_id, results))
+
+    expanded_output = Path(output_path).expanduser()
+    _append_eval_results(expanded_output, all_results)
+    notes = [
+        "Comparison used only explicitly selected backend:model candidates.",
+        "Raw prompts and raw model outputs were not retained.",
+        "Eval comparisons are advisory and do not change routing automatically.",
+        "Winner means best on this fixture set/profile, not a universal best model.",
+    ]
+    if broad_run:
+        notes.append(
+            f"Confirmed broad comparison: {request_count} backend requests; "
+            f"timeout budget up to {estimated_timeout}s. Review provider or "
+            "runtime cost before hosted runs."
+        )
+    return EvalComparisonExecution(
+        comparison_id=resolved_comparison_id,
+        created_at=created_at,
+        output_path=str(expanded_output),
+        fixture_selector=fixture_selector,
+        all_fixtures=all_fixtures,
+        fixture_count=len(fixtures),
+        request_count=request_count,
+        estimated_timeout_seconds=estimated_timeout,
+        candidates=parsed_candidates,
+        candidate_summaries=tuple(summaries),
+        winner=_comparison_winner(summaries),
         notes=tuple(notes),
     )
 
@@ -432,7 +746,11 @@ def eval_report(
     result_path: str | Path = DEFAULT_EVAL_RESULTS_PATH,
 ) -> EvalRunReport:
     rows = load_eval_results(result_path)
-    selected_run_id = _latest_run_id(rows) if run_id == "latest" else run_id
+    selected_run_id = (
+        _latest_run_id(rows, include_comparisons=False)
+        if run_id == "latest"
+        else run_id
+    )
     selected = tuple(
         row for row in rows if selected_run_id is not None and row.get("run_id") == selected_run_id
     )
@@ -491,6 +809,8 @@ def _run_fixture(
     created_at: str,
     timeout_seconds: float,
     runner: Callable[[EvalBackendRequest], EvalBackendResponse],
+    comparison_id: str | None = None,
+    candidate: str | None = None,
 ) -> EvalRunResult:
     started = perf_counter()
     request = EvalBackendRequest(
@@ -537,12 +857,18 @@ def _run_fixture(
         total_checks=score.total_checks,
         checks=tuple(check.to_dict() for check in score.checks),
         failure_reasons=score.failure_reasons,
+        comparison_id=comparison_id,
+        candidate=candidate,
         usage_prompt_tokens=response.usage_prompt_tokens,
         usage_completion_tokens=response.usage_completion_tokens,
         usage_total_tokens=response.usage_total_tokens,
         upstream_model=response.upstream_model,
         error_type=response.error_type,
-        error_message=response.error_message,
+        error_message=_safe_eval_error_message(
+            response.error_message,
+            prompt=fixture.prompt,
+            output=response.output,
+        ),
     )
 
 
@@ -583,6 +909,319 @@ def _fixture_summary(fixture: EvalFixture) -> dict[str, Any]:
         "delegation_dimensions": dict(fixture.delegation_dimensions),
         "notes": list(fixture.notes),
     }
+
+
+def _row_comparison_id(row: Mapping[str, Any]) -> str | None:
+    comparison_id = row.get("comparison_id")
+    if isinstance(comparison_id, str) and comparison_id.strip():
+        return comparison_id.strip()
+    run_id = row.get("run_id")
+    if not isinstance(run_id, str) or not run_id.startswith("evalcompare_"):
+        return None
+    match = re.match(r"^(evalcompare_.+?)_\d{2}_.+$", run_id)
+    return match.group(1) if match else None
+
+
+def _comparison_summary_from_rows(
+    comparison_id: str,
+    rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    privacy = _comparison_privacy_summary(rows)
+    legacy_raw_fields = privacy.get("legacy_raw_fields_detected") is True
+    fixture_ids = _unique_strings_from_rows(rows, "fixture_id")
+    categories = [] if legacy_raw_fields else _unique_strings_from_rows(rows, "category")
+    fixture_versions = _unique_ints_from_rows(rows, "fixture_version")
+    scorer_versions = _unique_ints_from_rows(rows, "scorer_version")
+    created_at = _latest_created_at(rows)
+    candidate_rows = (
+        {"redacted": list(rows)}
+        if legacy_raw_fields
+        else _comparison_candidate_rows(rows)
+    )
+    stale_reasons = [
+        *_comparison_stale_reasons(
+            rows=rows,
+            created_at=created_at,
+            fixture_versions=fixture_versions,
+            scorer_versions=scorer_versions,
+        ),
+        *_comparison_coverage_stale_reasons(candidate_rows),
+    ]
+    if legacy_raw_fields:
+        stale_reasons.append("Legacy raw eval fields detected; details hidden.")
+    candidate_summaries = tuple(
+        _candidate_summary_from_rows(
+            candidate,
+            tuple(candidate_group),
+            redact_details=legacy_raw_fields,
+        )
+        for candidate, candidate_group in candidate_rows.items()
+    )
+    candidate_summaries = tuple(
+        sorted(candidate_summaries, key=lambda item: item.candidate)
+    )
+    winner = None if stale_reasons else _comparison_winner(candidate_summaries)
+    return {
+        "comparison_id": comparison_id,
+        "status": "stale" if stale_reasons else "evaluated",
+        "stale": bool(stale_reasons),
+        "stale_reasons": stale_reasons,
+        "created_at": created_at,
+        "fixture_pack_version": EVAL_FIXTURE_SCHEMA_VERSION,
+        "fixture_versions": fixture_versions,
+        "scorer_versions": scorer_versions,
+        "fixture_count": len(fixture_ids),
+        "category_count": len(categories),
+        "categories": categories,
+        "candidate_count": len(candidate_summaries),
+        "candidates": [
+            summary.to_dict()
+            for summary in candidate_summaries
+        ],
+        "winner": dict(winner) if winner else None,
+        "privacy": privacy,
+        "notes": [
+            "Cached comparison evidence is read-only and does not change routing automatically.",
+            "Winner means best on this fixture set/profile, not a universal best model.",
+        ],
+    }
+
+
+def _comparison_stale_reasons(
+    *,
+    rows: Sequence[Mapping[str, Any]],
+    created_at: str | None,
+    fixture_versions: Sequence[int],
+    scorer_versions: Sequence[int],
+) -> list[str]:
+    reasons: list[str] = []
+    if not rows:
+        return ["No cached comparison rows."]
+    if not created_at:
+        reasons.append("Missing eval timestamp.")
+    fixture_version_count = _field_int_count(rows, "fixture_version")
+    scorer_version_count = _field_int_count(rows, "scorer_version")
+    if (
+        fixture_version_count != len(rows)
+        or tuple(fixture_versions) != (EVAL_FIXTURE_SCHEMA_VERSION,)
+    ):
+        reasons.append(
+            f"Fixture version mismatch; expected {EVAL_FIXTURE_SCHEMA_VERSION}."
+        )
+    if (
+        scorer_version_count != len(rows)
+        or tuple(scorer_versions) != (EVAL_SCORER_VERSION,)
+    ):
+        reasons.append(f"Scorer version mismatch; expected {EVAL_SCORER_VERSION}.")
+    return reasons
+
+
+def _comparison_coverage_stale_reasons(
+    candidate_rows: Mapping[str, Sequence[Mapping[str, Any]]],
+) -> list[str]:
+    if len(candidate_rows) < 2:
+        return ["Comparison has fewer than two cached candidates."]
+    fixture_sets = {
+        candidate: frozenset(_unique_strings_from_rows(rows, "fixture_id"))
+        for candidate, rows in candidate_rows.items()
+    }
+    if not fixture_sets:
+        return ["Comparison has no cached fixture rows."]
+    values = set(fixture_sets.values())
+    if len(values) > 1:
+        return ["Candidate fixture coverage mismatch; comparison is incomplete."]
+    only = next(iter(values))
+    if not only:
+        return ["Comparison has no cached fixture ids."]
+    return []
+
+
+def _comparison_candidate_rows(
+    rows: Sequence[Mapping[str, Any]],
+) -> dict[str, list[Mapping[str, Any]]]:
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    for row in rows:
+        candidate = row.get("candidate")
+        if not isinstance(candidate, str) or not candidate.strip():
+            backend = row.get("backend")
+            model = row.get("model")
+            if isinstance(backend, str) and backend and isinstance(model, str) and model:
+                candidate = f"{backend}:{model}"
+            else:
+                candidate = "unknown"
+        grouped.setdefault(candidate.strip(), []).append(row)
+    return grouped
+
+
+def _candidate_summary_from_rows(
+    candidate: str,
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    redact_details: bool = False,
+) -> EvalCandidateComparisonSummary:
+    completed = sum(1 for row in rows if row.get("status") == "completed")
+    passed = sum(1 for row in rows if row.get("exit_status") == "passed")
+    failed = sum(1 for row in rows if _row_failed(row))
+    timeouts = sum(1 for row in rows if _row_timed_out(row))
+    unknown = max(0, len(rows) - passed - failed)
+    scores = _numeric_values(rows, "score_percent")
+    weighted_scores = _numeric_values(rows, "weighted_score")
+    if redact_details:
+        top_failure_reasons = (
+            {
+                "reason": "Legacy raw eval fields detected; details hidden.",
+                "count": len(rows),
+            },
+        )
+    else:
+        top_failure_reasons = _top_failure_reasons(rows)
+    return EvalCandidateComparisonSummary(
+        candidate="redacted" if redact_details else candidate,
+        backend="redacted" if redact_details else _unique_or_mixed(rows, "backend") or "unknown",
+        model="redacted" if redact_details else _unique_or_mixed(rows, "model") or "unknown",
+        run_id=_unique_or_mixed(rows, "run_id") or "mixed",
+        selected_engine=_unique_or_mixed(rows, "selected_engine"),
+        total=len(rows),
+        completed=completed,
+        failed=failed,
+        passed=passed,
+        timeouts=timeouts,
+        unknown=unknown,
+        score_mean_percent=round(sum(scores) / len(scores), 2) if scores else None,
+        weighted_score_mean=(
+            round(sum(weighted_scores) / len(weighted_scores), 4)
+            if weighted_scores
+            else None
+        ),
+        latency_summary=_latency_summary(rows),
+        usage_summary=_usage_summary(rows),
+        top_failure_reasons=top_failure_reasons,
+    )
+
+
+def _unique_strings_from_rows(
+    rows: Sequence[Mapping[str, Any]],
+    field_name: str,
+) -> list[str]:
+    return sorted(
+        {
+            value.strip()
+            for row in rows
+            if isinstance((value := row.get(field_name)), str) and value.strip()
+        }
+    )
+
+
+def _unique_ints_from_rows(
+    rows: Sequence[Mapping[str, Any]],
+    field_name: str,
+) -> list[int]:
+    return sorted(
+        {
+            value
+            for row in rows
+            if isinstance((value := row.get(field_name)), int)
+            and not isinstance(value, bool)
+        }
+    )
+
+
+def _field_int_count(
+    rows: Sequence[Mapping[str, Any]],
+    field_name: str,
+) -> int:
+    return sum(
+        1
+        for row in rows
+        if isinstance(row.get(field_name), int)
+        and not isinstance(row.get(field_name), bool)
+    )
+
+
+def _candidate_summary(
+    candidate: EvalCandidate,
+    run_id: str,
+    results: Sequence[EvalRunResult],
+) -> EvalCandidateComparisonSummary:
+    rows = tuple(result.to_dict() for result in results)
+    completed = sum(1 for row in rows if row.get("status") == "completed")
+    passed = sum(1 for row in rows if row.get("exit_status") == "passed")
+    failed = sum(1 for row in rows if _row_failed(row))
+    timeouts = sum(1 for row in rows if _row_timed_out(row))
+    unknown = max(0, len(rows) - passed - failed)
+    scores = _numeric_values(rows, "score_percent")
+    weighted_scores = _numeric_values(rows, "weighted_score")
+    return EvalCandidateComparisonSummary(
+        candidate=candidate.candidate_id,
+        backend=candidate.backend,
+        model=candidate.model,
+        run_id=run_id,
+        selected_engine=_unique_or_mixed(rows, "selected_engine"),
+        total=len(rows),
+        completed=completed,
+        failed=failed,
+        passed=passed,
+        timeouts=timeouts,
+        unknown=unknown,
+        score_mean_percent=round(sum(scores) / len(scores), 2) if scores else None,
+        weighted_score_mean=(
+            round(sum(weighted_scores) / len(weighted_scores), 4)
+            if weighted_scores
+            else None
+        ),
+        latency_summary=_latency_summary(rows),
+        usage_summary=_usage_summary(rows),
+        top_failure_reasons=_top_failure_reasons(rows),
+    )
+
+
+def _comparison_winner(
+    summaries: Sequence[EvalCandidateComparisonSummary],
+) -> dict[str, Any] | None:
+    ranked = [
+        (_winner_rank_key(summary), summary)
+        for summary in summaries
+        if summary.weighted_score_mean is not None and summary.passed > 0
+    ]
+    if not ranked:
+        return None
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    if len(ranked) > 1 and ranked[0][0] == ranked[1][0]:
+        return None
+    winner = ranked[0][1]
+    return {
+        "candidate": winner.candidate,
+        "backend": winner.backend,
+        "model": winner.model,
+        "score_mean_percent": winner.score_mean_percent,
+        "weighted_score_mean": winner.weighted_score_mean,
+        "label": "best on this fixture set/profile",
+    }
+
+
+def _winner_rank_key(summary: EvalCandidateComparisonSummary) -> tuple[float, float, int, int, int, float]:
+    mean_latency = summary.latency_summary.get("mean_ms")
+    latency_rank = -(
+        mean_latency
+        if isinstance(mean_latency, (int, float))
+        else float("inf")
+    )
+    return (
+        summary.weighted_score_mean if summary.weighted_score_mean is not None else -1.0,
+        summary.score_mean_percent if summary.score_mean_percent is not None else -1.0,
+        summary.passed,
+        -summary.failed,
+        -summary.timeouts,
+        latency_rank,
+    )
+
+
+def _candidate_run_slug(candidate: EvalCandidate) -> str:
+    slug = "".join(
+        char.lower() if char.isalnum() else "_"
+        for char in candidate.candidate_id
+    ).strip("_")
+    return slug[:80] or "candidate"
 
 
 def _backend(config: RoutingProxyConfig, name: str) -> ProxyBackendConfig:
@@ -689,9 +1328,86 @@ def _sanitize_error_message(exc: Exception) -> str:
     return text[:240]
 
 
-def _latest_run_id(rows: Sequence[Mapping[str, Any]]) -> str | None:
+def _safe_eval_error_message(
+    value: str | None,
+    *,
+    prompt: str,
+    output: str,
+) -> str | None:
+    if not value:
+        return None
+    text = value.replace("\n", " ").replace("\r", " ").strip()
+    if not text:
+        return None
+    text = _redact_sensitive_fragments(text, prompt)
+    text = _redact_sensitive_fragments(text, output)
+    return text[:240] or "[redacted]"
+
+
+def _redact_sensitive_fragments(text: str, sensitive: str) -> str:
+    cleaned = sensitive.strip()
+    if not cleaned:
+        return text
+    fragments = [cleaned]
+    fragments.extend(
+        line.strip()
+        for line in cleaned.splitlines()
+        if len(line.strip()) >= 16
+    )
+    for fragment in fragments:
+        if fragment and fragment in text:
+            text = text.replace(fragment, "[redacted]")
+    return text
+
+
+def _comparison_privacy_summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    raw_field_names = sorted(
+        {
+            key
+            for row in rows
+            for key in row
+            if key in LEGACY_RAW_EVAL_FIELDS
+        }
+    )
+    payload = _privacy_summary()
+    payload["legacy_raw_fields_detected"] = bool(raw_field_names)
+    payload["legacy_raw_field_names"] = raw_field_names
+    payload["display_details_redacted"] = bool(raw_field_names)
+    if raw_field_names:
+        payload["prompt_retention"] = (
+            "legacy_raw_fields_detected"
+            if any(key in LEGACY_PROMPT_FIELDS for key in raw_field_names)
+            else payload["prompt_retention"]
+        )
+        payload["output_retention"] = (
+            "legacy_raw_fields_detected"
+            if any(key in LEGACY_OUTPUT_FIELDS for key in raw_field_names)
+            else payload["output_retention"]
+        )
+        payload["artifact_retention"] = "review_required"
+        payload["raw_prompts_retained"] = any(
+            key in LEGACY_PROMPT_FIELDS for key in raw_field_names
+        )
+        payload["raw_outputs_retained"] = any(
+            key in LEGACY_OUTPUT_FIELDS for key in raw_field_names
+        )
+        payload["secrets_retained"] = "unknown"
+        payload["report_excludes"] = [
+            *payload.get("report_excludes", ()),
+            "legacy raw eval row details",
+        ]
+    return payload
+
+
+def _latest_run_id(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    include_comparisons: bool = True,
+) -> str | None:
     latest: tuple[str, str] | None = None
     for row in rows:
+        if not include_comparisons and _row_comparison_id(row) is not None:
+            continue
         run_id = row.get("run_id")
         created_at = row.get("created_at")
         if not isinstance(run_id, str) or not isinstance(created_at, str):
@@ -803,9 +1519,10 @@ def _numeric_values(
         value = row.get(field_name)
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             continue
-        if value < 0:
+        number = float(value)
+        if not math.isfinite(number) or number < 0:
             continue
-        values.append(float(value))
+        values.append(number)
     return values
 
 
@@ -1041,6 +1758,8 @@ def _report_row(row: Mapping[str, Any]) -> dict[str, Any]:
         "total_checks",
         "failure_reasons",
         "upstream_model",
+        "comparison_id",
+        "candidate",
     }
     return {key: value for key, value in row.items() if key in allowed}
 
@@ -1053,6 +1772,16 @@ def _new_run_id(created_at: str) -> str:
         .replace("Z", "Z")
     )
     return f"evalrun_{safe}"
+
+
+def _new_comparison_id(created_at: str) -> str:
+    safe = (
+        created_at.replace("-", "")
+        .replace(":", "")
+        .replace(".", "")
+        .replace("Z", "Z")
+    )
+    return f"evalcompare_{safe}"
 
 
 def _now_iso() -> str:

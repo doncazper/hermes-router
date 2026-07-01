@@ -501,6 +501,192 @@ def test_model_library_dashboard_renders_cached_eval_evidence(tmp_path, monkeypa
     assert '"route":"balanced"' not in html
 
 
+def test_settings_dashboard_renders_cached_eval_comparisons(tmp_path, monkeypatch):
+    _init_config(tmp_path)
+    _stub_scan(monkeypatch)
+    paths = settings_ui.settings_paths(tmp_path)
+    paths["eval_results"].parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {
+            "version": 1,
+            "comparison_id": "evalcompare_settings",
+            "candidate": "fast:lmstudio-fast-model",
+            "run_id": "evalcompare_settings_01_fast_lmstudio_fast_model",
+            "created_at": "2026-06-30T12:00:00.000Z",
+            "backend": "fast",
+            "model": "lmstudio-fast-model",
+            "selected_engine": "fast_local",
+            "fixture_id": "strict_json_routing_control_decision",
+            "category": "structured_output",
+            "score_percent": 100.0,
+            "weighted_score": 1.0,
+            "exit_status": "passed",
+            "status": "completed",
+            "latency_ms": 12.0,
+            "usage_prompt_tokens": 10,
+            "usage_completion_tokens": 4,
+            "usage_total_tokens": 14,
+            "timeout": False,
+            "scorer_version": EVAL_SCORER_VERSION,
+            "fixture_version": EVAL_FIXTURE_SCHEMA_VERSION,
+            "failure_reasons": [],
+        },
+        {
+            "version": 1,
+            "comparison_id": "evalcompare_settings",
+            "candidate": "balanced:lmstudio-balanced-model",
+            "run_id": "evalcompare_settings_02_balanced_lmstudio_balanced_model",
+            "created_at": "2026-06-30T12:00:00.000Z",
+            "backend": "balanced",
+            "model": "lmstudio-balanced-model",
+            "selected_engine": "balanced_local",
+            "fixture_id": "strict_json_routing_control_decision",
+            "category": "structured_output",
+            "score_percent": 25.0,
+            "weighted_score": 0.25,
+            "exit_status": "failed",
+            "status": "completed",
+            "latency_ms": 24.0,
+            "timeout": False,
+            "scorer_version": EVAL_SCORER_VERSION,
+            "fixture_version": EVAL_FIXTURE_SCHEMA_VERSION,
+            "failure_reasons": ["Expected valid JSON."],
+        },
+        {
+            "version": 1,
+            "comparison_id": "evalcompare_stale_settings",
+            "candidate": "fast:stale-model",
+            "run_id": "evalcompare_stale_settings_01_fast_stale_model",
+            "created_at": "2026-06-29T12:00:00.000Z",
+            "backend": "fast",
+            "model": "stale-model",
+            "fixture_id": "legacy_fixture",
+            "category": "legacy",
+            "score_percent": 50.0,
+            "weighted_score": 0.5,
+            "exit_status": "failed",
+            "status": "completed",
+            "timeout": False,
+            "failure_reasons": ["Legacy fixture did not pass."],
+        },
+    ]
+    paths["eval_results"].write_text(
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+    state = settings_ui.build_settings_state(paths)
+    html = settings_ui.render_dashboard_page(state)
+
+    assert state["evals"]["read_only"] is True
+    assert len(state["evals"]["comparisons"]) == 2
+    assert state["evals"]["comparisons"][0]["comparison_id"] == "evalcompare_settings"
+    assert state["evals"]["comparisons"][0]["candidate_count"] == 2
+    assert state["evals"]["comparisons"][1]["status"] == "stale"
+    assert "Fixture version mismatch" in state["evals"]["comparisons"][1]["stale_reasons"][0]
+    assert "Eval comparisons" in html
+    assert "lmstudio-fast-model" in html
+    assert "lmstudio-balanced-model" in html
+    assert "mean 100.0" in html
+    assert "weighted 1.0" in html
+    assert "failed 1; timeouts 0; Expected valid JSON.: 1" in html
+    assert "latency mean 12 ms; usage p=10 c=4 t=14" in html
+    assert "prompt hash_only; output hash_only; artifacts disabled_by_default" in html
+    assert "Fixture version mismatch" in html
+    assert "model-router eval compare --candidate fast:model-a" in html
+    assert "Return only JSON" not in html
+    assert '"route":"balanced"' not in html
+
+
+def test_settings_eval_comparison_redacts_legacy_raw_cached_rows(tmp_path, monkeypatch):
+    _init_config(tmp_path)
+    _stub_scan(monkeypatch)
+    paths = settings_ui.settings_paths(tmp_path)
+    paths["eval_results"].parent.mkdir(parents=True, exist_ok=True)
+    secret_text = "sk-secret-raw-row"
+    paths["eval_results"].write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "comparison_id": "evalcompare_raw_legacy",
+                "candidate": f"fast:{secret_text}",
+                "run_id": "evalcompare_raw_legacy_01_fast_secret",
+                "created_at": "2026-06-30T12:00:00.000Z",
+                "backend": f"backend-{secret_text}",
+                "model": f"model-{secret_text}",
+                "fixture_id": "strict_json_routing_control_decision",
+                "category": f"category-{secret_text}",
+                "score_percent": 50.0,
+                "weighted_score": 0.5,
+                "exit_status": "failed",
+                "status": "completed",
+                "latency_ms": 1.0,
+                "timeout": False,
+                "scorer_version": EVAL_SCORER_VERSION,
+                "fixture_version": EVAL_FIXTURE_SCHEMA_VERSION,
+                "failure_reasons": [
+                    f"raw output echoed {secret_text}",
+                    "Return only JSON with route, risk, and needs_confirmation.",
+                ],
+                "prompt": "Return only JSON with route, risk, and needs_confirmation.",
+                "output": f'{{"route":"balanced","secret":"{secret_text}"}}',
+                "request_body": f"Authorization: Bearer {secret_text}",
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    state = settings_ui.build_settings_state(paths)
+    html = settings_ui.render_dashboard_page(state)
+    serialized_state = json.dumps(state, sort_keys=True)
+
+    assert state["evals"]["comparisons"][0]["status"] == "stale"
+    assert state["evals"]["comparisons"][0]["privacy"]["legacy_raw_fields_detected"] is True
+    assert state["evals"]["comparisons"][0]["candidates"][0]["model"] == "redacted"
+    assert "legacy raw fields detected; details hidden" in html
+    assert "Legacy raw eval fields detected; details hidden." in html
+    assert secret_text not in serialized_state
+    assert secret_text not in html
+    assert "Return only JSON" not in serialized_state
+    assert "Return only JSON" not in html
+    assert '"route":"balanced"' not in serialized_state
+    assert '"route":"balanced"' not in html
+
+
+def test_settings_api_tolerates_non_finite_eval_comparison_numbers(tmp_path, monkeypatch):
+    _init_config(tmp_path)
+    _stub_scan(monkeypatch)
+    paths = settings_ui.settings_paths(tmp_path)
+    paths["eval_results"].parent.mkdir(parents=True, exist_ok=True)
+    paths["eval_results"].write_text(
+        (
+            '{"comparison_id":"evalcompare_nonfinite","candidate":"fast:model-a",'
+            '"run_id":"evalcompare_nonfinite_01_fast_model_a",'
+            '"created_at":"2026-06-30T12:00:00.000Z","backend":"fast",'
+            '"model":"model-a","fixture_id":"strict_json_routing_control_decision",'
+            '"category":"structured_output","score_percent":NaN,'
+            '"weighted_score":Infinity,"latency_ms":Infinity,'
+            f'"scorer_version":{EVAL_SCORER_VERSION},'
+            f'"fixture_version":{EVAL_FIXTURE_SCHEMA_VERSION},'
+            '"exit_status":"failed","status":"completed","timeout":false,'
+            '"failure_reasons":[]}\n'
+        ),
+        encoding="utf-8",
+    )
+    app = settings_ui.create_settings_app(config_dir=tmp_path)
+
+    response = TestClient(app).get("/api/state")
+
+    assert response.status_code == 200
+    payload = response.json()
+    candidate = payload["evals"]["comparisons"][0]["candidates"][0]
+    assert candidate["score_mean_percent"] is None
+    assert candidate["weighted_score_mean"] is None
+    assert candidate["latency_summary"]["mean_ms"] is None
+
+
 def test_settings_state_does_not_execute_eval_runs(tmp_path, monkeypatch):
     _init_config(tmp_path)
     _stub_scan(monkeypatch)
@@ -516,12 +702,19 @@ def test_settings_state_does_not_execute_eval_runs(tmp_path, monkeypatch):
         "hermes.plugins.model_router.eval_runner.execute_eval_run",
         fail_eval_execution,
     )
+    monkeypatch.setattr(
+        "hermes.plugins.model_router.eval_runner.execute_eval_comparison",
+        fail_eval_execution,
+    )
 
     state = settings_ui.build_settings_state(settings_ui.settings_paths(tmp_path))
     html = settings_ui.render_dashboard_page(state)
 
     assert "Eval evidence" in html
+    assert "Eval comparisons" in html
+    assert state["evals"]["comparisons"] == []
     assert "not_evaluated" in html
+    assert "No cached eval comparison evidence" in html
     assert "Advisory only; cached eval evidence does not change routing automatically." in html
 
 
@@ -578,6 +771,64 @@ def test_settings_state_feeds_runtime_models_into_registry(tmp_path, monkeypatch
     assert runtime_model["runtime_id"] == "lmstudio"
     assert runtime_model["backend"] == "fast"
     assert runtime_model["routing_eligible"] is True
+
+
+def test_runtime_status_surfaces_detected_model_id_guidance(tmp_path, monkeypatch):
+    _init_config(tmp_path)
+    _stub_empty_scan(monkeypatch)
+
+    def fake_runtime_state(backend, *, timeout_seconds=0.25):
+        del timeout_seconds
+        return {
+            "adapter": "LMStudioAdapter",
+            "provider": "lmstudio",
+            "runtime_id": "lmstudio",
+            "runtime_kind": "lmstudio",
+            "runtime_mode": "external_managed",
+            "endpoint": backend.base_url,
+            "detected": True,
+            "health_status": "degraded",
+            "install_hint": None,
+            "missing_dependency": None,
+            "detection": {"detected": True},
+            "health": {
+                "status": "degraded",
+                "reachable": True,
+                "ok": False,
+                "detail": "configured placeholder not listed",
+            },
+            "models": [
+                {
+                    "model_id": "lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF",
+                    "source": "lmstudio_models_api",
+                    "loaded": None,
+                },
+                {
+                    "model_id": "qwen2.5-coder-7b-instruct",
+                    "source": "lmstudio_models_api",
+                    "loaded": None,
+                },
+            ],
+            "loaded_models": [],
+            "capabilities": {"discover_models": {"supported": True}},
+            "logs": {"supported": False},
+        }
+
+    monkeypatch.setattr(settings_ui, "runtime_state_for_backend", fake_runtime_state)
+
+    state = settings_ui.build_settings_state(settings_ui.settings_paths(tmp_path))
+    html = settings_ui.render_dashboard_page(state)
+    detail = state["provider_runtime"]["detail"]
+
+    assert detail["discovered_models"] == [
+        "lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF",
+        "qwen2.5-coder-7b-instruct",
+    ]
+    assert detail["model_guidance"].startswith("replace lmstudio-")
+    assert "with one of" in detail["model_guidance"]
+    assert "lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF" in html
+    assert "qwen2.5-coder-7b-instruct" in html
+    assert "with one of" in html
 
 
 def test_runtime_status_panel_renders_compact_available_runtime(

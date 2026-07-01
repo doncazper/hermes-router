@@ -125,6 +125,7 @@ def test_route_fast_does_not_call_operator_or_reporting_paths(monkeypatch, tmp_p
         "hermes.plugins.model_router.model_benchmark.plan_backend_benchmarks",
         "hermes.plugins.model_router.model_benchmark.execute_benchmark_plan",
         "hermes.plugins.model_router.eval_runner.execute_eval_run",
+        "hermes.plugins.model_router.eval_runner.execute_eval_comparison",
         "hermes.plugins.model_router.eval_runner.run_backend_eval_request",
         "hermes.plugins.model_router.eval_runner.eval_evidence_for_model",
     )
@@ -151,6 +152,7 @@ def test_route_diagnostics_do_not_call_external_operator_actions(monkeypatch, tm
         "hermes.plugins.model_router.model_benchmark.plan_backend_benchmarks",
         "hermes.plugins.model_router.model_benchmark.execute_benchmark_plan",
         "hermes.plugins.model_router.eval_runner.execute_eval_run",
+        "hermes.plugins.model_router.eval_runner.execute_eval_comparison",
         "hermes.plugins.model_router.eval_runner.run_backend_eval_request",
     )
 
@@ -210,6 +212,7 @@ def test_route_fast_source_has_no_hot_path_logging_or_scorer_call():
     assert "workflow_benchmark" not in source
     assert "execute_benchmark_plan" not in source
     assert "execute_eval_run" not in source
+    assert "execute_eval_comparison" not in source
 
 
 def test_routing_policy_has_no_pricing_catalog_dependency():
@@ -231,6 +234,14 @@ def test_hot_paths_do_not_depend_on_runtime_adapters():
         assert "runtime_install" not in source
         assert "adapter_for_backend" not in source
         assert "runtime_state_for_backend" not in source
+
+
+def test_proxy_forwarding_does_not_depend_on_eval_execution_paths():
+    source = inspect.getsource(proxy)
+
+    assert "execute_eval_run" not in source
+    assert "execute_eval_comparison" not in source
+    assert "run_backend_eval_request" not in source
 
 
 def test_route_diagnostics_can_skip_alternatives(tmp_path):

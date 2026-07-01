@@ -25,6 +25,7 @@ from hermes.plugins.model_router.eval_runner import (
     eval_evidence_for_model,
     eval_fixture_summaries,
     eval_report,
+    execute_eval_comparison,
     execute_eval_run,
 )
 from hermes.plugins.model_router.evals import EvalFixtureError
@@ -455,6 +456,71 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
     )
     eval_run.add_argument("--json", action="store_true", help="Emit JSON output")
     eval_run.set_defaults(func=_cmd_eval_run)
+
+    eval_compare = eval_subparsers.add_parser(
+        "compare",
+        help="Compare explicitly selected backend:model eval candidates",
+    )
+    eval_compare.add_argument(
+        "--config",
+        type=Path,
+        default=Path(DEFAULT_CONFIG_DIR) / "routing_proxy.yaml",
+        help="Path to routing_proxy.yaml",
+    )
+    eval_compare.add_argument(
+        "--candidate",
+        action="append",
+        required=True,
+        help=(
+            "Explicit backend:model candidate; repeat for each model. "
+            "ModelRouter will not auto-expand discovered models."
+        ),
+    )
+    compare_selection = eval_compare.add_mutually_exclusive_group(required=True)
+    compare_selection.add_argument(
+        "--fixture",
+        default=None,
+        help="Fixture id or category to compare",
+    )
+    compare_selection.add_argument(
+        "--category",
+        default=None,
+        help="Fixture category to compare",
+    )
+    compare_selection.add_argument(
+        "--all",
+        "--all-fixtures",
+        dest="all",
+        action="store_true",
+        help="Compare all built-in eval fixtures; requires --confirm-large-run",
+    )
+    eval_compare.add_argument(
+        "--output",
+        type=Path,
+        default=Path(DEFAULT_EVAL_RESULTS_PATH),
+        help="Path for eval result JSONL",
+    )
+    eval_compare.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="Per-fixture backend timeout in seconds",
+    )
+    eval_compare.add_argument(
+        "--comparison-id",
+        default=None,
+        help="Optional comparison id for automation; defaults to a timestamped id",
+    )
+    eval_compare.add_argument(
+        "--confirm-large-run",
+        action="store_true",
+        help=(
+            "Confirm a broad comparison after reviewing time/cost risk; "
+            "required for --all-fixtures or high request counts"
+        ),
+    )
+    eval_compare.add_argument("--json", action="store_true", help="Emit JSON output")
+    eval_compare.set_defaults(func=_cmd_eval_compare)
 
     eval_report_cmd = eval_subparsers.add_parser(
         "report",
@@ -1364,6 +1430,32 @@ def _cmd_eval_run(args: argparse.Namespace) -> int:
         print(json.dumps(execution.to_dict(), indent=2, sort_keys=True))
     else:
         _print_eval_run_execution(execution)
+    return 0 if execution.ok else 1
+
+
+def _cmd_eval_compare(args: argparse.Namespace) -> int:
+    try:
+        execution = execute_eval_comparison(
+            config_path=args.config,
+            candidates=args.candidate,
+            fixture_selector=args.fixture or args.category,
+            all_fixtures=args.all,
+            output_path=args.output,
+            timeout_seconds=args.timeout,
+            comparison_id=args.comparison_id,
+            confirm_large_run=args.confirm_large_run,
+        )
+    except (EvalFixtureError, ProxyConfigError, OSError, ValueError) as exc:
+        payload = {"ok": False, "error": str(exc)}
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print(f"Eval comparison failed: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(execution.to_dict(), indent=2, sort_keys=True))
+    else:
+        _print_eval_comparison(execution)
     return 0 if execution.ok else 1
 
 
@@ -2822,6 +2914,69 @@ def _print_eval_run_execution(execution) -> None:
         print("- none")
     for note in execution.notes:
         print(f"- {note}")
+
+
+def _print_eval_comparison(execution) -> None:
+    print("ModelRouter Eval Comparison")
+    print(f"Comparison id: {execution.comparison_id}")
+    print(f"Created: {execution.created_at}")
+    print(f"Output: {execution.output_path}")
+    print(f"Fixtures: {execution.fixture_count}")
+    print(f"Requests: {execution.request_count}")
+    print(f"Timeout budget seconds: {execution.estimated_timeout_seconds}")
+    winner = execution.winner if isinstance(execution.winner, Mapping) else {}
+    if winner:
+        print(
+            "Winner: "
+            f"{winner.get('candidate')} "
+            f"({winner.get('label', 'best on this fixture set/profile')})"
+        )
+    else:
+        print("Winner: none")
+    print(f"OK: {str(execution.ok).lower()}")
+    print(f"Passed: {str(execution.passed).lower()}")
+    print("Candidates:")
+    if not execution.candidate_summaries:
+        print("- none")
+    for summary in execution.candidate_summaries:
+        print(
+            f"- {summary.candidate}: total={summary.total} "
+            f"passed={summary.passed} failed={summary.failed} "
+            f"timeouts={summary.timeouts} "
+            f"mean_score={summary.score_mean_percent if summary.score_mean_percent is not None else 'n/a'} "
+            f"weighted={summary.weighted_score_mean if summary.weighted_score_mean is not None else 'n/a'}"
+        )
+        latency = summary.latency_summary
+        print(
+            "  latency: "
+            f"count={latency.get('count', 0)} "
+            f"missing={latency.get('missing', 0)} "
+            f"mean_ms={_value_or_na(latency.get('mean_ms'))}"
+        )
+        usage = summary.usage_summary
+        print(
+            "  usage: "
+            f"rows={usage.get('rows_with_usage', 0)} "
+            f"missing={usage.get('rows_missing_usage', 0)} "
+            f"prompt={usage.get('usage_prompt_tokens', 0)} "
+            f"completion={usage.get('usage_completion_tokens', 0)} "
+            f"total={usage.get('usage_total_tokens', 0)}"
+        )
+        if summary.top_failure_reasons:
+            reasons = "; ".join(
+                f"{item.get('reason')}: {item.get('count')}"
+                for item in summary.top_failure_reasons[:3]
+            )
+            print(f"  top failures: {reasons}")
+    print("Notes:")
+    if not execution.notes:
+        print("- none")
+    for note in execution.notes:
+        print(f"- {note}")
+
+
+def _value_or_na(value: Any) -> Any:
+    return value if value is not None else "n/a"
 
 
 def _print_eval_report(report) -> None:

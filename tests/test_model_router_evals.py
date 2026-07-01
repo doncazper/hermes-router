@@ -5,12 +5,15 @@ import pytest
 from hermes.plugins.model_router import cli as model_router_cli
 from hermes.plugins.model_router.eval_runner import (
     EvalBackendResponse,
+    eval_comparison_summaries_from_rows,
     eval_evidence_for_model,
     eval_evidence_from_rows,
     eval_fixture_summaries,
     eval_report,
+    execute_eval_comparison,
     execute_eval_run,
     load_eval_results,
+    parse_eval_candidate,
 )
 from hermes.plugins.model_router.evals import (
     DELEGATION_DIMENSIONS,
@@ -475,6 +478,372 @@ def test_eval_runner_blocks_full_fixture_sweep_without_confirmation(tmp_path):
     assert not output.exists()
 
 
+def test_eval_candidate_parser_requires_explicit_backend_and_model():
+    candidate = parse_eval_candidate("fast:qwen2.5-coder:7b")
+
+    assert candidate.backend == "fast"
+    assert candidate.model == "qwen2.5-coder:7b"
+    assert candidate.candidate_id == "fast:qwen2.5-coder:7b"
+
+    with pytest.raises(EvalFixtureError, match="backend:model"):
+        parse_eval_candidate("fast")
+
+    with pytest.raises(EvalFixtureError, match="backend:model"):
+        parse_eval_candidate(":missing-backend")
+
+
+def test_eval_compare_runs_explicit_candidates_and_summarizes_winner(tmp_path):
+    initialize_product_config(
+        preset="lmstudio",
+        config_dir=tmp_path,
+        force=False,
+        interactive=False,
+    )
+    output = tmp_path / "comparison-results.jsonl"
+    calls = []
+
+    def runner(request):
+        calls.append(request)
+        if request.model == "good-model":
+            return EvalBackendResponse(
+                status="completed",
+                output=_passing_output_for_fixture(
+                    "strict_json_routing_control_decision"
+                ),
+                latency_ms=5.0,
+                usage_prompt_tokens=9,
+                usage_completion_tokens=4,
+                usage_total_tokens=13,
+            )
+        return EvalBackendResponse(
+            status="completed",
+            output="not json",
+            latency_ms=12.0,
+        )
+
+    execution = execute_eval_comparison(
+        config_path=tmp_path / "routing_proxy.yaml",
+        candidates=("fast:good-model", "balanced:weak-model"),
+        fixture_selector="strict_json_routing_control_decision",
+        output_path=output,
+        comparison_id="evalcompare_test",
+        runner=runner,
+    )
+    payload = execution.to_dict()
+    serialized = json.dumps(payload)
+
+    assert execution.ok is True
+    assert execution.passed is False
+    assert execution.request_count == 2
+    assert len(calls) == 2
+    assert calls[0].backend == "fast"
+    assert calls[1].backend == "balanced"
+    assert payload["winner"]["candidate"] == "fast:good-model"
+    assert payload["winner"]["label"] == "best on this fixture set/profile"
+    assert payload["candidate_summaries"][0]["usage_summary"]["usage_total_tokens"] == 13
+    assert payload["candidate_summaries"][1]["usage_summary"]["rows_missing_usage"] == 1
+    rows = load_eval_results(output)
+    assert len(rows) == 2
+    assert {row["comparison_id"] for row in rows} == {"evalcompare_test"}
+    assert {row["candidate"] for row in rows} == {
+        "fast:good-model",
+        "balanced:weak-model",
+    }
+    assert calls[0].prompt not in serialized
+    assert '"route":"balanced"' not in serialized
+    assert "not json" not in serialized
+
+
+def test_eval_compare_reports_no_winner_for_all_failed_tie(tmp_path):
+    initialize_product_config(
+        preset="lmstudio",
+        config_dir=tmp_path,
+        force=False,
+        interactive=False,
+    )
+
+    execution = execute_eval_comparison(
+        config_path=tmp_path / "routing_proxy.yaml",
+        candidates=("fast:model-a", "balanced:model-b"),
+        fixture_selector="strict_json_routing_control_decision",
+        output_path=tmp_path / "failed-tie.jsonl",
+        comparison_id="evalcompare_failed_tie",
+        runner=lambda _request: EvalBackendResponse(
+            status="completed",
+            output="not json",
+            latency_ms=10.0,
+        ),
+    )
+
+    assert execution.passed is False
+    assert execution.winner is None
+    assert execution.to_dict()["winner"] is None
+
+
+def test_eval_compare_persisted_error_messages_redact_prompt_and_output(tmp_path):
+    initialize_product_config(
+        preset="lmstudio",
+        config_dir=tmp_path,
+        force=False,
+        interactive=False,
+    )
+    output = tmp_path / "redacted-errors.jsonl"
+
+    def runner(request):
+        model_output = _passing_output_for_fixture(
+            "strict_json_routing_control_decision"
+        )
+        return EvalBackendResponse(
+            status="failed",
+            output=model_output,
+            latency_ms=1.0,
+            error_type="ProviderError",
+            error_message=(
+                f"provider echoed prompt: {request.prompt} "
+                f"and output: {model_output}"
+            ),
+        )
+
+    execute_eval_comparison(
+        config_path=tmp_path / "routing_proxy.yaml",
+        candidates=("fast:model-a", "balanced:model-b"),
+        fixture_selector="strict_json_routing_control_decision",
+        output_path=output,
+        comparison_id="evalcompare_redaction",
+        runner=runner,
+    )
+    serialized = output.read_text(encoding="utf-8")
+
+    assert "provider echoed prompt" in serialized
+    assert "[redacted]" in serialized
+    assert "Return only JSON" not in serialized
+    assert '"route":"balanced"' not in serialized
+
+
+def test_eval_compare_runs_category_across_explicit_candidates(tmp_path):
+    initialize_product_config(
+        preset="lmstudio",
+        config_dir=tmp_path,
+        force=False,
+        interactive=False,
+    )
+    output = tmp_path / "category-comparison.jsonl"
+
+    def runner(request):
+        fixture_id = "structured_output_schema_following"
+        if "route, risk, and needs_confirmation" in request.prompt:
+            fixture_id = "strict_json_routing_control_decision"
+        return EvalBackendResponse(
+            status="completed",
+            output=_passing_output_for_fixture(fixture_id),
+            latency_ms=2.0,
+        )
+
+    execution = execute_eval_comparison(
+        config_path=tmp_path / "routing_proxy.yaml",
+        candidates=("fast:model-a", "balanced:model-b"),
+        fixture_selector="structured_output",
+        output_path=output,
+        comparison_id="evalcompare_category",
+        runner=runner,
+    )
+    rows = load_eval_results(output)
+
+    assert execution.fixture_count == 2
+    assert execution.request_count == 4
+    assert len(rows) == 4
+    assert {row["category"] for row in rows} == {"structured_output"}
+    assert all(
+        summary.usage_summary["rows_missing_usage"] == 2
+        for summary in execution.candidate_summaries
+    )
+
+
+def test_eval_compare_blocks_broad_comparison_without_confirmation(tmp_path):
+    initialize_product_config(
+        preset="lmstudio",
+        config_dir=tmp_path,
+        force=False,
+        interactive=False,
+    )
+    output = tmp_path / "blocked-comparison.jsonl"
+
+    with pytest.raises(EvalFixtureError, match="confirm-large-run"):
+        execute_eval_comparison(
+            config_path=tmp_path / "routing_proxy.yaml",
+            candidates=("fast:model-a", "balanced:model-b"),
+            all_fixtures=True,
+            output_path=output,
+            comparison_id="evalcompare_blocked",
+            runner=lambda _request: EvalBackendResponse(
+                status="completed",
+                output="- one\n- two\n- three",
+            ),
+        )
+
+    assert not output.exists()
+
+
+def test_eval_compare_rejects_duplicate_candidates(tmp_path):
+    initialize_product_config(
+        preset="lmstudio",
+        config_dir=tmp_path,
+        force=False,
+        interactive=False,
+    )
+
+    with pytest.raises(EvalFixtureError, match="duplicate"):
+        execute_eval_comparison(
+            config_path=tmp_path / "routing_proxy.yaml",
+            candidates=("fast:model-a", "fast:model-a"),
+            fixture_selector="strict_json_routing_control_decision",
+            output_path=tmp_path / "duplicate-comparison.jsonl",
+        )
+
+
+def test_eval_compare_blocks_high_request_count_without_confirmation(tmp_path):
+    initialize_product_config(
+        preset="lmstudio",
+        config_dir=tmp_path,
+        force=False,
+        interactive=False,
+    )
+    output = tmp_path / "blocked-threshold-comparison.jsonl"
+    called = False
+
+    def runner(_request):
+        nonlocal called
+        called = True
+        return EvalBackendResponse(status="completed", output="{}")
+
+    with pytest.raises(EvalFixtureError, match="10 backend requests"):
+        execute_eval_comparison(
+            config_path=tmp_path / "routing_proxy.yaml",
+            candidates=(
+                "fast:model-a",
+                "balanced:model-b",
+                "reasoning:model-c",
+                "code:model-d",
+                "fast:model-e",
+            ),
+            fixture_selector="structured_output",
+            output_path=output,
+            comparison_id="evalcompare_threshold_blocked",
+            runner=runner,
+        )
+
+    assert called is False
+    assert not output.exists()
+
+
+def test_eval_comparison_summaries_mark_mixed_versions_stale():
+    rows = [
+        _eval_evidence_row(
+            comparison_id="evalcompare_mixed_versions",
+            candidate="fast:model-a",
+            model="model-a",
+            fixture_id="strict_json_routing_control_decision",
+            fixture_version=EVAL_FIXTURE_SCHEMA_VERSION,
+            scorer_version=EVAL_SCORER_VERSION,
+        ),
+        _eval_evidence_row(
+            comparison_id="evalcompare_mixed_versions",
+            candidate="balanced:model-b",
+            backend="balanced",
+            model="model-b",
+            fixture_id="strict_json_routing_control_decision",
+        )
+        | {
+            "fixture_version": None,
+            "scorer_version": None,
+        },
+    ]
+    rows[1] = {key: value for key, value in rows[1].items() if value is not None}
+
+    summary = eval_comparison_summaries_from_rows(rows)[0]
+
+    assert summary["status"] == "stale"
+    assert summary["winner"] is None
+    assert any("Fixture version mismatch" in reason for reason in summary["stale_reasons"])
+    assert any("Scorer version mismatch" in reason for reason in summary["stale_reasons"])
+
+
+def test_eval_comparison_summaries_detect_incomplete_candidate_coverage():
+    rows = [
+        _eval_evidence_row(
+            comparison_id="evalcompare_incomplete",
+            candidate="fast:model-a",
+            model="model-a",
+            fixture_id="strict_json_routing_control_decision",
+            category="structured_output",
+        ),
+        _eval_evidence_row(
+            comparison_id="evalcompare_incomplete",
+            candidate="balanced:model-b",
+            backend="balanced",
+            model="model-b",
+            fixture_id="strict_json_routing_control_decision",
+            category="structured_output",
+        ),
+        _eval_evidence_row(
+            comparison_id="evalcompare_incomplete",
+            candidate="fast:model-a",
+            model="model-a",
+            fixture_id="structured_output_schema_following",
+            category="structured_output",
+        ),
+    ]
+
+    summary = eval_comparison_summaries_from_rows(rows)[0]
+
+    assert summary["status"] == "stale"
+    assert summary["winner"] is None
+    assert any("coverage mismatch" in reason for reason in summary["stale_reasons"])
+
+
+def test_eval_comparison_summaries_support_old_run_id_shape_and_filter_non_finite():
+    rows = [
+        _eval_evidence_row(
+            run_id="evalcompare_legacy_01_fast_model_a",
+            candidate=None,
+            comparison_id=None,
+            model="model-a",
+            score_percent=float("nan"),
+            weighted_score=float("inf"),
+            latency_ms=float("inf"),
+        ),
+        _eval_evidence_row(
+            run_id="evalcompare_legacy_02_balanced_model_b",
+            candidate=None,
+            comparison_id=None,
+            backend="balanced",
+            model="model-b",
+            score_percent=80.0,
+            weighted_score=0.8,
+            latency_ms=4.0,
+        ),
+    ]
+    rows = [
+        {key: value for key, value in row.items() if value is not None}
+        for row in rows
+    ]
+
+    summary = eval_comparison_summaries_from_rows(rows)[0]
+    serialized = json.dumps(summary, allow_nan=False)
+
+    assert summary["comparison_id"] == "evalcompare_legacy"
+    assert summary["candidate_count"] == 2
+    model_a = next(
+        candidate
+        for candidate in summary["candidates"]
+        if candidate["model"] == "model-a"
+    )
+    assert model_a["score_mean_percent"] is None
+    assert model_a["latency_summary"]["mean_ms"] is None
+    assert "Infinity" not in serialized
+    assert "NaN" not in serialized
+
+
 def test_eval_report_latest_is_privacy_safe(tmp_path):
     initialize_product_config(
         preset="lmstudio",
@@ -521,6 +890,32 @@ def test_eval_report_latest_is_privacy_safe(tmp_path):
     assert "strict_json_routing_control_decision" in serialized
     assert "Return only JSON" not in serialized
     assert '"route":"balanced"' not in serialized
+
+
+def test_eval_report_latest_ignores_comparison_candidate_runs(tmp_path):
+    output = tmp_path / "latest-with-comparison.jsonl"
+    _write_eval_rows(
+        output,
+        [
+            _eval_evidence_row(
+                run_id="evalrun_single",
+                created_at="2026-06-30T12:00:00.000Z",
+                model="single-model",
+            ),
+            _eval_evidence_row(
+                run_id="evalcompare_newer_01_fast_model",
+                comparison_id="evalcompare_newer",
+                candidate="fast:comparison-model",
+                created_at="2026-06-30T12:10:00.000Z",
+                model="comparison-model",
+            ),
+        ],
+    )
+
+    payload = eval_report("latest", result_path=output).to_dict()
+
+    assert payload["run_id"] == "evalrun_single"
+    assert payload["model"] == "single-model"
 
 
 def test_eval_report_summarizes_partial_failures_timeouts_and_usage(tmp_path):
@@ -851,6 +1246,198 @@ def test_eval_run_cli_invokes_mocked_backend_and_writes_json(
     assert payload["run_id"] == "evalrun_cli"
     assert payload["results"][0]["score_percent"] == 100.0
     assert output.exists()
+
+
+def test_eval_compare_cli_invokes_mocked_candidates_and_writes_json(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    initialize_product_config(
+        preset="lmstudio",
+        config_dir=tmp_path,
+        force=False,
+        interactive=False,
+    )
+    output = tmp_path / "compare-cli-results.jsonl"
+
+    def runner(request):
+        if request.model == "model-a":
+            return EvalBackendResponse(
+                status="completed",
+                output=_passing_output_for_fixture(
+                    "strict_json_routing_control_decision"
+                ),
+                latency_ms=3.0,
+                usage_total_tokens=10,
+            )
+        return EvalBackendResponse(
+            status="completed",
+            output="not json",
+            latency_ms=7.0,
+        )
+
+    monkeypatch.setattr(
+        "hermes.plugins.model_router.eval_runner.run_backend_eval_request",
+        runner,
+    )
+
+    exit_code = model_router_cli.main(
+        [
+            "eval",
+            "compare",
+            "--json",
+            "--config",
+            str(tmp_path / "routing_proxy.yaml"),
+            "--candidate",
+            "fast:model-a",
+            "--candidate",
+            "balanced:model-b",
+            "--fixture",
+            "strict_json_routing_control_decision",
+            "--output",
+            str(output),
+            "--comparison-id",
+            "evalcompare_cli",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    serialized = json.dumps(payload)
+
+    assert exit_code == 0
+    assert payload["comparison_id"] == "evalcompare_cli"
+    assert payload["request_count"] == 2
+    assert payload["winner"]["candidate"] == "fast:model-a"
+    assert payload["winner"]["label"] == "best on this fixture set/profile"
+    assert payload["candidate_summaries"][0]["usage_summary"]["usage_total_tokens"] == 10
+    assert output.exists()
+    assert "Return only JSON" not in serialized
+    assert '"route":"balanced"' not in serialized
+    assert "not json" not in serialized
+
+
+def test_eval_compare_cli_human_output_handles_zero_latency(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    initialize_product_config(
+        preset="lmstudio",
+        config_dir=tmp_path,
+        force=False,
+        interactive=False,
+    )
+
+    def runner(_request):
+        return EvalBackendResponse(
+            status="completed",
+            output=_passing_output_for_fixture("strict_json_routing_control_decision"),
+            latency_ms=0.0,
+        )
+
+    monkeypatch.setattr(
+        "hermes.plugins.model_router.eval_runner.run_backend_eval_request",
+        runner,
+    )
+
+    exit_code = model_router_cli.main(
+        [
+            "eval",
+            "compare",
+            "--config",
+            str(tmp_path / "routing_proxy.yaml"),
+            "--candidate",
+            "fast:model-a",
+            "--candidate",
+            "balanced:model-b",
+            "--fixture",
+            "strict_json_routing_control_decision",
+            "--output",
+            str(tmp_path / "human-compare.jsonl"),
+        ]
+    )
+    readable = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "ModelRouter Eval Comparison" in readable
+    assert "Winner: none" in readable
+    assert "mean_ms=0.0" in readable
+    assert "best on this fixture set/profile" in readable
+    assert "Return only JSON" not in readable
+
+
+def test_eval_compare_cli_rejects_invalid_candidate_format(tmp_path, capsys):
+    initialize_product_config(
+        preset="lmstudio",
+        config_dir=tmp_path,
+        force=False,
+        interactive=False,
+    )
+
+    exit_code = model_router_cli.main(
+        [
+            "eval",
+            "compare",
+            "--json",
+            "--config",
+            str(tmp_path / "routing_proxy.yaml"),
+            "--candidate",
+            "fast",
+            "--candidate",
+            "balanced:model-b",
+            "--fixture",
+            "strict_json_routing_control_decision",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert "backend:model" in payload["error"]
+
+
+def test_eval_compare_cli_requires_confirmation_for_broad_comparison(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    initialize_product_config(
+        preset="lmstudio",
+        config_dir=tmp_path,
+        force=False,
+        interactive=False,
+    )
+
+    def runner(_request):
+        raise AssertionError("blocked comparison should not call a backend")
+
+    monkeypatch.setattr(
+        "hermes.plugins.model_router.eval_runner.run_backend_eval_request",
+        runner,
+    )
+
+    exit_code = model_router_cli.main(
+        [
+            "eval",
+            "compare",
+            "--json",
+            "--config",
+            str(tmp_path / "routing_proxy.yaml"),
+            "--candidate",
+            "fast:model-a",
+            "--candidate",
+            "balanced:model-b",
+            "--all-fixtures",
+            "--output",
+            str(tmp_path / "blocked-compare-cli.jsonl"),
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert "confirm-large-run" in payload["error"]
+    assert "never sweep discovered models" in payload["error"]
 
 
 def test_eval_run_cli_requires_confirmation_for_all_fixtures(

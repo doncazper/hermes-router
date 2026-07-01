@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import shutil
 import subprocess
@@ -150,13 +151,24 @@ class RuntimeModel:
     model_id: str
     loaded: bool | None = None
     source: str = "runtime"
+    name: str | None = None
+    tags: tuple[str, ...] = ()
+    metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "model_id": self.model_id,
             "loaded": self.loaded,
             "source": self.source,
         }
+        if self.name:
+            payload["name"] = self.name
+        if self.tags:
+            payload["tags"] = list(self.tags)
+        metadata = _json_safe_mapping(self.metadata)
+        if metadata:
+            payload["metadata"] = metadata
+        return payload
 
 
 @dataclass(frozen=True)
@@ -381,7 +393,7 @@ class GenericOpenAICompatibleAdapter:
                 detail=exc.__class__.__name__,
                 checked_url=models_url,
             )
-        models = _models_from_payload(payload)
+        models = _models_from_payload(payload, source=_models_api_source(self._provider))
         if self.backend.model in {model.model_id for model in models}:
             return RuntimeHealth(
                 status="ready",
@@ -416,7 +428,7 @@ class GenericOpenAICompatibleAdapter:
             )
         except Exception:
             return ()
-        return _models_from_payload(payload)
+        return _models_from_payload(payload, source=_models_api_source(self._provider))
 
     def list_loaded_models(
         self,
@@ -1524,43 +1536,130 @@ def _auth_headers(backend: ProxyBackendConfig) -> dict[str, str]:
     return {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
 
-def _models_from_payload(payload: Any) -> tuple[RuntimeModel, ...]:
+def _models_from_payload(
+    payload: Any,
+    *,
+    source: str = "openai_compatible_models_api",
+) -> tuple[RuntimeModel, ...]:
     if not isinstance(payload, Mapping):
         return ()
     data = payload.get("data")
     if not isinstance(data, list):
         return ()
     models: list[RuntimeModel] = []
+    seen: set[str] = set()
     for item in data:
         if not isinstance(item, Mapping):
             continue
-        model_id = item.get("id")
-        if isinstance(model_id, str) and model_id.strip():
-            models.append(RuntimeModel(model_id=model_id.strip(), loaded=None))
+        model_id = _clean_model_id(
+            item.get("id") or item.get("model") or item.get("name")
+        )
+        if not model_id or model_id in seen:
+            continue
+        seen.add(model_id)
+        name = _clean_model_id(item.get("name"))
+        models.append(
+            RuntimeModel(
+                model_id=model_id,
+                loaded=None,
+                source=source,
+                name=name if name and name != model_id else None,
+                metadata=_model_metadata_from_mapping(item),
+            )
+        )
     return tuple(models)
 
 
 def _models_from_ollama_table(output: str, *, loaded: bool) -> tuple[RuntimeModel, ...]:
     models: list[RuntimeModel] = []
     seen: set[str] = set()
+    header: tuple[str, ...] = ()
     for line in output.splitlines():
         stripped = line.strip()
         if not stripped:
             continue
-        first = stripped.split(maxsplit=1)[0]
+        columns = tuple(part.strip() for part in re.split(r"\s{2,}", stripped) if part.strip())
+        if not columns:
+            continue
+        first = columns[0]
         if first.upper() in {"NAME", "MODEL"}:
+            header = tuple(_metadata_key(column) for column in columns)
             continue
         if first in seen:
             continue
         seen.add(first)
+        metadata = _ollama_metadata_from_columns(header, columns)
         models.append(
             RuntimeModel(
                 model_id=first,
                 loaded=loaded,
                 source="ollama_cli",
+                tags=_ollama_tags(first),
+                metadata=metadata,
             )
         )
     return tuple(models)
+
+
+def _models_api_source(provider: str) -> str:
+    clean = provider.strip() if provider else "openai_compatible"
+    return f"{clean}_models_api"
+
+
+def _clean_model_id(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _model_metadata_from_mapping(item: Mapping[str, Any]) -> dict[str, Any]:
+    reserved = {"id", "model", "name"}
+    return _json_safe_mapping(
+        {str(key): value for key, value in item.items() if str(key) not in reserved}
+    )
+
+
+def _ollama_tags(model_id: str) -> tuple[str, ...]:
+    _name, separator, tag = model_id.rpartition(":")
+    return (tag,) if separator and tag else ()
+
+
+def _ollama_metadata_from_columns(
+    header: tuple[str, ...],
+    columns: tuple[str, ...],
+) -> dict[str, Any]:
+    if not header:
+        return {}
+    metadata: dict[str, Any] = {}
+    for key, value in zip(header, columns, strict=False):
+        if key in {"name", "model"}:
+            continue
+        metadata[f"ollama_{key}"] = value
+    return _json_safe_mapping(metadata)
+
+
+def _metadata_key(value: str) -> str:
+    cleaned = re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_")
+    return cleaned or "field"
+
+
+def _json_safe_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        str(key): _json_safe_value(item)
+        for key, item in value.items()
+        if item is not None
+    }
+
+
+def _json_safe_value(value: Any) -> Any:
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, Mapping):
+        return _json_safe_mapping(value)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_json_safe_value(item) for item in value]
+    return str(value)
 
 
 def _is_local_base_url(base_url: str) -> bool:

@@ -427,6 +427,39 @@ def test_lmstudio_adapter_detects_cli_and_keeps_native_lifecycle_disabled():
     assert commands == []
 
 
+def test_lmstudio_runtime_state_imports_real_model_ids_with_source_metadata():
+    def requester(_url, _headers, _timeout):
+        return 200, {
+            "data": [
+                {
+                    "id": "lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF",
+                    "object": "model",
+                    "owned_by": "lm-studio",
+                },
+                {"id": "qwen2.5-coder-7b-instruct"},
+            ]
+        }
+
+    state = runtime_state_for_backend(
+        _backend(
+            base_url="http://127.0.0.1:1234/v1",
+            model="lmstudio-fast-model",
+        ),
+        requester=requester,
+        checked_at="2026-07-01T12:00:00Z",
+    )
+
+    models = state["models"]
+    assert state["runtime_id"] == "lmstudio"
+    assert [model["model_id"] for model in models] == [
+        "lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF",
+        "qwen2.5-coder-7b-instruct",
+    ]
+    assert models[0]["source"] == "lmstudio_models_api"
+    assert models[0]["metadata"]["owned_by"] == "lm-studio"
+    assert state["health"]["detail"] == "configured model 'lmstudio-fast-model' not listed"
+
+
 def test_ollama_adapter_lists_models_and_loaded_models_with_mocked_cli():
     commands: list[tuple[str, ...]] = []
 
@@ -478,12 +511,27 @@ def test_ollama_adapter_lists_models_and_loaded_models_with_mocked_cli():
     assert "does not run or pull models silently" in capabilities["load_model"][
         "disabled_reason"
     ]
-    assert [model.to_dict() for model in models] == [
-        {"model_id": "qwen3:4b", "loaded": False, "source": "ollama_cli"},
-        {"model_id": "llama3.2:latest", "loaded": False, "source": "ollama_cli"},
-    ]
+    assert [model.model_id for model in models] == ["qwen3:4b", "llama3.2:latest"]
+    assert models[0].tags == ("4b",)
+    assert models[0].metadata == {
+        "ollama_id": "abc123",
+        "ollama_size": "2.5 GB",
+        "ollama_modified": "1 hour ago",
+    }
+    assert models[1].tags == ("latest",)
     assert [model.to_dict() for model in loaded] == [
-        {"model_id": "qwen3:4b", "loaded": True, "source": "ollama_cli"}
+        {
+            "model_id": "qwen3:4b",
+            "loaded": True,
+            "source": "ollama_cli",
+            "tags": ["4b"],
+            "metadata": {
+                "ollama_id": "abc123",
+                "ollama_size": "2.5 GB",
+                "ollama_processor": "100% GPU",
+                "ollama_until": "4 minutes",
+            },
+        }
     ]
     assert commands == [("ollama", "list"), ("ollama", "ps")]
 

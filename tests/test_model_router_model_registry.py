@@ -299,6 +299,43 @@ def test_registry_imports_ollama_models_and_loaded_state():
     assert "model_unload" in other["capabilities"]
 
 
+def test_registry_preserves_runtime_model_tags_and_metadata():
+    config = _proxy_config(
+        ProxyBackendConfig(
+            name="fast",
+            base_url="http://127.0.0.1:11434/v1",
+            model="qwen2.5-coder:1.5b",
+        )
+    )
+    registry = build_model_registry(
+        proxy_config=config,
+        runtime_models={
+            "fast": (
+                RuntimeModel(
+                    "qwen2.5-coder:1.5b",
+                    loaded=False,
+                    source="ollama_cli",
+                    tags=("1.5b",),
+                    metadata={"ollama_id": "abc123", "ollama_size": "986 MB"},
+                ),
+            )
+        },
+    )
+
+    model = next(
+        item
+        for item in registry.to_dict()["models"]
+        if item["model_id"] == "qwen2.5-coder:1.5b"
+    )
+
+    assert model["source"] == "proxy_config+runtime_import"
+    assert "1.5b" in model["tags"]
+    assert model["metadata"]["runtime_source"] == "ollama_cli"
+    assert model["metadata"]["ollama_id"] == "abc123"
+    assert model["metadata"]["ollama_size"] == "986 MB"
+    assert model["routing_eligible"] is True
+
+
 def test_registry_imports_configured_llamacpp_and_mlx_model_paths():
     config = _proxy_config(
         ProxyBackendConfig(

@@ -37,7 +37,10 @@ from hermes.plugins.model_router.admin.supervisor import (
 )
 from hermes.plugins.model_router.catalog_update import catalog_status
 from hermes.plugins.model_router.config import RouterConfigError, load_router_config
-from hermes.plugins.model_router.eval_runner import load_eval_results
+from hermes.plugins.model_router.eval_runner import (
+    eval_comparison_summaries_from_rows,
+    load_eval_results,
+)
 from hermes.plugins.model_router.installer import build_installer_state
 from hermes.plugins.model_router.product import (
     DEFAULT_CONFIG_DIR,
@@ -362,6 +365,7 @@ def _build_settings_state_impl(
     benchmark_results = load_benchmark_results(paths["benchmarks"])
     eval_results_path = paths.get("eval_results")
     eval_results = load_eval_results(eval_results_path) if eval_results_path else ()
+    eval_comparisons = eval_comparison_summaries_from_rows(eval_results)
     recommendation = recommend_setup(
         discovery,
         download_alternatives=2,
@@ -414,6 +418,12 @@ def _build_settings_state_impl(
         "installer": build_installer_state(paths, discovery=discovery),
         "benchmarks": benchmark_summary(paths["benchmarks"]),
         "workflow_benchmarks": _workflow_benchmark_state(paths),
+        "evals": {
+            "result_path": str(eval_results_path) if eval_results_path else "",
+            "comparisons": list(eval_comparisons),
+            "privacy": _eval_privacy_state(),
+            "read_only": True,
+        },
         "maturity": feature_maturity_state(),
         "telemetry": _telemetry_state(paths, config),
         "proxy_process": proxy_process,
@@ -2761,6 +2771,7 @@ def _providers_runtime_section(state: Mapping[str, Any]) -> str:
     backend_name = str(detail.get("backend") or "")
     model_id = str(detail.get("model") or "")
     backend_js = _js_string(backend_name)
+    detected_models_text = _runtime_model_ids_text(discovered_models)
     return f"""<div class="runtime-grid" id="providers">
       <div class="provider-list">{provider_rows}</div>
       <div class="runtime-detail" id="runtime-detail">
@@ -2824,6 +2835,14 @@ def _providers_runtime_section(state: Mapping[str, Any]) -> str:
           <label>Models visible</label>
           <span>{escape(str(len(discovered_models)))} discovered; {escape(str(len(loaded_models)))} loaded</span>
         </div>
+        <div class="detail-field detail-wide">
+          <label>Detected models</label>
+          <span class="code">{escape(detected_models_text)}</span>
+        </div>
+        <div class="detail-field detail-wide">
+          <label>Model guidance</label>
+          <span>{escape(str(detail.get("model_guidance") or "Configured model ids are operator-owned."))}</span>
+        </div>
         <div class="detail-field">
           <label>Load action</label>
           <span>{escape(_support_label(load_support))}</span>
@@ -2877,6 +2896,7 @@ def _model_library_panel(state: Mapping[str, Any]) -> str:
         {_discover_models_card(library)}
         {_recommended_models_card(library)}
         {_eval_evidence_card(library)}
+        {_eval_comparison_card(state)}
         {_downloads_models_card(library)}
         {_assignments_models_card(library)}
       </div>
@@ -3148,6 +3168,238 @@ def _eval_evidence_card(library: Mapping[str, Any]) -> str:
         <p class="muted">Advisory only; cached eval evidence does not change routing automatically.</p>
       </div>
     </details>"""
+
+
+def _eval_comparison_card(state: Mapping[str, Any]) -> str:
+    evals = state.get("evals") if isinstance(state.get("evals"), Mapping) else {}
+    comparisons = (
+        evals.get("comparisons")
+        if isinstance(evals.get("comparisons"), list)
+        else []
+    )
+    row_data = _eval_comparison_rows(comparisons)
+    if row_data:
+        rows = "\n".join(_eval_comparison_row(item) for item in row_data[:12])
+    else:
+        rows = (
+            '<tr><td colspan="6" class="muted">'
+            "No cached eval comparison evidence; candidates are not evaluated. "
+            "Run comparisons explicitly from the CLI when you want local "
+            "suitability evidence.</td></tr>"
+        )
+    hint = (
+        "model-router eval compare --candidate fast:model-a "
+        "--candidate balanced:model-b --fixture strict_json_routing_control_decision"
+    )
+    return f"""<details class="model-card model-card-wide">
+      <summary><span class="model-detail-title">Eval comparisons</span><span class="muted">{len(comparisons)} cached comparisons; read-only</span></summary>
+      <div class="model-detail-body">
+        <table class="data-table model-table">
+          <thead><tr><th>Candidate</th><th>Fixture set</th><th>Scores</th><th>Failures</th><th>Latency / usage</th><th>Run</th></tr></thead>
+          <tbody>{rows}</tbody>
+        </table>
+        <p class="muted">Advisory only; best means best on this fixture set/profile, not universal model quality. Run evals explicitly: <span class="code">{escape(hint)}</span></p>
+      </div>
+    </details>"""
+
+
+def _eval_comparison_rows(comparisons: list[Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for comparison in comparisons:
+        if not isinstance(comparison, Mapping):
+            continue
+        candidates = (
+            comparison.get("candidates")
+            if isinstance(comparison.get("candidates"), list)
+            else []
+        )
+        if not candidates:
+            rows.append(_eval_comparison_empty_candidate_row(comparison))
+            continue
+        for candidate in candidates:
+            if not isinstance(candidate, Mapping):
+                continue
+            rows.append(_eval_comparison_candidate_row(comparison, candidate))
+    rows.sort(
+        key=lambda item: (
+            str(item.get("created_at") or ""),
+            str(item.get("comparison_id") or ""),
+            str(item.get("candidate") or ""),
+        ),
+        reverse=True,
+    )
+    return rows
+
+
+def _eval_comparison_candidate_row(
+    comparison: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+) -> dict[str, Any]:
+    privacy = (
+        comparison.get("privacy")
+        if isinstance(comparison.get("privacy"), Mapping)
+        else {}
+    )
+    return {
+        "comparison_id": comparison.get("comparison_id"),
+        "created_at": comparison.get("created_at"),
+        "status": comparison.get("status") or "unknown",
+        "stale": comparison.get("stale") is True,
+        "stale_reasons": (
+            comparison.get("stale_reasons")
+            if isinstance(comparison.get("stale_reasons"), list)
+            else []
+        ),
+        "fixture_count": comparison.get("fixture_count"),
+        "category_count": comparison.get("category_count"),
+        "categories": (
+            comparison.get("categories")
+            if isinstance(comparison.get("categories"), list)
+            else []
+        ),
+        "fixture_versions": (
+            comparison.get("fixture_versions")
+            if isinstance(comparison.get("fixture_versions"), list)
+            else []
+        ),
+        "fixture_pack_version": comparison.get("fixture_pack_version"),
+        "candidate": candidate.get("candidate"),
+        "backend": candidate.get("backend"),
+        "model": candidate.get("model"),
+        "score_mean_percent": candidate.get("score_mean_percent"),
+        "weighted_score_mean": candidate.get("weighted_score_mean"),
+        "failed": candidate.get("failed", 0),
+        "timeouts": candidate.get("timeouts", 0),
+        "latency_summary": (
+            candidate.get("latency_summary")
+            if isinstance(candidate.get("latency_summary"), Mapping)
+            else {}
+        ),
+        "usage_summary": (
+            candidate.get("usage_summary")
+            if isinstance(candidate.get("usage_summary"), Mapping)
+            else {}
+        ),
+        "top_failure_reasons": (
+            candidate.get("top_failure_reasons")
+            if isinstance(candidate.get("top_failure_reasons"), list)
+            else []
+        ),
+        "privacy": privacy,
+    }
+
+
+def _eval_comparison_empty_candidate_row(comparison: Mapping[str, Any]) -> dict[str, Any]:
+    return _eval_comparison_candidate_row(
+        comparison,
+        {
+            "candidate": "not evaluated",
+            "backend": "unknown",
+            "model": "unknown",
+        },
+    )
+
+
+def _eval_comparison_row(item: Mapping[str, Any]) -> str:
+    status = str(item.get("status") or "unknown")
+    if item.get("stale"):
+        status = f"{status} · stale"
+    stale_reasons = (
+        item.get("stale_reasons")
+        if isinstance(item.get("stale_reasons"), list)
+        else []
+    )
+    stale_detail = "; ".join(str(reason) for reason in stale_reasons[:2])
+    stale_html = (
+        f'<br><span class="muted">{escape(stale_detail)}</span>'
+        if stale_detail
+        else ""
+    )
+    fixture_text = _eval_comparison_fixture_text(item)
+    score_text = (
+        f"mean {_value_or_na(item.get('score_mean_percent'))} · "
+        f"weighted {_value_or_na(item.get('weighted_score_mean'))}"
+    )
+    failure_text = _eval_comparison_failure_text(item)
+    latency_usage = _eval_comparison_latency_usage_text(item)
+    run_text = str(item.get("created_at") or "never")
+    privacy_text = _eval_privacy_text(item.get("privacy"))
+    return f"""<tr>
+      <td><strong class="code">{escape(_short_model_id(str(item.get("model") or "unknown")))}</strong><br><span class="muted">{escape(str(item.get("backend") or "unknown"))} · {escape(status)}</span>{stale_html}</td>
+      <td>{escape(fixture_text)}</td>
+      <td>{escape(score_text)}</td>
+      <td>{escape(failure_text)}</td>
+      <td>{escape(latency_usage)}</td>
+      <td>{escape(run_text)}<br><span class="muted">{escape(privacy_text)}</span></td>
+    </tr>"""
+
+
+def _eval_comparison_fixture_text(item: Mapping[str, Any]) -> str:
+    categories = item.get("categories") if isinstance(item.get("categories"), list) else []
+    category_text = ", ".join(str(category) for category in categories[:2]) or "none"
+    if len(categories) > 2:
+        category_text += f", +{len(categories) - 2}"
+    versions = item.get("fixture_versions")
+    version_text = ", ".join(str(version) for version in versions) if isinstance(versions, list) else ""
+    if not version_text:
+        version_text = "missing"
+    pack_version = _value_or_na(item.get("fixture_pack_version"))
+    return (
+        f"fixtures {_value_or_na(item.get('fixture_count'))}; "
+        f"categories {_value_or_na(item.get('category_count'))} ({category_text}); "
+        f"pack v{pack_version}; rows v{version_text}"
+    )
+
+
+def _eval_comparison_failure_text(item: Mapping[str, Any]) -> str:
+    reasons = item.get("top_failure_reasons") if isinstance(item.get("top_failure_reasons"), list) else []
+    reason_text = "none"
+    if reasons:
+        parts = []
+        for reason in reasons[:2]:
+            if not isinstance(reason, Mapping):
+                continue
+            parts.append(f"{reason.get('reason')}: {reason.get('count')}")
+        reason_text = "; ".join(parts) or "none"
+    return (
+        f"failed {_value_or_na(item.get('failed'))}; "
+        f"timeouts {_value_or_na(item.get('timeouts'))}; {reason_text}"
+    )
+
+
+def _eval_comparison_latency_usage_text(item: Mapping[str, Any]) -> str:
+    latency = item.get("latency_summary") if isinstance(item.get("latency_summary"), Mapping) else {}
+    usage = item.get("usage_summary") if isinstance(item.get("usage_summary"), Mapping) else {}
+    mean_ms = latency.get("mean_ms")
+    latency_text = f"latency mean {_format_latency(mean_ms)}"
+    usage_text = _format_usage_summary(usage)
+    return f"{latency_text}; usage {usage_text}"
+
+
+def _eval_privacy_text(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "privacy unknown"
+    if value.get("legacy_raw_fields_detected") is True:
+        return "legacy raw fields detected; details hidden"
+    prompt = str(value.get("prompt_retention") or "unknown")
+    output = str(value.get("output_retention") or "unknown")
+    artifacts = str(value.get("artifact_retention") or "unknown")
+    return f"prompt {prompt}; output {output}; artifacts {artifacts}"
+
+
+def _eval_privacy_state() -> dict[str, Any]:
+    return {
+        "prompt_retention": "hash_only",
+        "output_retention": "hash_only",
+        "artifact_retention": "disabled_by_default",
+        "raw_prompts_retained": False,
+        "raw_outputs_retained": False,
+        "secrets_retained": False,
+    }
+
+
+def _value_or_na(value: Any) -> Any:
+    return value if value is not None else "n/a"
 
 
 def _eval_evidence_rows(library: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -4761,6 +5013,8 @@ def _runtime_detail_state(
     loaded = (
         adapter.get("loaded_models") if isinstance(adapter.get("loaded_models"), list) else []
     )
+    discovered_model_ids = _runtime_model_ids(models)
+    loaded_model_ids = _runtime_model_ids(loaded)
     logs = adapter.get("logs") if isinstance(adapter.get("logs"), dict) else {}
     fallback_chain = tuple(
         item.name for item in config.fallback_chain_for_backend(backend.name)
@@ -4785,16 +5039,13 @@ def _runtime_detail_state(
         "health_status": health.get("status"),
         "health_detail": health.get("detail"),
         "health_ok": health.get("ok") is True,
-        "discovered_models": [
-            str(item.get("model_id"))
-            for item in models
-            if isinstance(item, dict) and item.get("model_id")
-        ],
-        "loaded_models": [
-            str(item.get("model_id"))
-            for item in loaded
-            if isinstance(item, dict) and item.get("model_id")
-        ],
+        "discovered_models": discovered_model_ids,
+        "loaded_models": loaded_model_ids,
+        "model_guidance": _runtime_model_guidance(
+            backend.model,
+            adapter,
+            discovered_model_ids,
+        ),
         "capabilities": capabilities,
         "logs": logs,
         "runtime_command": " ".join(shlex.quote(part) for part in runtime.command)
@@ -4807,6 +5058,56 @@ def _runtime_detail_state(
         "policy_status": config.backend_policy_rejection_reason(backend.name) or "allowed",
         "builder": _runtime_builder_fields(backend),
     }
+
+
+def _runtime_model_ids(items: list[Any]) -> list[str]:
+    ids: list[str] = []
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        model_id = str(item.get("model_id") or item.get("id") or "").strip()
+        if model_id:
+            ids.append(model_id)
+    return list(dict.fromkeys(ids))
+
+
+def _runtime_model_ids_text(model_ids: list[str], *, limit: int = 6) -> str:
+    if not model_ids:
+        return "no models detected"
+    shown = model_ids[:limit]
+    suffix = f", +{len(model_ids) - limit} more" if len(model_ids) > limit else ""
+    return ", ".join(shown) + suffix
+
+
+def _runtime_model_guidance(
+    configured_model: str,
+    adapter: Mapping[str, Any],
+    discovered_model_ids: list[str],
+) -> str:
+    provider = str(
+        adapter.get("provider") or adapter.get("runtime_id") or adapter.get("runtime_kind") or ""
+    ).lower()
+    configured = configured_model.strip()
+    if discovered_model_ids and configured in discovered_model_ids:
+        return "Configured model is visible from the selected runtime."
+    if discovered_model_ids:
+        suggestions = _runtime_model_ids_text(discovered_model_ids)
+        if provider == "lmstudio" or configured.startswith("lmstudio-"):
+            return f"replace {configured} with one of: {suggestions}"
+        if provider == "ollama":
+            return (
+                f"detected models: {suggestions}; replace {configured} with one "
+                "of those ids or pull the configured model explicitly."
+            )
+        return f"configured model {configured} not detected; use one of: {suggestions}"
+    if provider == "lmstudio":
+        return "no models detected; start the LM Studio local server or configure endpoint."
+    if provider == "ollama":
+        return (
+            "no models detected; start Ollama, run `ollama list`, or pull models "
+            "explicitly."
+        )
+    return "no models detected; start the local server or configure endpoint."
 
 
 def _route_receipt_state(

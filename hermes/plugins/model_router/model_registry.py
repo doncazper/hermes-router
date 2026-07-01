@@ -81,6 +81,7 @@ class _RuntimeModelRecord:
     format: str | None = None
     context_length: int | None = None
     quantization: str | None = None
+    tags: tuple[str, ...] = ()
     capabilities: tuple[str, ...] = ()
     stale: bool = False
     metadata: Mapping[str, Any] = field(default_factory=dict)
@@ -330,7 +331,9 @@ def _models_from_runtime(
                     install_state="stale" if runtime_model.stale else "available",
                     health_state=health_state,
                     load_state=load_state,
-                    tags=_unique_strings((backend_name, provider, runtime)),
+                    tags=_unique_strings(
+                        (backend_name, provider, runtime, *runtime_model.tags)
+                    ),
                     capabilities=_unique_strings(
                         ("chat", *state_capabilities, *runtime_model.capabilities)
                     ),
@@ -522,9 +525,12 @@ def _coerce_runtime_model(
         loaded = loaded_override if loaded_override is not None else item.loaded
         return _RuntimeModelRecord(
             model_id=item.model_id,
+            name=getattr(item, "name", None),
             loaded=loaded,
             source=item.source,
+            tags=_unique_strings(getattr(item, "tags", ())),
             stale=stale_override,
+            metadata=_json_safe_mapping(getattr(item, "metadata", {}) or {}),
         )
     if isinstance(item, str):
         model_id = item.strip()
@@ -554,6 +560,13 @@ def _coerce_runtime_model(
         loaded = _loaded_bool(item, loaded_override)
         source = _clean_string(item.get("source")) or "runtime"
         stale = stale_override or bool(item.get("stale")) or item.get("state") == "stale"
+        metadata = _metadata_from_runtime_model(item)
+        nested_metadata = item.get("metadata")
+        if isinstance(nested_metadata, Mapping):
+            metadata = {
+                **metadata,
+                **_json_safe_mapping(nested_metadata),
+            }
         return _RuntimeModelRecord(
             model_id=model_id,
             name=_clean_string(item.get("display_name") or item.get("name")) or None,
@@ -569,9 +582,10 @@ def _coerce_runtime_model(
             ),
             quantization=_clean_string(item.get("quantization"))
             or _quantization_from_values(local_path, model_id),
+            tags=_unique_strings(item.get("tags", ())),
             capabilities=_runtime_capabilities_from_item(item),
             stale=stale,
-            metadata=_metadata_from_runtime_model(item),
+            metadata=metadata,
         )
     return None
 
@@ -754,7 +768,9 @@ def _metadata_from_runtime_model(item: Mapping[str, Any]) -> dict[str, Any]:
         "max_context",
         "n_ctx",
         "quantization",
+        "tags",
         "capabilities",
+        "metadata",
         "stale",
         "state",
     }

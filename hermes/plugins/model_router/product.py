@@ -276,6 +276,8 @@ def detect_first_run_environment(timeout_seconds: float = 0.25) -> FirstRunSigna
         ollama_installed=ollama_installed,
         ollama_running=ollama_running,
         lmstudio_running=lmstudio_running,
+        ollama_models=tuple(sorted(ollama_models or ())),
+        lmstudio_models=tuple(sorted(lmstudio_models or ())),
         apple_silicon=hardware.apple_silicon,
         mlx_lm_available=discovery.commands.get("mlx_lm.server", False),
         llama_server_available=discovery.commands.get("llama-server", False),
@@ -426,14 +428,22 @@ def _backend_model_detail(
     data = payload.get("data")
     if not isinstance(data, list):
         return True, "model list unavailable"
-    model_ids = {
-        item.get("id")
-        for item in data
-        if isinstance(item, dict) and isinstance(item.get("id"), str)
-    }
+    model_ids = _model_ids_from_openai_payload(payload)
     if backend.model in model_ids:
         return True, f"configured model {backend.model!r} listed"
-    return False, f"configured model {backend.model!r} not listed"
+    if model_ids:
+        suggestions = _format_model_id_suggestions(model_ids)
+        return (
+            False,
+            f"configured model {backend.model!r} not listed; "
+            f"detected models: {suggestions}; replace {backend.model} with one of: "
+            f"{suggestions}",
+        )
+    return (
+        False,
+        f"configured model {backend.model!r} not listed; no models detected; "
+        "start the local server or configure endpoint",
+    )
 
 
 def preset_template_names() -> tuple[str, ...]:
@@ -471,11 +481,34 @@ def _fetch_model_ids(base_url: str, *, timeout_seconds: float) -> tuple[str, ...
         return ()
     if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
         return ()
-    return tuple(
-        item["id"]
-        for item in payload["data"]
-        if isinstance(item, dict) and isinstance(item.get("id"), str)
-    )
+    return tuple(_model_ids_from_openai_payload(payload))
+
+
+def _model_ids_from_openai_payload(payload: dict[str, Any]) -> tuple[str, ...]:
+    data = payload.get("data")
+    if not isinstance(data, list):
+        return ()
+    ids: list[str] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        model_id = item.get("id") or item.get("model") or item.get("name")
+        if isinstance(model_id, str) and model_id.strip():
+            ids.append(model_id.strip())
+    return tuple(dict.fromkeys(sorted(ids)))
+
+
+def _format_model_id_suggestions(
+    model_ids: Sequence[str],
+    *,
+    limit: int = 6,
+) -> str:
+    cleaned = tuple(dict.fromkeys(model_id.strip() for model_id in model_ids if model_id.strip()))
+    if not cleaned:
+        return "none"
+    shown = cleaned[:limit]
+    suffix = f", +{len(cleaned) - limit} more" if len(cleaned) > limit else ""
+    return ", ".join(shown) + suffix
 
 
 def _recommended_preset_from_signals(
@@ -507,6 +540,8 @@ def _signal_notes(
     ollama_installed: bool,
     ollama_running: bool,
     lmstudio_running: bool,
+    ollama_models: tuple[str, ...] = (),
+    lmstudio_models: tuple[str, ...] = (),
     apple_silicon: bool = False,
     mlx_lm_available: bool = False,
     llama_server_available: bool = False,
@@ -522,8 +557,24 @@ def _signal_notes(
         notes.append("Ollama is installed but not reachable; start it with `ollama serve`.")
     else:
         notes.append("Ollama command not found.")
+    if ollama_running and ollama_models:
+        notes.append(f"Ollama detected models: {_format_model_id_suggestions(ollama_models)}.")
+    elif ollama_running:
+        notes.append(
+            "Ollama is reachable but no models were detected; run `ollama list` "
+            "or pull a model explicitly."
+        )
     if lmstudio_running:
         notes.append(f"LM Studio-style server is reachable at {LMSTUDIO_BASE_URL}.")
+        if lmstudio_models:
+            notes.append(
+                f"LM Studio detected models: {_format_model_id_suggestions(lmstudio_models)}."
+            )
+        else:
+            notes.append(
+                "LM Studio is reachable but no models were detected; load a model "
+                "or check the local server endpoint."
+            )
     else:
         notes.append(f"No LM Studio-style server detected at {LMSTUDIO_BASE_URL}.")
     if mlx_lm_available:
@@ -548,6 +599,17 @@ def _init_guidance(
         if signals is not None and not signals.ollama_running:
             messages.append("Start Ollama before running the proxy: ollama serve")
         models = set(signals.ollama_models) if signals is not None else set()
+        if signals is not None and signals.ollama_running:
+            if signals.ollama_models:
+                messages.append(
+                    "Ollama detected models: "
+                    f"{_format_model_id_suggestions(signals.ollama_models)}."
+                )
+            else:
+                messages.append(
+                    "No Ollama models detected; start the local server, run "
+                    "`ollama list`, or pull a model explicitly."
+                )
         missing = (
             tuple(model for model in OLLAMA_RECOMMENDED_MODELS if model not in models)
             if signals is not None and signals.ollama_running
@@ -561,6 +623,20 @@ def _init_guidance(
             "LM Studio: start the local server at http://127.0.0.1:1234/v1 "
             "and edit backend model ids to the exact names LM Studio advertises."
         )
+        if signals is not None and signals.lmstudio_running:
+            if signals.lmstudio_models:
+                suggestions = _format_model_id_suggestions(signals.lmstudio_models)
+                messages.append(f"LM Studio detected models: {suggestions}.")
+                messages.append(
+                    "Replace lmstudio-fast-model, lmstudio-balanced-model, "
+                    "lmstudio-reasoning-model, and lmstudio-code-model with one of: "
+                    f"{suggestions}."
+                )
+            else:
+                messages.append(
+                    "No LM Studio models detected; load a model in LM Studio or "
+                    "configure the local server endpoint."
+                )
         messages.append(
             "Replace lmstudio-fast-model, lmstudio-balanced-model, "
             "lmstudio-reasoning-model, and lmstudio-code-model as needed."
@@ -919,9 +995,14 @@ def _doctor_remediation(
                 f"Backend {backend.name} model missing; run `ollama pull {backend.model}`."
             )
         elif backend.base_url.startswith(LMSTUDIO_BASE_URL):
+            replacement = _replacement_guidance_from_health_detail(health.detail)
             messages.append(
                 f"Backend {backend.name} model {backend.model!r} is not listed; "
-                "edit routing_proxy.yaml to use the exact LM Studio model id."
+                + (
+                    f"{replacement}."
+                    if replacement
+                    else "edit routing_proxy.yaml to use the exact LM Studio model id."
+                )
             )
         else:
             messages.append(
@@ -939,6 +1020,14 @@ def _doctor_remediation(
     )
     messages.append(f"Start proxy: model-router-proxy --config {config.source_path}")
     return tuple(dict.fromkeys(messages))
+
+
+def _replacement_guidance_from_health_detail(detail: str) -> str | None:
+    marker = "replace "
+    if marker not in detail or " with one of: " not in detail:
+        return None
+    guidance = detail.split(marker, 1)[1].strip().rstrip(".")
+    return f"replace {guidance}" if guidance else None
 
 
 def _backend_ok_for_doctor(
