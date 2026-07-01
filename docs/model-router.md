@@ -277,13 +277,16 @@ model-router install --auto --json
 model-router install --local-only --mlx-lm
 ```
 
-`model-router install` is deterministic onboarding, not a background daemon or
-silent setup script. It detects the install method, package version, Python,
-command availability, optional dependencies, existing config files, port status,
-and local runtime signals. It prints the next explicit commands for prereqs,
-`init`, `doctor`, settings, proxy startup, downloads, telemetry, and TUI when
-available. It does not download models, install services, enable hosted
-providers, overwrite configs, or start runtimes.
+`model-router install` prints a deterministic installer plan; it is not a
+background daemon, one-command setup script, or silent installer. It detects the
+install method, package version, Python, command availability, optional
+dependencies, existing config files, port status, and local runtime signals. It
+prints the next explicit commands for prereqs, `init`, `doctor`, settings,
+proxy startup, downloads, telemetry, and TUI when available. It does not mutate
+by default: it does not install dependencies, download models, write configs,
+install services, enable hosted providers, change routing, or start runtimes.
+Passing `--yes` records confirmation intent in the plan; it does not execute
+those follow-up commands.
 
 Terminal control center:
 
@@ -391,9 +394,10 @@ YAML file. If you selected recommended downloads, it then asks whether to run
 those `hf download` commands into the configured local model folders.
 
 When recommended downloads are possible but the Hugging Face `hf` CLI is missing,
-the wizard prompts at the beginning and can install it into the Python
-environment running the setup assistant. This prerequisite prompt is separate from the
-later model-download confirmation.
+the wizard prompts at the beginning and can run the prerequisite plan for the
+current install context. That plan uses active-interpreter pip when available,
+uv when pip is missing, and pipx injection guidance for pipx installs. This
+prerequisite prompt is separate from the later model-download confirmation.
 
 Write a generated config:
 

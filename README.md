@@ -118,24 +118,31 @@ flowchart TB
 
 ## Use With Your Agent In 3 Minutes
 
+For the consolidated setup guide, see [Install ModelRouter](INSTALL.md).
+
 Install the proxy extra:
 
 ```bash
-pip install "hermes-router[proxy]"
+python -m pip install "hermes-router[proxy]"
 ```
 
-Plan deterministic onboarding:
+Print a deterministic installer plan:
 
 ```bash
 model-router install --quick
 model-router install --quick --json
+model-router install --guided
 ```
 
-The installer command is plan-only in v1. It detects package/install method,
-Python, command availability, optional proxy/runtime dependencies, config files,
-ports, and local runtime signals, then prints the next explicit commands. It
-does not download models, install services, enable hosted providers, overwrite
-configs, or start runtimes.
+By default, `model-router install` is plan-only in the public preview. It detects
+package/install method, Python, command availability, optional proxy/runtime
+dependencies, config files, ports, and local runtime signals, then prints the
+next explicit commands. It does not mutate by default: it does not install
+dependencies, download models, write configs, install services, enable hosted
+providers, change routing, or start runtimes. Passing `--yes` records
+confirmation intent in the plan; it does not turn this command into execution.
+Guided mode reuses the same plan and asks before running selected safe follow-up
+commands such as first-run config creation or doctor checks.
 
 Create first-run configs:
 
@@ -273,8 +280,10 @@ model-router setup install-prereqs --preset mlx-lm --execute --yes
 ```
 
 Use `--preset proxy`, `--preset mlx-lm`, `--preset llamacpp`, or `--preset all`.
-The command runs pip through the current Python executable, so inside the repo
-venv it installs into `.venv` rather than Homebrew's externally managed Python.
+The prerequisite plan uses `python -m pip` when available, falls back to
+`uv pip install --python <python>` when pip is missing but uv is available, and
+uses `pipx inject` guidance when ModelRouter appears to be installed through
+pipx.
 
 The router core is intentionally a decision router only. It does not execute
 prompts, browse the web, run shell commands, send messages, delete files,
@@ -355,6 +364,8 @@ boundaries and confirmation gates.
 
 Requires Python 3.11 or newer.
 
+For normal setup, use the short [Install ModelRouter](INSTALL.md) guide.
+
 ```bash
 git clone https://github.com/doncazper/model-router.git
 cd model-router
@@ -364,7 +375,7 @@ python -m pip install -e ".[dev]"
 For normal use from PyPI:
 
 ```bash
-pip install "hermes-router[proxy]"
+python -m pip install "hermes-router[proxy]"
 ```
 
 ModelRouter began as Hermes Router and was renamed after evolving into a
@@ -1348,11 +1359,13 @@ For normal onboarding, start with the deterministic installer plan:
 model-router install --quick
 model-router install --auto --json
 model-router install --local-only --mlx-lm
+model-router install --guided
 ```
 
-Use the generated next commands for prerequisites, `init`, `doctor`, settings,
-proxy startup, download planning, and telemetry. Config writes and downloads
-remain explicit follow-up commands.
+Without `--guided`, `model-router install` only prints an installer plan. Use
+its generated next commands for prerequisites, `init`, `doctor`, settings, proxy
+startup, download planning, and telemetry. Config writes, dependency installs,
+runtime starts, and downloads remain explicit follow-up commands.
 
 Scan your machine:
 
@@ -1683,7 +1696,8 @@ integration point.
 
 ### v0.5: Usable Local Proxy Beta
 
-- Keep the proxy-first install path polished: `pip install "hermes-router[proxy]"`.
+- Keep the proxy-first install path polished:
+  `python -m pip install "hermes-router[proxy]"`.
 - Keep `model-router init`, `validate-proxy-config`, `doctor`, `/health`, log
   rotation, and provider presets reliable.
 - Publish releases with a changelog, GitHub release notes, and benchmark output.

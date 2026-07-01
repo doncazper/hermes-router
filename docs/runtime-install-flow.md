@@ -4,14 +4,17 @@ This document defines installer-assisted runtime setup for ModelRouter. It is
 both the product boundary for future runtime setup and the guardrail for the
 current preview-first MVP. The current CLI supports runtime status/doctor and
 safe connect previews for LM Studio, Ollama, and llama.cpp; broader install
-execution remains future work. The installer is plan-first, and runtime setup
+execution remains future work. The current `model-router install` command is
+plan-only and prints next commands without mutating by default. Runtime setup
 should preserve that shape.
 
 ModelRouter may help operators connect or install proven runtimes, but it must
 not silently install packages, pull models, write config, start services, or
-change routing. Runtime install/connect flows are operator maintenance surfaces
-only. They must never run from `route_fast(...)`, `route(...)`, proxy forwarding,
-or default request handling.
+change routing. Passing `--yes` to a planning command may record confirmation
+intent, but it must not turn plan output into silent execution. Runtime
+install/connect flows are operator maintenance surfaces only. They must never
+run from `route_fast(...)`, `route(...)`, proxy forwarding, or default request
+handling.
 
 ## Goals
 
@@ -623,7 +626,9 @@ model-router runtimes refresh-registry --backend fast
 ```
 
 The existing `model-router install` command can also include runtime-specific
-next actions, but it should remain plan-first by default.
+next actions, but it should remain plan-only by default. Any future execution
+path should be a separate explicit follow-up command or a clearly confirmed
+action.
 
 ## UI Shape
 

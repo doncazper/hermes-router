@@ -8,11 +8,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
+def _run_cli(*args: str, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "-m", "hermes.plugins.model_router.cli", *args],
         cwd=ROOT,
         text=True,
+        input=input_text,
         capture_output=True,
         check=False,
     )
@@ -230,6 +231,44 @@ def test_runtime_cli_help_exposes_lifecycle_commands():
     assert "status" in result.stdout
     assert "models" in result.stdout
     assert "unload" in result.stdout
+
+
+def test_install_cli_help_exposes_plan_only_contract():
+    result = _run_cli("install", "--help")
+
+    assert result.returncode == 0
+    help_text = " ".join(result.stdout.split())
+    assert "By default this command is plan-only" in help_text
+    assert "does not install packages, download models, write configs" in help_text
+    assert "asks before running selected safe follow-up commands" in help_text
+    assert "does not execute follow-up commands" in help_text
+    assert "--guided" in result.stdout
+
+
+def test_install_cli_readable_output_is_plan_only(tmp_path):
+    config_dir = tmp_path / "config"
+
+    result = _run_cli(
+        "install",
+        "--quick",
+        "--config-dir",
+        str(config_dir),
+    )
+
+    assert result.returncode == 0
+    assert not config_dir.exists()
+    assert "ModelRouter installer plan" in result.stdout
+    assert "Plan-only: true" in result.stdout
+    assert "this command did not change files" in result.stdout
+    assert "Next commands:" in result.stdout
+    assert "[mutates, requires confirmation]" in result.stdout
+
+
+def test_setup_install_prereqs_outputs_shell_safe_commands():
+    result = _run_cli("setup", "install-prereqs", "--preset", "proxy")
+
+    assert result.returncode == 0
+    assert "'fastapi>=0.115,<1'" in result.stdout
 
 
 def test_runtime_cli_status_json_uses_proxy_config(tmp_path):
@@ -536,6 +575,128 @@ def test_install_cli_json_is_parseable_plan_only(tmp_path):
     assert "doctor" in command_ids
     assert "settings" in command_ids
     assert "proxy" in command_ids
+
+
+def test_install_guided_creates_config_after_confirmation(tmp_path):
+    config_dir = tmp_path / "guided-install"
+    result = _run_cli(
+        "install",
+        "--guided",
+        "--config-dir",
+        str(config_dir),
+        "--lmstudio",
+        input_text="y\nn\n",
+    )
+
+    assert result.returncode == 0
+    assert (config_dir / "routing_proxy.yaml").is_file()
+    assert (config_dir / "model_router.yaml").is_file()
+    assert "Guided install" in result.stdout
+    assert "Run Create initial config?" in result.stdout
+    assert "Create initial config exited with status 0." in result.stdout
+    assert "Run Check config after init?" in result.stdout
+    assert "Skipped Check config after init." in result.stdout
+    assert "model-router-proxy --config" in result.stdout
+
+
+def test_install_guided_existing_config_recommends_without_init(tmp_path):
+    init = _run_cli(
+        "init",
+        "--preset",
+        "lmstudio",
+        "--yes",
+        "--config-dir",
+        str(tmp_path),
+        "--json",
+    )
+    assert init.returncode == 0
+
+    result = _run_cli(
+        "install",
+        "--guided",
+        "--config-dir",
+        str(tmp_path),
+        "--lmstudio",
+        input_text="n\n",
+    )
+
+    assert result.returncode == 0
+    assert "Existing config detected; no overwrite is planned." in result.stdout
+    assert "Run Check existing config?" in result.stdout
+    assert "Skipped Check existing config." in result.stdout
+    assert "Create initial config" not in result.stdout
+    assert "model-router settings --config-dir" in result.stdout
+    assert "model-router-proxy --config" in result.stdout
+
+
+def test_install_guided_declined_confirmation_does_not_create_config(tmp_path):
+    config_dir = tmp_path / "declined-guided-install"
+    result = _run_cli(
+        "install",
+        "--guided",
+        "--config-dir",
+        str(config_dir),
+        "--lmstudio",
+        input_text="n\n",
+    )
+
+    assert result.returncode == 0
+    assert not config_dir.exists()
+    assert "Skipped Create initial config." in result.stdout
+    assert "Skipped config creation; no doctor command was run." in result.stdout
+    assert "No guided commands were executed." in result.stdout
+
+
+def test_install_guided_returns_nonzero_when_confirmed_init_fails(tmp_path):
+    config_dir = tmp_path / "not-a-directory"
+    config_dir.write_text("occupied", encoding="utf-8")
+
+    result = _run_cli(
+        "install",
+        "--guided",
+        "--config-dir",
+        str(config_dir),
+        "--lmstudio",
+        input_text="y\n",
+    )
+
+    assert result.returncode == 1
+    assert "Create initial config exited with status" in result.stdout
+    assert "Config creation failed; no doctor command was run." in result.stdout
+
+
+def test_init_bad_config_dir_reports_clean_error(tmp_path):
+    config_dir = tmp_path / "not-a-directory"
+    config_dir.write_text("occupied", encoding="utf-8")
+
+    result = _run_cli(
+        "init",
+        "--preset",
+        "lmstudio",
+        "--config-dir",
+        str(config_dir),
+        "--yes",
+    )
+
+    assert result.returncode == 1
+    assert "Init failed:" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_install_guided_rejects_conflicting_preset_flags(tmp_path):
+    result = _run_cli(
+        "install",
+        "--guided",
+        "--config-dir",
+        str(tmp_path),
+        "--lmstudio",
+        "--ollama",
+        input_text="y\n",
+    )
+
+    assert result.returncode == 1
+    assert "Install planning failed: choose only one preset flag" in result.stderr
+    assert not (tmp_path / "routing_proxy.yaml").exists()
 
 
 def test_telemetry_summary_cli_groups_mismatches_without_prompt_text(tmp_path):

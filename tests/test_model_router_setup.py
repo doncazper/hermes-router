@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 from hermes.plugins.model_router import setup_assistant as setup_assistant_module
@@ -29,9 +30,10 @@ from hermes.plugins.model_router.setup_assistant import (
     DownloadSuggestion,
     default_model_dirs,
     execute_prereq_install_plan,
-    plan_prereq_installs,
     execute_download_plan,
+    plan_hf_cli_install,
     plan_model_downloads,
+    plan_prereq_installs,
     recommend_setup,
     scan_local_environment,
     write_recommended_config,
@@ -661,13 +663,114 @@ def test_execute_download_plan_uses_hf_next_to_current_python(tmp_path, monkeypa
     assert "download" in marker.read_text(encoding="utf-8")
 
 
-def test_prereq_install_plan_uses_current_python_for_mlx_lm():
-    plan = plan_prereq_installs(preset="mlx-lm")
+def test_prereq_install_plan_uses_current_python_when_pip_is_available():
+    plan = plan_prereq_installs(
+        preset="mlx-lm",
+        python_executable=sys.executable,
+        pip_available=True,
+        install_method="pip",
+    )
 
     commands = [step.command for step in plan.steps]
     assert all(command[0] == sys.executable for command in commands)
+    assert all(command[1:5] == ("-m", "pip", "install", "--upgrade") for command in commands)
     assert any(command[-1] == "mlx-lm" for command in commands)
     assert any(command[-1] == "huggingface_hub[cli]" for command in commands)
+    assert any("python -m pip" in note for note in plan.notes)
+
+
+def test_prereq_install_plan_uses_uv_when_pip_is_missing():
+    plan = plan_prereq_installs(
+        preset="proxy",
+        python_executable="/tmp/model-router-python",
+        pip_available=False,
+        uv_executable="/usr/local/bin/uv",
+        install_method="pip",
+    )
+
+    commands = [step.command for step in plan.steps]
+    assert all(command[:5] == (
+        "/usr/local/bin/uv",
+        "pip",
+        "install",
+        "--python",
+        "/tmp/model-router-python",
+    ) for command in commands)
+    assert all(command[-2] == "--upgrade" for command in commands)
+    assert any("uv pip install --python" in note for note in plan.notes)
+    assert any("Uses uv because pip is unavailable" in step.reason for step in plan.steps)
+
+
+def test_prereq_install_plan_uses_pipx_guidance_for_pipx_installs():
+    plan = plan_prereq_installs(
+        preset="proxy",
+        python_executable="/tmp/pipx/venvs/hermes-router/bin/python",
+        pip_available=True,
+        install_method="pipx",
+        pipx_executable="/opt/bin/pipx",
+    )
+
+    commands = [step.command for step in plan.steps]
+    assert all(command[:4] == (
+        "/opt/bin/pipx",
+        "inject",
+        "--include-apps",
+        "hermes-router",
+    ) for command in commands)
+    assert all("/tmp/pipx/venvs/hermes-router/bin/python" not in command for command in commands)
+    assert any("pipx inject" in note for note in plan.notes)
+    assert any("reinstalling with `pipx install" in note for note in plan.notes)
+    assert any("Uses pipx inject" in step.reason for step in plan.steps)
+
+
+def test_prereq_install_plan_blocks_when_pip_and_uv_are_missing(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(setup_assistant_module.shutil, "which", lambda _name: None)
+    plan = plan_prereq_installs(
+        preset="proxy",
+        python_executable="/tmp/model-router-python",
+        pip_available=False,
+        uv_executable=None,
+        install_method="pip",
+    )
+
+    assert all(step.executable is False for step in plan.steps)
+    assert any("install pip or uv" in note for note in plan.notes)
+
+    def fail_runner(_command):
+        raise AssertionError("blocked prereq command should not run")
+
+    result = execute_prereq_install_plan(
+        plan,
+        execute=True,
+        confirmed=True,
+        runner=fail_runner,
+    )
+
+    assert result.executed is False
+    assert result.ok is False
+    assert {status.status for status in result.statuses} == {"blocked"}
+
+
+def test_hf_cli_prereq_plan_uses_uv_when_pip_is_missing():
+    plan = plan_hf_cli_install(
+        python_executable="/tmp/model-router-python",
+        pip_available=False,
+        uv_executable="/usr/local/bin/uv",
+        install_method="pip",
+    )
+
+    assert len(plan.steps) == 1
+    assert plan.steps[0].command == (
+        "/usr/local/bin/uv",
+        "pip",
+        "install",
+        "--python",
+        "/tmp/model-router-python",
+        "--upgrade",
+        "huggingface_hub[cli]",
+    )
 
 
 def test_execute_prereq_install_plan_runs_confirmed_commands():

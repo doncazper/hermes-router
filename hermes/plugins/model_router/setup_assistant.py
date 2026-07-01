@@ -42,6 +42,7 @@ DEFAULT_ENV_VARS = (
     "ANTHROPIC_API_KEY",
     "HF_TOKEN",
 )
+PIP_CHECK_TIMEOUT_SECONDS = 3.0
 
 MODEL_SCAN_MAX_DEPTH = 4
 SKIP_MODEL_DIR_NAMES = {
@@ -231,12 +232,14 @@ class PrereqInstallStep:
     name: str
     command: tuple[str, ...]
     reason: str
+    executable: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "command": list(self.command),
             "reason": self.reason,
+            "executable": self.executable,
         }
 
 
@@ -668,7 +671,15 @@ def mlx_lm_download_suggestions(
     return tuple(_with_local_root(suggestion, local_root) for suggestion in suggestions)
 
 
-def plan_prereq_installs(*, preset: str = "proxy") -> PrereqInstallPlan:
+def plan_prereq_installs(
+    *,
+    preset: str = "proxy",
+    install_method: str | None = None,
+    python_executable: str | None = None,
+    pip_available: bool | None = None,
+    uv_executable: str | None = None,
+    pipx_executable: str | None = None,
+) -> PrereqInstallPlan:
     packages = [
         (
             "FastAPI",
@@ -705,15 +716,196 @@ def plan_prereq_installs(*, preset: str = "proxy") -> PrereqInstallPlan:
             "llama-server is a system executable; install llama.cpp separately "
             "so `llama-server` is on PATH. On macOS, try `brew install llama.cpp`."
         )
+    return _plan_prereq_package_installs(
+        packages=packages,
+        notes=notes,
+        install_method=install_method,
+        python_executable=python_executable,
+        pip_available=pip_available,
+        uv_executable=uv_executable,
+        pipx_executable=pipx_executable,
+    )
+
+
+def plan_hf_cli_install(
+    *,
+    install_method: str | None = None,
+    python_executable: str | None = None,
+    pip_available: bool | None = None,
+    uv_executable: str | None = None,
+    pipx_executable: str | None = None,
+) -> PrereqInstallPlan:
+    return _plan_prereq_package_installs(
+        packages=[
+            (
+                "Hugging Face CLI",
+                "huggingface_hub[cli]",
+                "Required for recommended Hugging Face model downloads.",
+            )
+        ],
+        notes=[],
+        install_method=install_method,
+        python_executable=python_executable,
+        pip_available=pip_available,
+        uv_executable=uv_executable,
+        pipx_executable=pipx_executable,
+    )
+
+
+def _plan_prereq_package_installs(
+    *,
+    packages: Sequence[tuple[str, str, str]],
+    notes: list[str],
+    install_method: str | None,
+    python_executable: str | None,
+    pip_available: bool | None,
+    uv_executable: str | None,
+    pipx_executable: str | None,
+) -> PrereqInstallPlan:
+    python_executable = python_executable or sys.executable
+    strategy, strategy_notes = _prereq_install_strategy(
+        install_method=install_method,
+        python_executable=python_executable,
+        pip_available=pip_available,
+        uv_executable=uv_executable,
+    )
+    notes.extend(strategy_notes)
     steps = tuple(
         PrereqInstallStep(
             name=name,
-            command=(sys.executable, "-m", "pip", "install", "--upgrade", package),
-            reason=reason,
+            command=_prereq_install_command(
+                package,
+                strategy=strategy,
+                python_executable=python_executable,
+                uv_executable=uv_executable,
+                pipx_executable=pipx_executable,
+            ),
+            reason=_prereq_install_reason(reason, strategy=strategy),
+            executable=strategy != "pip_missing",
         )
         for name, package, reason in packages
     )
     return PrereqInstallPlan(steps=steps, notes=tuple(notes))
+
+
+def _prereq_install_strategy(
+    *,
+    install_method: str | None,
+    python_executable: str,
+    pip_available: bool | None,
+    uv_executable: str | None,
+) -> tuple[str, tuple[str, ...]]:
+    normalized_method = (install_method or _detected_python_install_method()).lower()
+    if normalized_method == "pipx":
+        return (
+            "pipx",
+            (
+                "Install method appears to be pipx; prerequisite commands use "
+                "`pipx inject --include-apps hermes-router <package>` instead "
+                "of mutating the app interpreter directly.",
+                (
+                    "For proxy-only installs, reinstalling with "
+                    "`pipx install 'hermes-router[proxy]' --force` is also a "
+                    "safe option."
+                ),
+            ),
+        )
+
+    has_pip = (
+        _python_pip_available(python_executable)
+        if pip_available is None
+        else pip_available
+    )
+    if has_pip:
+        return (
+            "pip",
+            (
+                "Prerequisite commands use `python -m pip` for the active "
+                "interpreter.",
+            ),
+        )
+
+    resolved_uv = uv_executable or shutil.which("uv")
+    if resolved_uv:
+        return (
+            "uv",
+            (
+                "`python -m pip` is not available for the active interpreter; "
+                "prerequisite commands use `uv pip install --python <python>`.",
+            ),
+        )
+
+    return (
+        "pip_missing",
+        (
+            "`python -m pip` is not available for the active interpreter and "
+            "`uv` was not found on PATH; install pip or uv before executing "
+            "the prerequisite plan.",
+        ),
+    )
+
+
+def _prereq_install_command(
+    package: str,
+    *,
+    strategy: str,
+    python_executable: str,
+    uv_executable: str | None,
+    pipx_executable: str | None,
+) -> tuple[str, ...]:
+    if strategy == "uv":
+        uv = uv_executable or shutil.which("uv") or "uv"
+        return (
+            uv,
+            "pip",
+            "install",
+            "--python",
+            python_executable,
+            "--upgrade",
+            package,
+        )
+    if strategy == "pipx":
+        pipx = pipx_executable or shutil.which("pipx") or "pipx"
+        return (
+            pipx,
+            "inject",
+            "--include-apps",
+            "hermes-router",
+            package,
+        )
+    return (python_executable, "-m", "pip", "install", "--upgrade", package)
+
+
+def _prereq_install_reason(reason: str, *, strategy: str) -> str:
+    if strategy == "uv":
+        return f"{reason} Uses uv because pip is unavailable in this interpreter."
+    if strategy == "pipx":
+        return f"{reason} Uses pipx inject for the hermes-router app environment."
+    if strategy == "pip_missing":
+        return f"{reason} Requires pip or uv before this command can execute."
+    return reason
+
+
+def _detected_python_install_method() -> str:
+    executable = sys.executable.lower()
+    prefix = sys.prefix.lower()
+    if "pipx" in executable or "pipx" in prefix:
+        return "pipx"
+    return "unknown"
+
+
+def _python_pip_available(python_executable: str) -> bool:
+    try:
+        result = subprocess.run(
+            [python_executable, "-m", "pip", "--version"],
+            text=True,
+            capture_output=True,
+            timeout=PIP_CHECK_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
 
 
 def execute_prereq_install_plan(
@@ -755,7 +947,19 @@ def execute_prereq_install_plan(
         )
     runner = runner or _run_prereq_command
     statuses: list[DownloadResult] = []
+    ran_command = False
     for step in plan.steps:
+        if _prereq_step_blocked(step):
+            statuses.append(
+                DownloadResult(
+                    route=step.name,
+                    repo_id=step.command[-1],
+                    command=step.command,
+                    status="blocked",
+                )
+            )
+            continue
+        ran_command = True
         try:
             returncode = runner(step.command)
         except FileNotFoundError:
@@ -779,11 +983,15 @@ def execute_prereq_install_plan(
             )
         )
     return PrereqInstallResult(
-        executed=True,
+        executed=ran_command,
         steps=plan.steps,
         statuses=tuple(statuses),
         notes=plan.notes,
     )
+
+
+def _prereq_step_blocked(step: PrereqInstallStep) -> bool:
+    return not step.executable
 
 
 def _custom_download_route(routes: Sequence[str] | None) -> str:

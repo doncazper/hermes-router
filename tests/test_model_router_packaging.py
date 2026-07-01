@@ -9,6 +9,8 @@ import zipfile
 
 import tomllib
 
+import pytest
+
 import model_router
 from hermes.plugins.model_router.config import default_config_source, load_router_config
 from hermes.plugins.model_router.product import preset_template_names
@@ -150,6 +152,15 @@ def test_packaged_default_config_matches_repo_default_config():
 
 
 def test_wheel_contains_console_scripts_generic_package_and_packaged_config(tmp_path):
+    pip_check = subprocess.run(
+        [sys.executable, "-m", "pip", "--version"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if pip_check.returncode != 0:
+        pytest.skip("pip is not available in the active Python environment")
+
     try:
         result = subprocess.run(
             [

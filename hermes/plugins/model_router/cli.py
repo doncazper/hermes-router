@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 from typing import Any
@@ -84,6 +85,7 @@ from hermes.plugins.model_router.setup_assistant import (
     engine_override_for_local_model,
     execute_download_plan,
     execute_prereq_install_plan,
+    plan_hf_cli_install,
     plan_model_downloads,
     plan_prereq_installs,
     recommend_setup,
@@ -122,16 +124,6 @@ ROUTE_LOCAL_ENGINES = {
     "vision": "multimodal_vision",
     "image_generation": "image_generation",
 }
-
-HF_CLI_INSTALL_COMMAND = (
-    sys.executable,
-    "-m",
-    "pip",
-    "install",
-    "--upgrade",
-    "huggingface_hub[cli]",
-)
-
 
 @dataclass(frozen=True)
 class WizardChoice:
@@ -220,7 +212,14 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
 
     install = subparsers.add_parser(
         "install",
-        help="Plan deterministic first-run onboarding",
+        help="Print a plan-only first-run installer plan",
+        description=(
+            "Print a deterministic onboarding report. By default this command "
+            "is plan-only: it does not install packages, download models, "
+            "write configs, start services, or change routing; it only prints "
+            "explicit next commands. With --guided, it asks before running "
+            "selected safe follow-up commands."
+        ),
     )
     install.add_argument(
         "--config-dir",
@@ -231,7 +230,7 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
     install.add_argument(
         "--quick",
         action="store_true",
-        help="Prefer the shortest safe onboarding path",
+        help="Prefer the shortest safe plan-only onboarding path",
     )
     install.add_argument(
         "--auto",
@@ -254,9 +253,20 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
     )
     install.add_argument("--json", action="store_true", help="Emit JSON output")
     install.add_argument(
+        "--guided",
+        action="store_true",
+        help=(
+            "Interactively offer safe follow-up commands; still requires "
+            "confirmation before running anything"
+        ),
+    )
+    install.add_argument(
         "--yes",
         action="store_true",
-        help="Record confirmation intent; M2 still prints a plan only",
+        help=(
+            "Record confirmation intent in the plan; this command still does "
+            "not execute follow-up commands"
+        ),
     )
     install.set_defaults(func=_cmd_install)
 
@@ -1113,7 +1123,7 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
 
     prereqs = setup_subparsers.add_parser(
         "install-prereqs",
-        help="Plan or install Python prerequisites into the active environment",
+        help="Plan or execute confirmed Python prerequisite commands",
     )
     prereqs.add_argument(
         "--preset",
@@ -1124,7 +1134,7 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
     prereqs.add_argument(
         "--execute",
         action="store_true",
-        help="Run the planned pip install commands",
+        help="Run the planned prerequisite commands",
     )
     prereqs.add_argument(
         "--yes",
@@ -1327,6 +1337,13 @@ def _cmd_init(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"Init failed: {exc}", file=sys.stderr)
         return 1
+    except OSError as exc:
+        message = f"Init failed: {exc}"
+        if args.json:
+            print(json.dumps({"ok": False, "error": message}, indent=2, sort_keys=True))
+        else:
+            print(message, file=sys.stderr)
+        return 1
     if args.json:
         print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
     else:
@@ -1349,6 +1366,11 @@ def _cmd_install(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"Install planning failed: {exc}", file=sys.stderr)
         return 1
+    if args.guided:
+        if args.json:
+            print("Guided install is interactive; omit --json.", file=sys.stderr)
+            return 1
+        return _run_guided_install(plan.to_dict())
     if args.json:
         print(json.dumps(plan.to_dict(), indent=2, sort_keys=True))
     else:
@@ -2181,7 +2203,7 @@ def _cmd_setup_install_prereqs(args: argparse.Namespace) -> int:
     confirmed = args.yes
     if args.execute and not confirmed and not args.json:
         _print_prereq_plan(plan)
-        answer = input("Run these pip install commands? [y/N] ").strip().lower()
+        answer = input("Run these prerequisite commands? [y/N] ").strip().lower()
         confirmed = answer in {"y", "yes"}
 
     result = execute_prereq_install_plan(
@@ -2306,6 +2328,8 @@ def _maybe_install_hf_cli_for_wizard(
 
     print("Hugging Face `hf` CLI is missing.")
     print("Recommended model downloads use `hf download`.")
+    plan = plan_hf_cli_install()
+    _print_prereq_plan(plan)
     answer = input("Install it into this Python environment now? [y/N] ").strip().lower()
     if answer not in {"y", "yes"}:
         print("Skipping hf CLI install for now.")
@@ -2313,9 +2337,10 @@ def _maybe_install_hf_cli_for_wizard(
         return discovery, recommendation
 
     print("Installing Hugging Face `hf` CLI...")
-    returncode = _run_hf_cli_install()
-    if returncode != 0:
-        print(f"hf CLI install failed with return code {returncode}.")
+    result = execute_prereq_install_plan(plan, execute=True, confirmed=True)
+    _print_prereq_result(result)
+    if not result.ok:
+        print("hf CLI install did not complete.")
         print("Continuing without hf; downloads can be run after installing it.")
         print("")
         return discovery, recommendation
@@ -2325,11 +2350,6 @@ def _maybe_install_hf_cli_for_wizard(
     refreshed_recommendation = recommend_setup(refreshed, profile=profile)
     print("")
     return refreshed, refreshed_recommendation
-
-
-def _run_hf_cli_install() -> int:
-    completed = subprocess.run(HF_CLI_INSTALL_COMMAND, check=False)
-    return int(completed.returncode)
 
 
 def _add_setup_scan_args(parser: argparse.ArgumentParser) -> None:
@@ -3461,7 +3481,7 @@ def _print_download_result(result) -> None:
     for item in result.results:
         print(f"- {item.route}: {item.status}")
         print(f"  repo: {item.repo_id}")
-        print(f"  command: {' '.join(item.command)}")
+        print(f"  command: {_format_command(item.command)}")
         if item.returncode is not None:
             print(f"  returncode: {item.returncode}")
     print("Notes:")
@@ -3476,7 +3496,8 @@ def _print_prereq_plan(plan) -> None:
     if not plan.steps:
         print("- none")
     for step in plan.steps:
-        print(f"- {step.name}: {' '.join(step.command)}")
+        status = "" if getattr(step, "executable", True) else " (blocked)"
+        print(f"- {step.name}{status}: {_format_command(step.command)}")
         print(f"  reason: {step.reason}")
     print("Notes:")
     if not plan.notes:
@@ -3494,7 +3515,7 @@ def _print_prereq_result(result) -> None:
     for item in result.statuses:
         print(f"- {item.route}: {item.status}")
         print(f"  package: {item.repo_id}")
-        print(f"  command: {' '.join(item.command)}")
+        print(f"  command: {_format_command(item.command)}")
         if item.returncode is not None:
             print(f"  returncode: {item.returncode}")
     print("Notes:")
@@ -3504,9 +3525,143 @@ def _print_prereq_result(result) -> None:
         print(f"- {note}")
 
 
-def _print_install_plan(plan: dict[str, Any]) -> None:
+GUIDED_INSTALL_RUNNABLE_COMMAND_IDS = {"init", "doctor"}
+
+
+def _run_guided_install(plan: dict[str, Any]) -> int:
+    _print_install_plan(plan, guided=True)
+    print("")
+    print("Guided install")
+    print(
+        "Guided mode only offers existing safe follow-up commands and asks "
+        "before running each one."
+    )
+    print(
+        "It will not install runtimes, pull models, overwrite existing config, "
+        "start services, enable hosted providers, or change routing."
+    )
+
+    executed = False
+    failed = False
+    if plan.get("existing_config"):
+        doctor = _install_command_by_id(plan, "doctor")
+        if doctor is not None:
+            doctor_returncode = _maybe_run_guided_command(doctor)
+            if doctor_returncode is not None:
+                executed = True
+                failed = doctor_returncode != 0
+    else:
+        init = _install_command_by_id(plan, "init")
+        if init is not None:
+            init_returncode = _maybe_run_guided_command(init)
+            if init_returncode is not None:
+                executed = True
+                failed = init_returncode != 0
+            if init_returncode == 0:
+                doctor = _install_command_by_id(plan, "doctor")
+                if doctor is not None:
+                    doctor_returncode = _maybe_run_guided_command(doctor)
+                    if doctor_returncode is not None:
+                        executed = True
+                        failed = doctor_returncode != 0 or failed
+            elif init_returncode is None:
+                print("Skipped config creation; no doctor command was run.")
+            else:
+                print("Config creation failed; no doctor command was run.")
+
+    print("")
+    if not executed:
+        print("No guided commands were executed.")
+    print("Recommended next commands remain:")
+    _print_guided_recommendations(plan)
+    return 1 if failed else 0
+
+
+def _install_command_by_id(
+    plan: Mapping[str, Any],
+    command_id: str,
+) -> dict[str, Any] | None:
+    commands = plan.get("next_commands")
+    if not isinstance(commands, list):
+        return None
+    for command in commands:
+        if isinstance(command, dict) and command.get("id") == command_id:
+            return command
+    return None
+
+
+def _maybe_run_guided_command(command: Mapping[str, Any]) -> int | None:
+    command_id = str(command.get("id") or "")
+    label = str(command.get("label") or command_id or "command")
+    command_parts = tuple(str(part) for part in command.get("command", ()))
+    if command_id not in GUIDED_INSTALL_RUNNABLE_COMMAND_IDS:
+        print(f"Skipping {label}: guided mode does not run this command.")
+        return None
+    if not command_parts:
+        print(f"Skipping {label}: no command was planned.")
+        return None
+    if not _confirm(f"Run {label}? [y/N] "):
+        print(f"Skipped {label}.")
+        return None
+    returncode = _run_guided_existing_command(command_parts)
+    print(f"{label} exited with status {returncode}.")
+    return returncode
+
+
+def _run_guided_existing_command(command: tuple[str, ...]) -> int:
+    if command and command[0] == "model-router":
+        command = (
+            sys.executable,
+            "-m",
+            "hermes.plugins.model_router.cli",
+            *command[1:],
+        )
+    try:
+        result = subprocess.run(command, text=True, check=False)
+    except FileNotFoundError:
+        print(f"Command not found: {command[0]}", file=sys.stderr)
+        return 127
+    return result.returncode
+
+
+def _print_guided_recommendations(plan: Mapping[str, Any]) -> None:
+    commands = plan.get("next_commands")
+    if not isinstance(commands, list) or not commands:
+        print("- none")
+        return
+    for command in commands:
+        if not isinstance(command, dict):
+            continue
+        label = command.get("label") or command.get("id") or "command"
+        command_text = _format_command(command.get("command", []))
+        print(f"- {label}: {command_text}")
+
+
+def _confirm(prompt: str) -> bool:
+    try:
+        answer = input(prompt)
+    except EOFError:
+        return False
+    return answer.strip().lower() in {"y", "yes"}
+
+
+def _format_command(command: Sequence[Any]) -> str:
+    return shlex.join(str(part) for part in command)
+
+
+def _print_install_plan(plan: dict[str, Any], *, guided: bool = False) -> None:
     installer = plan.get("installer") if isinstance(plan.get("installer"), dict) else {}
     print("ModelRouter installer plan")
+    if guided:
+        print(
+            "Planning phase: no files, packages, models, services, or routing "
+            "were changed before confirmation prompts."
+        )
+    else:
+        print(
+            "Plan-only: true (this command did not change files, install packages, "
+            "download models, start services, or change routing)"
+        )
     print(f"Config dir: {plan.get('config_dir')}")
     print(f"Selected preset: {plan.get('selected_preset')} ({plan.get('preset_reason')})")
     print(f"Package version: {installer.get('package_version') or 'unknown'}")
@@ -3525,6 +3680,8 @@ def _print_install_plan(plan: dict[str, Any]) -> None:
         print("Existing config detected; no overwrite is planned.")
     else:
         print("No routing_proxy.yaml detected; init is planned as an explicit command.")
+    if plan.get("partial_config"):
+        print("Partial config detected; first-run init is not planned by default.")
     warnings = plan.get("warnings") if isinstance(plan.get("warnings"), list) else []
     if warnings:
         print("")
@@ -3537,8 +3694,14 @@ def _print_install_plan(plan: dict[str, Any]) -> None:
         if not isinstance(command, dict):
             continue
         status = "" if command.get("available", True) else " (not available)"
-        command_text = " ".join(str(part) for part in command.get("command", []))
-        print(f"- {command.get('label')}{status}: {command_text}")
+        flags = []
+        if command.get("mutates"):
+            flags.append("mutates")
+        if command.get("requires_confirmation"):
+            flags.append("requires confirmation")
+        flag_text = f" [{', '.join(flags)}]" if flags else ""
+        command_text = _format_command(command.get("command", []))
+        print(f"- {command.get('label')}{status}{flag_text}: {command_text}")
         if command.get("reason"):
             print(f"  {command['reason']}")
     notes = plan.get("notes") if isinstance(plan.get("notes"), list) else []

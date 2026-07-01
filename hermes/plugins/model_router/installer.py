@@ -34,6 +34,7 @@ INSTALLABLE_PRESETS = ("lmstudio", "ollama", "mlx-lm", "llamacpp")
 OPTIONAL_MODULES = {
     "fastapi": "fastapi",
     "httpx": "httpx",
+    "textual": "textual",
     "uvicorn": "uvicorn",
     "huggingface_hub": "huggingface_hub",
     "mlx_lm": "mlx_lm",
@@ -103,6 +104,7 @@ class InstallPlan:
     preset_reason: str
     config_dir: str
     existing_config: bool
+    partial_config: bool
     installer: dict[str, Any]
     admin: dict[str, Any]
     scan: dict[str, Any]
@@ -120,6 +122,7 @@ class InstallPlan:
             "preset_reason": self.preset_reason,
             "config_dir": self.config_dir,
             "existing_config": self.existing_config,
+            "partial_config": self.partial_config,
             "installer": self.installer,
             "admin": self.admin,
             "scan": self.scan,
@@ -216,22 +219,41 @@ def build_install_plan(
         settings_port=options.settings_port,
     )
     selected_preset, preset_reason = _selected_preset(options, signals)
-    existing_config = bool(installer["config_files"]["routing_proxy_config"])
+    config_files = installer["config_files"]
+    model_config_exists = bool(config_files["model_router_config"])
+    proxy_config_exists = bool(config_files["routing_proxy_config"])
+    existing_config = model_config_exists or proxy_config_exists
+    partial_config = model_config_exists != proxy_config_exists
     prereq_preset = _prereq_preset(selected_preset, developer=options.developer)
-    prereq_plan = plan_prereq_installs(preset=prereq_preset).to_dict()
+    prereq_plan_object = plan_prereq_installs(
+        preset=prereq_preset,
+        install_method=str(installer.get("install_method") or "unknown"),
+    )
+    prereq_plan = prereq_plan_object.to_dict()
+    prereqs_needed = _prereq_plan_needs_followup(prereq_plan_object, installer)
     warnings = list(installer["warnings"])
+    prereq_notes = prereq_plan_object.notes
+    if prereqs_needed:
+        warnings.extend(f"Prerequisite plan: {note}" for note in prereq_notes)
     if options.local_only:
         warnings.append("Local-only requested; hosted providers will not be enabled.")
+    if partial_config:
+        warnings.append(
+            "Partial config detected; no first-run init command is planned by default."
+        )
     if options.yes:
         warnings.append(
-            "--yes records confirmation intent, but M2 install is still plan-only."
+            "--yes records confirmation intent for the installer plan, but "
+            "`model-router install` still does not execute follow-up commands."
         )
     commands = _next_commands(
         options=options,
         paths=paths,
         selected_preset=selected_preset,
         existing_config=existing_config,
+        config_files=config_files,
         prereq_preset=prereq_preset,
+        prereqs_needed=prereqs_needed,
         installer=installer,
     )
     return InstallPlan(
@@ -242,12 +264,21 @@ def build_install_plan(
         preset_reason=preset_reason,
         config_dir=str(Path(options.config_dir).expanduser()),
         existing_config=existing_config,
+        partial_config=partial_config,
         installer=installer,
         admin=_admin_summary(admin_state),
         scan=_scan_summary(scan_result),
         prereq_plan=prereq_plan,
         next_commands=tuple(commands),
-        notes=tuple(_install_notes(options, selected_preset, existing_config)),
+        notes=tuple(
+            _install_notes(
+                options,
+                selected_preset,
+                existing_config,
+                partial_config=partial_config,
+                prereq_notes=prereq_notes if prereqs_needed else (),
+            )
+        ),
         warnings=tuple(dict.fromkeys(warnings)),
     )
 
@@ -401,13 +432,24 @@ def _next_commands(
     paths: Mapping[str, Path],
     selected_preset: str | None,
     existing_config: bool,
+    config_files: Mapping[str, bool],
     prereq_preset: str,
+    prereqs_needed: bool,
     installer: Mapping[str, Any],
 ) -> list[InstallCommand]:
     config_dir = str(Path(options.config_dir).expanduser())
     proxy_config = str(paths["proxy_config"])
+    model_config = str(paths["model_router_config"])
+    model_config_exists = bool(config_files.get("model_router_config"))
+    proxy_config_exists = bool(config_files.get("routing_proxy_config"))
+    proxy_available = proxy_config_exists or not existing_config
+    proxy_reason = (
+        "Follow-up command that runs the local OpenAI-compatible proxy/router."
+        if proxy_available
+        else "routing_proxy.yaml is missing; repair config before starting the proxy."
+    )
     commands: list[InstallCommand] = []
-    if not _proxy_optional_deps_ready(installer):
+    if prereqs_needed:
         commands.append(
             InstallCommand(
                 id="install_prereqs",
@@ -421,12 +463,15 @@ def _next_commands(
                     "--execute",
                     "--yes",
                 ),
-                reason="Installs optional Python packages into the active environment.",
+                reason=(
+                    "Follow-up command that installs optional Python packages "
+                    "into the active environment."
+                ),
                 mutates=True,
                 requires_confirmation=True,
             )
         )
-    if existing_config:
+    if proxy_config_exists:
         commands.append(
             InstallCommand(
                 id="doctor",
@@ -435,6 +480,41 @@ def _next_commands(
                 reason="Existing config detected; validate it instead of overwriting.",
             )
         )
+    elif model_config_exists:
+        commands.append(
+            InstallCommand(
+                id="validate_config",
+                label="Validate existing router config",
+                command=("model-router", "validate-config", "--config", model_config),
+                reason=(
+                    "Partial config detected; routing_proxy.yaml is missing, "
+                    "so no first-run overwrite is planned."
+                ),
+            )
+        )
+        if selected_preset:
+            commands.append(
+                InstallCommand(
+                    id="init_force",
+                    label="Recreate configs after backup",
+                    command=(
+                        "model-router",
+                        "init",
+                        "--preset",
+                        selected_preset,
+                        "--config-dir",
+                        config_dir,
+                        "--force",
+                        "--yes",
+                    ),
+                    reason=(
+                        "Back up existing config first; this overwrites files "
+                        "to repair a partial config directory."
+                    ),
+                    mutates=True,
+                    requires_confirmation=True,
+                )
+            )
     elif selected_preset:
         init_command: tuple[str, ...] = (
             "model-router",
@@ -452,7 +532,10 @@ def _next_commands(
                 id="init",
                 label="Create initial config",
                 command=init_command,
-                reason="Writes first-run configs; it will not overwrite existing files.",
+                reason=(
+                    "Follow-up command that writes first-run configs; it will "
+                    "not overwrite existing files."
+                ),
                 mutates=True,
                 requires_confirmation=True,
             )
@@ -477,9 +560,10 @@ def _next_commands(
                 id="proxy",
                 label="Start proxy",
                 command=("model-router-proxy", "--config", proxy_config),
-                reason="Runs the local OpenAI-compatible proxy/router.",
+                reason=proxy_reason,
                 mutates=True,
                 requires_confirmation=True,
+                available=proxy_available,
             ),
             InstallCommand(
                 id="download_plan",
@@ -522,13 +606,20 @@ def _next_commands(
                 ),
             ]
         )
+    optional = installer.get("optional_dependencies")
+    optional = optional if isinstance(optional, Mapping) else {}
+    tui_available = bool(optional.get("textual"))
     commands.append(
         InstallCommand(
             id="tui",
             label="Open terminal UI",
             command=("model-router", "tui"),
-            reason="TUI is not available in this build yet.",
-            available=False,
+            reason=(
+                "Opens the optional terminal control center."
+                if tui_available
+                else "Install the TUI extra, for example `python -m pip install 'hermes-router[tui]'`."
+            ),
+            available=tui_available,
         )
     )
     return commands
@@ -538,17 +629,29 @@ def _install_notes(
     options: InstallerOptions,
     selected_preset: str | None,
     existing_config: bool,
+    *,
+    partial_config: bool,
+    prereq_notes: tuple[str, ...] = (),
 ) -> list[str]:
     notes = [
-        "M2 installer is deterministic and plan-only; it does not mutate files.",
-        "Model downloads, config writes, hosted providers, and services remain explicit.",
+        "Installer plan is deterministic and plan-only; it does not mutate by default.",
+        (
+            "Dependencies, model downloads, config writes, hosted providers, "
+            "runtime starts, and services remain explicit follow-up commands."
+        ),
     ]
     if existing_config:
-        notes.append("Existing routing_proxy.yaml detected; no overwrite planned.")
+        notes.append("Existing config detected; no overwrite planned.")
+    if partial_config:
+        notes.append(
+            "Partial config detected; installer avoids first-run init by default."
+        )
     if options.quick:
         notes.append("--quick selected the shortest path through the same safe plan.")
     if selected_preset:
         notes.append(f"Preset candidate: {selected_preset}.")
+    for note in prereq_notes:
+        notes.append(f"Prerequisite plan: {note}")
     return notes
 
 
@@ -636,6 +739,32 @@ def _proxy_optional_deps_ready(installer: Mapping[str, Any]) -> bool:
     if not isinstance(optional, Mapping):
         return False
     return all(bool(optional.get(name)) for name in ("fastapi", "httpx", "uvicorn"))
+
+
+def _prereq_plan_needs_followup(plan: Any, installer: Mapping[str, Any]) -> bool:
+    return any(
+        not _prereq_step_ready(step, installer)
+        for step in getattr(plan, "steps", ())
+    )
+
+
+def _prereq_step_ready(step: Any, installer: Mapping[str, Any]) -> bool:
+    package = str(getattr(step, "command", ("",))[-1]).lower()
+    optional = installer.get("optional_dependencies")
+    commands = installer.get("path_status")
+    optional = optional if isinstance(optional, Mapping) else {}
+    commands = commands if isinstance(commands, Mapping) else {}
+    if package.startswith("fastapi"):
+        return bool(optional.get("fastapi"))
+    if package.startswith("httpx"):
+        return bool(optional.get("httpx"))
+    if package.startswith("uvicorn"):
+        return bool(optional.get("uvicorn"))
+    if package == "mlx-lm":
+        return bool(optional.get("mlx_lm"))
+    if package.startswith("huggingface_hub"):
+        return bool(commands.get("hf"))
+    return False
 
 
 def _module_available(module_name: str) -> bool:

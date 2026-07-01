@@ -14,8 +14,36 @@ python -m build
 python -m twine check dist/*
 ```
 
-Record the test summary and route-fast benchmark output in the GitHub release
-notes.
+## Fresh Install Smoke
+
+Run this from the repository root before tagging when practical. It creates a
+temporary virtual environment outside the checkout, installs the local package
+non-editably with proxy extras, checks the console scripts, verifies the public
+Python import, and runs the plan-only installer command.
+
+```bash
+ROOT="$(pwd)"
+SMOKE_DIR="$(mktemp -d)"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+trap 'rm -rf "$SMOKE_DIR"' EXIT
+
+"$PYTHON_BIN" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else "Python 3.11+ is required")'
+"$PYTHON_BIN" -m venv "$SMOKE_DIR/venv"
+"$SMOKE_DIR/venv/bin/python" -m pip install --upgrade pip
+"$SMOKE_DIR/venv/bin/python" -m pip install "${ROOT}[proxy]"
+
+cd "$SMOKE_DIR"
+"$SMOKE_DIR/venv/bin/model-router" --help >/dev/null
+"$SMOKE_DIR/venv/bin/model-router-proxy" --help >/dev/null
+"$SMOKE_DIR/venv/bin/python" -c "import model_router; print(model_router.ModelRouter.__name__)"
+"$SMOKE_DIR/venv/bin/model-router" install --quick --config-dir "$SMOKE_DIR/config" --json
+```
+
+On Windows, adapt the virtualenv paths and activation/command locations for
+PowerShell or Command Prompt.
+
+Record the test summary, route-fast benchmark output, and fresh install smoke
+status in the GitHub release notes.
 
 ## Maturity Gate
 
@@ -67,7 +95,7 @@ publishing and runs when the GitHub release is published.
 
 ## Release Notes Template
 
-```markdown
+````markdown
 ## ModelRouter vX.Y.Z
 
 ### Highlights
@@ -85,8 +113,12 @@ publishing and runs when the GitHub release is published.
 - Ruff: passed
 - Pytest: <paste summary>
 - route_fast latency: <paste JSON or mean/best values>
+- Fresh install smoke: passed
 - Dogfood: <decision/manual plan or execute status>
 
 ### Install
-pip install "hermes-router[proxy]"
+
+```bash
+python -m pip install "hermes-router[proxy]"
 ```
+````
