@@ -193,9 +193,9 @@ requests. The guard enforces the documented initialized `route_fast(...)` SLO:
 <= 25 us best sample and <= 50 us mean sample for ordinary mixed prompts on a
 shared-runner-friendly threshold.
 
-Packaging keeps a `hermes-router` compatibility command for diagnostics and
-scripts. This interface stays outside the high-QPS boundary; services should
-still call initialized `route_fast(...)` in process.
+Packaging keeps a compatibility command for existing diagnostics and scripts.
+This interface stays outside the high-QPS boundary; services should still call
+initialized `route_fast(...)` in process.
 
 ## Historical Improvement Opportunities
 

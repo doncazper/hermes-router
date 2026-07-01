@@ -1,7 +1,7 @@
 # Release Checklist
 
-Use this checklist for every PyPI release. The distribution name remains
-`hermes-router`; the product name is ModelRouter.
+Use this checklist for every PyPI release. The product name is ModelRouter; the
+current PyPI install spec is kept only where release commands need it.
 
 ## Before Tagging
 

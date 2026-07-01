@@ -142,7 +142,7 @@ Tasks:
 
 Done when:
 
-- `pip install "hermes-router[proxy]"` works from PyPI.
+- The proxy extra installs cleanly from PyPI.
 
 Prompt:
 
@@ -166,7 +166,7 @@ Tasks:
 - Tag v0.5.0 and push the tag if verification passes.
 - Create GitHub release notes with benchmark/test output.
 - Confirm whether PyPI trusted publishing is configured. If it is configured, publish the package through the release workflow. If it is not configured, stop and tell me the exact missing setup.
-- After publishing, verify that pip install "hermes-router[proxy]" works from PyPI in a fresh environment if possible.
+- After publishing, verify that the proxy extra installs from PyPI in a fresh environment if possible.
 
 At the end, tell me whether we should do a small v0.5.1 fix release for any release/publishing issues, or move on to Milestone 2: v0.5.1 Dogfood Stability Pass.
 ```
@@ -725,7 +725,7 @@ model visibility, capabilities, disabled action reasons, and log metadata
 without crashing when local runtimes are unavailable. M5 now adds
 `model-router tui` as a read-only terminal control center over shared admin
 state, with Status, Models, Routing, Runtimes, Telemetry, Logs, and Settings
-tabs and a clean `hermes-router[tui]` install hint when Textual is missing. M6
+tabs and a clean TUI-extra install hint when Textual is missing. M6
 now adds `/v1/embeddings` and `/v1/completions` forwarding, shaped
 `/v1/messages` unsupported responses, and `/v1/models` capability hints. M7 now
 adds shared maturity metadata, doctor/settings/TUI maturity displays,

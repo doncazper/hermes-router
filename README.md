@@ -120,11 +120,14 @@ flowchart TB
 
 For the consolidated setup guide, see [Install ModelRouter](INSTALL.md).
 
-Install the proxy extra:
+Install the proxy extra from PyPI:
 
 ```bash
 python -m pip install "hermes-router[proxy]"
 ```
+
+The PyPI package name is transitional; after install, use the ModelRouter
+commands shown below.
 
 Print a deterministic installer plan:
 
@@ -259,10 +262,10 @@ UI or agent workspace.
 Prefer a terminal control center instead of a browser:
 
 ```bash
-python -m pip install "hermes-router[tui]"
 model-router tui --config-dir ~/.model-router
 ```
 
+Install the optional TUI extra first; see [Install ModelRouter](INSTALL.md).
 The TUI uses the same shared admin state as `model-router settings`. The first
 version is read-only: Status, Models, Routing, Runtimes, Telemetry, Logs, and
 Settings tabs show real config/runtime/telemetry state, while mutating actions
@@ -372,17 +375,10 @@ cd model-router
 python -m pip install -e ".[dev]"
 ```
 
-For normal use from PyPI:
-
-```bash
-python -m pip install "hermes-router[proxy]"
-```
-
-ModelRouter began as Hermes Router and was renamed after evolving into a
-generic OpenAI-compatible routing proxy for local/custom agents. The PyPI
-distribution name remains `hermes-router` for compatibility because
-`model-router` is already occupied on PyPI. The primary command and Python API
-are `model-router`, `model-router-proxy`, and `import model_router`.
+For normal use from PyPI, follow [Install ModelRouter](INSTALL.md). The current
+PyPI package name is transitional because `model-router` is already occupied on
+PyPI. The primary command and Python API are `model-router`,
+`model-router-proxy`, and `import model_router`.
 
 If your shell does not provide `python`, use `python3`. If your system Python is
 older, use `uv`:
@@ -634,9 +630,8 @@ from model_router import route_prompt
 decision = route_prompt("research current GLP-1 supplement trends")
 ```
 
-The historical `hermes.plugins.model_router` import path remains available for
-backward compatibility, but new custom-agent integrations should use
-`model_router`.
+The historical internal import path remains available for backward
+compatibility, but new custom-agent integrations should use `model_router`.
 
 ## CLI
 
@@ -647,8 +642,7 @@ model-router decide "rewrite this text"
 model-router decide --json "fix the repo and run tests"
 ```
 
-The old `hermes-router` command remains as a compatibility alias for existing
-scripts.
+A compatibility command alias remains available for existing scripts.
 
 Use a custom catalog:
 
@@ -1591,9 +1585,8 @@ python -m pip install "git+https://github.com/doncazper/model-router.git@v0.7.4"
 model-router decide "rewrite this text"
 ```
 
-The package exposes console commands, `model-router` and the legacy
-`hermes-router` alias, plus
-the importable Python API:
+The package exposes the `model-router` console command, a compatibility alias,
+and the importable Python API:
 
 ```python
 from model_router import ModelRouter
@@ -1663,11 +1656,10 @@ scripts/
 tests/
 ```
 
-The `model_router` package is the generic public import path. The
-`hermes/plugins` path is retained only as a backward-compatible legacy Python
-namespace from the original Hermes Router package. Neither path is a
-host-application plugin manifest, host plugin registry, or automatic
-integration point.
+The `model_router` package is the generic public import path. The internal
+legacy namespace is retained only for backward compatibility. Neither path is a
+host-application plugin manifest, host plugin registry, or automatic integration
+point.
 
 ## Documentation
 
@@ -1696,8 +1688,7 @@ integration point.
 
 ### v0.5: Usable Local Proxy Beta
 
-- Keep the proxy-first install path polished:
-  `python -m pip install "hermes-router[proxy]"`.
+- Keep the proxy-first PyPI install path polished.
 - Keep `model-router init`, `validate-proxy-config`, `doctor`, `/health`, log
   rotation, and provider presets reliable.
 - Publish releases with a changelog, GitHub release notes, and benchmark output.

@@ -60,10 +60,9 @@ migration notes.
 
 ## Architecture
 
-The router is implemented under `hermes/plugins/model_router/`. This is a
-legacy Python package namespace from the original Hermes Router package, not a
-host-application plugin registration point, host manifest, or automatic runtime
-integration.
+The router is implemented under a legacy internal Python package namespace.
+This is not a host-application plugin registration point, host manifest, or
+automatic runtime integration.
 
 - `models.py` defines JSON-safe dataclass models for engines, prompt features,
   scoring config, alternatives, decisions, receipts, and config.
@@ -200,8 +199,8 @@ classifier because there were no labeled unresolved mismatches. See
 revisiting classifier-based routing.
 
 The installed package exposes `model-router` as the generic console command and
-`hermes-router` as a backward-compatible alias for diagnostics and scripts.
-Host-app integrations should call the Python API directly or implement the host
+keeps a backward-compatible alias for existing diagnostics and scripts. Host-app
+integrations should call the Python API directly or implement the host
 application's actual plugin contract.
 
 ## Dry-Run Dispatch Plans
@@ -291,9 +290,10 @@ those follow-up commands.
 Terminal control center:
 
 ```bash
-python -m pip install "hermes-router[tui]"
 model-router tui --config-dir ~/.model-router
 ```
+
+Install the optional TUI extra before using this command.
 
 `model-router tui` is an optional local terminal control center backed by the
 same shared admin state as `model-router settings`. V1 is read-only and exposes

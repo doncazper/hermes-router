@@ -1,7 +1,8 @@
 # Install ModelRouter
 
-ModelRouter is installed from the PyPI distribution `hermes-router`. The public
-product and commands are ModelRouter, `model-router`, and `model-router-proxy`.
+ModelRouter's public product and commands are ModelRouter, `model-router`, and
+`model-router-proxy`. The current PyPI package name is transitional because
+`model-router` is already occupied on PyPI.
 
 For the full product overview, see [README.md](README.md). For runtime setup
 boundaries, see [Runtime install flow](docs/runtime-install-flow.md). For
@@ -10,20 +11,19 @@ upgrade, rollback, and uninstall guidance, see
 
 ## Install
 
-ModelRouter requires Python 3.11 or newer. The normal agent/proxy install path
-is:
+ModelRouter requires Python 3.11 or newer. Install the proxy extra from PyPI:
 
 ```bash
 python -m pip install "hermes-router[proxy]"
 ```
 
-If you use uv-managed environments, run the same package install through uv:
+For uv-managed environments, run the same package install through uv:
 
 ```bash
 uv pip install "hermes-router[proxy]"
 ```
 
-If you prefer an isolated CLI app install, pipx also works:
+For an isolated CLI app install, pipx also works:
 
 ```bash
 pipx install "hermes-router[proxy]"

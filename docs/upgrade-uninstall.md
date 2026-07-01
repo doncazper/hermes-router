@@ -1,7 +1,6 @@
 # Upgrade And Uninstall
 
-ModelRouter installs from the PyPI distribution `hermes-router`. The proxy
-extra remains the normal install path:
+Upgrade the current PyPI package with the proxy extra:
 
 ```bash
 python -m pip install --upgrade "hermes-router[proxy]"
