@@ -258,8 +258,8 @@ def test_install_plan_surfaces_pipx_prereq_guidance(tmp_path, monkeypatch: pytes
     assert any("pipx inject" in warning for warning in plan["warnings"])
     assert any("pipx inject" in note for note in plan["notes"])
     first_step = plan["prereq_plan"]["steps"][0]
-    assert first_step["command"][:4] == [
-        "pipx",
+    assert Path(first_step["command"][0]).name == "pipx"
+    assert first_step["command"][1:4] == [
         "inject",
         "--include-apps",
         "hermes-router",
