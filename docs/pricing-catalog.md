@@ -108,6 +108,22 @@ against your provider contract, invoice, or official pricing page. Do not rely
 on the packaged example hosted entry for spend reporting; it exists only to show
 the schema and exercise estimates.
 
+Telemetry reporting can also turn catalog coverage gaps into an override
+skeleton:
+
+```bash
+model-router telemetry summary \
+  --events ~/.model-router/logs/routing-events.jsonl \
+  --feedback ~/.model-router/routing-feedback.jsonl \
+  --pricing-override-skeleton
+```
+
+The settings UI exposes the same remediation path as **Copy override skeleton**
+when catalog gaps are present. The generated YAML includes provider, model, and
+source fields plus zero placeholder prices. It is an operator editing aid only:
+ModelRouter does not fetch live prices, does not apply the skeleton
+automatically, and does not use pricing gaps to change routing.
+
 Example operator override entry:
 
 ```yaml

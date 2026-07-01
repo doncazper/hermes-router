@@ -75,6 +75,7 @@ from hermes.plugins.model_router.setup_assistant import (
 from hermes.plugins.model_router.telemetry import (
     event_usage_summary,
     feedback_summary,
+    pricing_override_skeleton_from_gaps,
     replay_events,
     review_queue,
 )
@@ -2143,7 +2144,8 @@ async function copyText(text) {
     // Copy support can be blocked in some local browser contexts; keep labeling usable.
   }
   const target = document.getElementById('last-action');
-  if (target) target.textContent = 'Copied ' + text;
+  const label = text.length > 80 ? 'text block' : text;
+  if (target) target.textContent = 'Copied ' + label;
 }
 async function sendReviewFeedback(requestId) {
   const expected = document.getElementById('expected-' + requestId);
@@ -3550,6 +3552,7 @@ def _recent_requests_table(state: Mapping[str, Any]) -> str:
         body = '<tr><td colspan="8" class="muted">No routing telemetry yet. Start the proxy and send a request.</td></tr>'
     return f"""<p class="muted">Catalog coverage: <span class="code">{catalog_coverage}</span></p>
     <p class="muted">Coverage gaps: <span class="code">{catalog_gaps}</span></p>
+    {_pricing_override_skeleton_block(telemetry)}
     <table class="data-table">
       <thead>
         <tr>
@@ -3887,6 +3890,12 @@ def _sanitize_telemetry_summary(summary: Mapping[str, Any]) -> dict[str, Any]:
             payload[key] = _safe_event_string(value, max_chars=320)
         else:
             payload[key] = value
+    payload["pricing_override_skeleton"] = _safe_multiline_text(
+        pricing_override_skeleton_from_gaps(
+            payload.get("catalog_coverage_gaps", []),
+        ),
+        max_chars=12_000,
+    )
     return payload
 
 
@@ -4404,6 +4413,7 @@ def _review_state(paths: Mapping[str, Path]) -> dict[str, Any]:
             "skipped_private": 0,
             "catalog_coverage": _empty_catalog_coverage(),
             "catalog_coverage_gaps": [],
+            "pricing_override_skeleton": "",
             "error": str(exc),
             "privacy": (
                 "Prompts, prompt previews, request bodies, feedback notes, and "
@@ -4454,6 +4464,12 @@ def _sanitize_review_state(
         "catalog_coverage": _safe_catalog_coverage(payload.get("catalog_coverage")),
         "catalog_coverage_gaps": _safe_catalog_gap_list(
             payload.get("catalog_coverage_gaps")
+        ),
+        "pricing_override_skeleton": _safe_multiline_text(
+            pricing_override_skeleton_from_gaps(
+                _safe_catalog_gap_list(payload.get("catalog_coverage_gaps")),
+            ),
+            max_chars=12_000,
         ),
         "privacy": _safe_event_string(
             payload.get("privacy"),
@@ -4574,6 +4590,15 @@ def _safe_event_summary(events_path: Path) -> dict[str, Any]:
 
 
 def _safe_event_string(value: Any, *, max_chars: int = 240) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = redact_text(value).strip()
+    if len(text) <= max_chars:
+        return text
+    return text[: max(0, max_chars - 1)].rstrip() + "…"
+
+
+def _safe_multiline_text(value: Any, *, max_chars: int = 12_000) -> str:
     if not isinstance(value, str):
         return ""
     text = redact_text(value).strip()
@@ -5148,6 +5173,21 @@ def _format_catalog_gap_list(value: Any) -> str:
     if len(gaps) > 5:
         parts.append(f"+{len(gaps) - 5} more")
     return "; ".join(parts)
+
+
+def _pricing_override_skeleton_block(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return ""
+    skeleton = _safe_multiline_text(value.get("pricing_override_skeleton"))
+    if not skeleton:
+        return ""
+    skeleton_js = json.dumps(skeleton)
+    return f"""<details>
+          <summary>Pricing override skeleton</summary>
+          <p class="muted">Generated from catalog coverage gaps. Prices are placeholders; verify provider terms before using estimates.</p>
+          <button type="button" onclick="copyText({skeleton_js})">Copy override skeleton</button>
+          <pre class="catalog-output">{escape(skeleton)}</pre>
+        </details>"""
 
 
 def _download_row(item: Mapping[str, Any]) -> str:

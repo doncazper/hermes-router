@@ -3,8 +3,14 @@ from pathlib import Path
 import subprocess
 import sys
 
+import yaml
+
 from scripts.replay_routing_log import replay_events
-from hermes.plugins.model_router.telemetry import feedback_summary, review_queue
+from hermes.plugins.model_router.telemetry import (
+    feedback_summary,
+    pricing_override_skeleton_from_gaps,
+    review_queue,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -280,6 +286,36 @@ def test_replay_routing_log_estimates_cost_from_local_catalog(tmp_path):
     assert "secret-value" not in serialized
 
 
+def test_pricing_override_skeleton_from_catalog_gaps_is_operator_editable():
+    skeleton = pricing_override_skeleton_from_gaps(
+        [
+            {
+                "pricing_match_status": "missing_price",
+                "provider": "unknown",
+                "model": "unknown-model",
+                "backend": "balanced",
+                "backend_model": "unknown-model",
+                "upstream_model": "unknown",
+                "selected_engine": "balanced_local",
+                "usage_prompt_tokens": 20,
+            }
+        ],
+        catalog_version=7,
+    )
+
+    assert "catalog_version: 7" in skeleton
+    assert 'provider: "unknown"' in skeleton
+    assert 'model: "unknown-model"' in skeleton
+    assert "input_per_1m: 0.0" in skeleton
+    assert "output_per_1m: 0.0" in skeleton
+    assert "cached_input_per_1m: 0.0" in skeleton
+    assert 'source: "placeholder-generated-from-telemetry-gap"' in skeleton
+    assert "No provider pricing was fetched or inferred" in skeleton
+    assert "backend=balanced" in skeleton
+    parsed = yaml.safe_load(skeleton)
+    assert parsed["entries"][0]["source"] == "placeholder-generated-from-telemetry-gap"
+
+
 def test_replay_routing_log_reports_placeholder_pricing_coverage(tmp_path):
     events = tmp_path / "events.jsonl"
     feedback = tmp_path / "feedback.jsonl"
@@ -433,6 +469,7 @@ def test_telemetry_cli_summary_and_review_show_usage_without_prompt_text(tmp_pat
     summary = _run_cli(
         "telemetry",
         "summary",
+        "--pricing-override-skeleton",
         "--events",
         str(events),
         "--feedback",
@@ -443,6 +480,7 @@ def test_telemetry_cli_summary_and_review_show_usage_without_prompt_text(tmp_pat
     review = _run_cli(
         "telemetry",
         "review",
+        "--pricing-override-skeleton",
         "--events",
         str(events),
         "--feedback",
@@ -501,6 +539,7 @@ def test_telemetry_cli_summary_and_review_show_catalog_gap_drilldown(tmp_path):
     summary = _run_cli(
         "telemetry",
         "summary",
+        "--pricing-override-skeleton",
         "--events",
         str(events),
         "--feedback",
@@ -511,6 +550,7 @@ def test_telemetry_cli_summary_and_review_show_catalog_gap_drilldown(tmp_path):
     review = _run_cli(
         "telemetry",
         "review",
+        "--pricing-override-skeleton",
         "--events",
         str(events),
         "--feedback",
@@ -524,11 +564,18 @@ def test_telemetry_cli_summary_and_review_show_catalog_gap_drilldown(tmp_path):
     assert "missing_price: provider=unknown model=unknown-model" in summary.stdout
     assert "backend=balanced" in summary.stdout
     assert "events=1 usage=prompt=20, completion=8, total=28" in summary.stdout
+    assert "Pricing override skeleton:" in summary.stdout
+    assert 'provider: "unknown"' in summary.stdout
+    assert 'model: "unknown-model"' in summary.stdout
+    assert "input_per_1m: 0.0" in summary.stdout
+    assert "placeholder-generated-from-telemetry-gap" in summary.stdout
     assert "secret-value" not in summary.stdout
     assert "summarize this" not in summary.stdout
     assert review.returncode == 0
     assert "Catalog coverage gaps:" in review.stdout
     assert "missing_price: provider=unknown model=unknown-model" in review.stdout
+    assert "Pricing override skeleton:" in review.stdout
+    assert 'model: "unknown-model"' in review.stdout
     assert "secret-value" not in review.stdout
     assert "summarize this" not in review.stdout
 

@@ -301,6 +301,90 @@ def review_queue(
     }
 
 
+def pricing_override_skeleton_from_gaps(
+    gaps: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    *,
+    catalog_version: int = 1,
+) -> str:
+    """Build an operator-editable pricing override skeleton from gap rows.
+
+    The skeleton intentionally uses zero placeholder prices and a placeholder
+    source. Operators must replace those values with prices they have verified.
+    No provider pricing is fetched or inferred here.
+    """
+
+    entries: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for gap in gaps:
+        if not isinstance(gap, dict):
+            continue
+        provider = _skeleton_value(gap.get("provider"), fallback="unknown")
+        model = _skeleton_value(gap.get("model"), fallback="unknown-model")
+        key = (provider, model)
+        if key in seen:
+            continue
+        seen.add(key)
+        entries.append(
+            {
+                "provider": provider,
+                "model": model,
+                "backend": _skeleton_value(gap.get("backend"), fallback="unknown"),
+                "backend_model": _skeleton_value(
+                    gap.get("backend_model"),
+                    fallback="unknown",
+                ),
+                "upstream_model": _skeleton_value(
+                    gap.get("upstream_model"),
+                    fallback="unknown",
+                ),
+                "selected_engine": _skeleton_value(
+                    gap.get("selected_engine"),
+                    fallback="unknown",
+                ),
+            }
+        )
+    if not entries:
+        return ""
+
+    version = (
+        catalog_version
+        if isinstance(catalog_version, int) and catalog_version > 0
+        else 1
+    )
+    lines = [
+        f"catalog_version: {version}",
+        'updated_at: "REPLACE_WITH_UPDATE_TIMESTAMP"',
+        "notes:",
+        "  - Generated from telemetry catalog coverage gaps.",
+        "  - Replace all placeholder prices before using estimates for spend review.",
+        "  - No provider pricing was fetched or inferred by ModelRouter.",
+        "entries:",
+    ]
+    for entry in entries:
+        detail = (
+            "Generated from telemetry gap: "
+            f"backend={entry['backend']}, "
+            f"backend_model={entry['backend_model']}, "
+            f"upstream_model={entry['upstream_model']}, "
+            f"route={entry['selected_engine']}. "
+            "Verify provider, model id, rates, currency, and effective date."
+        )
+        lines.extend(
+            [
+                f"  - provider: {_yaml_quote(entry['provider'])}",
+                f"    model: {_yaml_quote(entry['model'])}",
+                "    input_per_1m: 0.0",
+                "    output_per_1m: 0.0",
+                "    cached_input_per_1m: 0.0",
+                '    currency: "USD"',
+                '    effective_date: "REPLACE_WITH_EFFECTIVE_DATE"',
+                '    source: "placeholder-generated-from-telemetry-gap"',
+                f"    notes: {_yaml_quote(detail)}",
+            ]
+        )
+    return "\n".join(lines) + "\n"
+
+
 def usage_telemetry_summary(
     events: list[dict[str, Any]],
     *,
@@ -612,6 +696,18 @@ def _safe_group_key(value: Any, *, max_chars: int = 160) -> str:
     if len(text) <= max_chars:
         return text
     return text[: max(0, max_chars - 1)].rstrip() + "…"
+
+
+def _skeleton_value(value: Any, *, fallback: str) -> str:
+    text = _safe_group_key(value, max_chars=160)
+    if not text or text == "unknown":
+        return fallback
+    return text
+
+
+def _yaml_quote(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
 
 
 def _non_negative_int(value: Any) -> int:

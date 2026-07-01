@@ -238,6 +238,14 @@ model-router telemetry summary \
   --pricing-catalog ~/.model-router/pricing_catalog.yaml
 ```
 
+To draft local override entries from missing catalog coverage, add
+`--pricing-override-skeleton` to telemetry summary or review. The generated YAML
+uses provider/model/source fields with zero placeholder prices, so operators can
+copy it into `~/.model-router/pricing_catalog.yaml` and replace the placeholders
+with verified pricing. The settings UI shows the same action as **Copy override
+skeleton** when coverage gaps exist. This is a local remediation helper only; it
+does not fetch prices, apply files, or affect routing.
+
 ## Maintain Catalogs
 
 Use the packaged catalog workflow when updating local recommendations or

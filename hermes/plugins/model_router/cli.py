@@ -75,6 +75,7 @@ from hermes.plugins.model_router.setup_assistant import (
 )
 from hermes.plugins.model_router.telemetry import (
     feedback_summary,
+    pricing_override_skeleton_from_gaps,
     replay_events,
     review_queue,
 )
@@ -635,6 +636,11 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
         help="Maximum request ids to show per example list",
     )
     _add_pricing_catalog_arg(telemetry_summary)
+    telemetry_summary.add_argument(
+        "--pricing-override-skeleton",
+        action="store_true",
+        help="Include an operator-editable pricing override skeleton for catalog gaps",
+    )
     telemetry_summary.add_argument("--json", action="store_true", help="Emit JSON")
     telemetry_summary.add_argument(
         "--fail-on-regression",
@@ -674,6 +680,11 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
         help="Maximum unlabeled events to show",
     )
     _add_pricing_catalog_arg(telemetry_review)
+    telemetry_review.add_argument(
+        "--pricing-override-skeleton",
+        action="store_true",
+        help="Include an operator-editable pricing override skeleton for catalog gaps",
+    )
     telemetry_review.add_argument("--json", action="store_true", help="Emit JSON")
     telemetry_review.set_defaults(func=_cmd_telemetry_review)
 
@@ -1382,6 +1393,7 @@ def _cmd_telemetry_summary(args: argparse.Namespace) -> int:
         pricing_catalog_path=args.pricing_catalog,
         max_examples=args.max_examples,
     )
+    _attach_pricing_override_skeleton(summary, enabled=args.pricing_override_skeleton)
     if args.json:
         print(json.dumps(summary, indent=2, sort_keys=True))
     else:
@@ -1412,6 +1424,7 @@ def _cmd_telemetry_review(args: argparse.Namespace) -> int:
         pricing_catalog_path=args.pricing_catalog,
         max_rows=args.max_rows,
     )
+    _attach_pricing_override_skeleton(summary, enabled=args.pricing_override_skeleton)
     if args.json:
         print(json.dumps(summary, indent=2, sort_keys=True))
     else:
@@ -1426,6 +1439,18 @@ def _cmd_pricing_status(args: argparse.Namespace) -> int:
     else:
         _print_pricing_status(status)
     return 0 if status.override_valid and not status.validation_errors else 1
+
+
+def _attach_pricing_override_skeleton(
+    summary: dict[str, Any],
+    *,
+    enabled: bool,
+) -> None:
+    if not enabled:
+        return
+    summary["pricing_override_skeleton"] = pricing_override_skeleton_from_gaps(
+        summary.get("catalog_coverage_gaps") or [],
+    )
 
 
 def _cmd_pricing_diff(args: argparse.Namespace) -> int:
@@ -2520,6 +2545,7 @@ def _print_telemetry_summary(summary: dict[str, Any]) -> None:
     print(f"Pricing catalog: {summary.get('pricing_catalog_source', 'unknown')}")
     print(f"Catalog coverage: {_format_catalog_coverage(summary.get('catalog_coverage'))}")
     _print_catalog_coverage_gaps(summary.get("catalog_coverage_gaps"))
+    _print_pricing_override_skeleton(summary.get("pricing_override_skeleton"))
     _print_counter("Outcome labels", summary.get("outcome_label_counts", {}))
     _print_counter("Pricing matches", summary.get("pricing_match_counts", {}))
     _print_counter("Selected engines", summary["selected_engine_counts"])
@@ -2576,6 +2602,7 @@ def _print_telemetry_review(summary: dict[str, Any]) -> None:
     print(f"Skipped private/no-prompt: {summary['skipped_private']}")
     print(f"Catalog coverage: {_format_catalog_coverage(summary.get('catalog_coverage'))}")
     _print_catalog_coverage_gaps(summary.get("catalog_coverage_gaps"))
+    _print_pricing_override_skeleton(summary.get("pricing_override_skeleton"))
     print(f"Privacy: {summary['privacy']}")
     print("Items:")
     if not summary["items"]:
@@ -2643,6 +2670,16 @@ def _print_catalog_coverage_gaps(values: Any) -> None:
             f"events={_safe_usage_int(gap.get('events'))}"
             + (f" usage={usage}" if usage else "")
         )
+
+
+def _print_pricing_override_skeleton(value: Any) -> None:
+    if not isinstance(value, str):
+        return
+    print("Pricing override skeleton:")
+    if not value.strip():
+        print("- none")
+        return
+    print(value.rstrip())
 
 
 def _format_usage_summary(value: Any) -> str:

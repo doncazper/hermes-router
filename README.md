@@ -877,6 +877,18 @@ run during routing/proxy forwarding. See
 [Versioned pricing catalog](docs/pricing-catalog.md) for the override file
 shape and an operator-verified provider example.
 
+When telemetry shows missing provider/model coverage, operators can draft an
+override skeleton without fetching prices:
+
+```bash
+model-router telemetry summary --pricing-override-skeleton
+```
+
+The settings UI exposes the same action as **Copy override skeleton**. Generated
+entries contain provider, model, source, and zero placeholder price fields so an
+operator can fill in verified rates; ModelRouter does not auto-apply the file or
+change routing from pricing gaps.
+
 When a route is wrong, copy `X-ModelRouter-Request-ID` from the response and
 label it:
 
@@ -1347,7 +1359,7 @@ model-router decide --json "fix the repo and run tests"
 For a non-editable install from GitHub:
 
 ```bash
-python -m pip install "git+https://github.com/doncazper/model-router.git@v0.7.2"
+python -m pip install "git+https://github.com/doncazper/model-router.git@v0.7.4"
 model-router decide "rewrite this text"
 ```
 
