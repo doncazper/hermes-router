@@ -1,3 +1,5 @@
+import json
+import sys
 from urllib.error import URLError
 
 from hermes.plugins.model_router.proxy_config import (
@@ -559,13 +561,19 @@ def test_hosted_generic_adapter_does_not_call_network_by_default():
     assert start.disabled_reason == capabilities["start_server"]["disabled_reason"]
 
 
-def test_managed_runtime_adapter_reports_logs_and_process_owned_actions(tmp_path):
+def test_managed_runtime_adapter_reports_missing_command_reasons(tmp_path):
     backend = _backend(
         base_url="http://127.0.0.1:8090/v1",
         runtime=ProxyRuntimeConfig(
             enabled=True,
             kind="llama-server",
-            command=("llama-server", "-m", "/models/fast.gguf", "--port", "8090"),
+            command=(
+                "definitely-missing-model-router-runtime",
+                "-m",
+                "/models/fast.gguf",
+                "--port",
+                "8090",
+            ),
             readiness_url="http://127.0.0.1:8090/v1/models",
             log_path=str(tmp_path / "fast.log"),
         ),
@@ -578,13 +586,205 @@ def test_managed_runtime_adapter_reports_logs_and_process_owned_actions(tmp_path
 
     assert capabilities["runtime_kind"] == "llama-server"
     assert capabilities["start_server"]["supported"] is False
-    assert "model-router-proxy" in capabilities["start_server"]["disabled_reason"]
+    assert "command missing" in capabilities["start_server"]["disabled_reason"]
     assert capabilities["load_model"]["supported"] is False
-    assert "starting their configured process" in capabilities["load_model"][
-        "disabled_reason"
-    ]
+    assert "command missing" in capabilities["load_model"]["disabled_reason"]
     assert logs["supported"] is True
     assert logs["paths"] == [str(tmp_path / "fast.log")]
+
+
+def test_managed_runtime_adapter_start_stop_load_unload_are_pid_owned(
+    tmp_path,
+    monkeypatch,
+):
+    running_pids: set[int] = set()
+    process_calls: list[tuple[list[str], dict[str, object]]] = []
+    request_calls: list[str] = []
+
+    class FakeProcess:
+        pid = 43210
+
+        def poll(self):
+            return None
+
+    def requester(url, _headers, _timeout):
+        request_calls.append(url)
+        if len(request_calls) == 1:
+            raise URLError("offline before start")
+        return 200, {"data": [{"id": "fast-model"}]}
+
+    def process_factory(command, **kwargs):
+        process_calls.append((list(command), dict(kwargs)))
+        running_pids.add(FakeProcess.pid)
+        return FakeProcess()
+
+    def fake_pid_running(pid: int) -> bool:
+        return pid in running_pids
+
+    def fake_terminate_pid(pid: int, *, timeout_seconds: float) -> bool:
+        assert timeout_seconds == 0.2
+        running_pids.discard(pid)
+        return True
+
+    monkeypatch.setattr(runtime_adapters, "_pid_running", fake_pid_running)
+    monkeypatch.setattr(runtime_adapters, "_terminate_pid", fake_terminate_pid)
+
+    backend = _backend(
+        base_url="http://127.0.0.1:8090/v1",
+        model="fast-model",
+        runtime=ProxyRuntimeConfig(
+            enabled=True,
+            kind="llama-server",
+            command=(sys.executable, "-m", "fake_runtime"),
+            readiness_url="http://127.0.0.1:8090/v1/models",
+            readiness_timeout_seconds=0.2,
+            shutdown_timeout_seconds=0.2,
+            log_path=str(tmp_path / "fast.log"),
+        ),
+    )
+    adapter = ManagedRuntimeAdapter(
+        backend,
+        requester=requester,
+        process_factory=process_factory,
+    )
+
+    capabilities = adapter.capabilities().to_dict()
+    started = adapter.start_server()
+    pid_marker = json.loads((tmp_path / "fast.log.fast.pid").read_text(encoding="utf-8"))
+    loaded_models = adapter.list_loaded_models()
+    loaded = adapter.load_model("fast-model")
+    unloaded = adapter.unload_model("fast-model")
+    stopped_again = adapter.stop_server()
+    payload = started.to_dict()
+
+    assert capabilities["start_server"]["supported"] is True
+    assert capabilities["stop_server"]["supported"] is True
+    assert capabilities["load_model"]["supported"] is True
+    assert capabilities["unload_model"]["supported"] is True
+    assert started.status == "started"
+    assert pid_marker["pid"] == 43210
+    assert pid_marker["command"] == [sys.executable, "-m", "fake_runtime"]
+    assert process_calls[0][0] == [sys.executable, "-m", "fake_runtime"]
+    assert process_calls[0][1]["shell"] is False
+    assert process_calls[0][1]["stdin"] == runtime_adapters.subprocess.DEVNULL
+    assert loaded_models == (
+        RuntimeModel("fast-model", loaded=True, source="modelrouter_managed"),
+    )
+    assert loaded.status == "already_loaded"
+    assert unloaded.status == "unloaded"
+    assert stopped_again.status == "not_running"
+    assert "secret" not in str(payload).lower()
+
+
+def test_managed_runtime_adapter_start_detects_already_running_pid(
+    tmp_path,
+    monkeypatch,
+):
+    calls: list[list[str]] = []
+    monkeypatch.setattr(runtime_adapters, "_pid_running", lambda pid: pid == 43210)
+    backend = _backend(
+        base_url="http://127.0.0.1:8090/v1",
+        model="fast-model",
+        runtime=ProxyRuntimeConfig(
+            enabled=True,
+            kind="llama-server",
+            command=(sys.executable, "-m", "fake_runtime"),
+            readiness_url="http://127.0.0.1:8090/v1/models",
+            log_path=str(tmp_path / "fast.log"),
+        ),
+    )
+    (tmp_path / "fast.log.fast.pid").write_text(
+        json.dumps({"pid": 43210, "command": [sys.executable, "-m", "fake_runtime"]}),
+        encoding="utf-8",
+    )
+    adapter = ManagedRuntimeAdapter(
+        backend,
+        requester=lambda *_args: (_ for _ in ()).throw(URLError("should not probe")),
+        process_factory=lambda command, **_kwargs: calls.append(list(command)),
+    )
+
+    result = adapter.start_server()
+
+    assert result.ok is True
+    assert result.status == "already_running"
+    assert calls == []
+
+
+def test_managed_runtime_adapter_mismatched_pid_marker_leaves_process_untouched(
+    tmp_path,
+    monkeypatch,
+):
+    terminate_calls: list[int] = []
+    process_calls: list[list[str]] = []
+    monkeypatch.setattr(runtime_adapters, "_pid_running", lambda pid: pid == 43210)
+    monkeypatch.setattr(
+        runtime_adapters,
+        "_terminate_pid",
+        lambda pid, *, timeout_seconds: terminate_calls.append(pid) or True,
+    )
+    backend = _backend(
+        base_url="http://127.0.0.1:8090/v1",
+        model="fast-model",
+        runtime=ProxyRuntimeConfig(
+            enabled=True,
+            kind="llama-server",
+            command=(sys.executable, "-m", "new_runtime"),
+            readiness_url="http://127.0.0.1:8090/v1/models",
+            log_path=str(tmp_path / "fast.log"),
+        ),
+    )
+    (tmp_path / "fast.log.fast.pid").write_text(
+        json.dumps({"pid": 43210, "command": [sys.executable, "-m", "old_runtime"]}),
+        encoding="utf-8",
+    )
+    adapter = ManagedRuntimeAdapter(
+        backend,
+        requester=lambda *_args: (_ for _ in ()).throw(URLError("should not probe")),
+        process_factory=lambda command, **_kwargs: process_calls.append(list(command)),
+    )
+
+    start = adapter.start_server()
+    stop = adapter.stop_server()
+    loaded_models = adapter.list_loaded_models()
+
+    assert start.ok is False
+    assert start.status == "blocked"
+    assert stop.ok is False
+    assert stop.status == "blocked"
+    assert "does not match" in stop.disabled_reason
+    assert loaded_models == ()
+    assert process_calls == []
+    assert terminate_calls == []
+
+
+def test_managed_runtime_adapter_stop_without_pid_leaves_external_runtime_alone(
+    tmp_path,
+    monkeypatch,
+):
+    terminate_calls: list[int] = []
+    monkeypatch.setattr(
+        runtime_adapters,
+        "_terminate_pid",
+        lambda pid, *, timeout_seconds: terminate_calls.append(pid) or True,
+    )
+    backend = _backend(
+        base_url="http://127.0.0.1:8090/v1",
+        model="fast-model",
+        runtime=ProxyRuntimeConfig(
+            enabled=True,
+            kind="llama-server",
+            command=(sys.executable, "-m", "fake_runtime"),
+            readiness_url="http://127.0.0.1:8090/v1/models",
+            log_path=str(tmp_path / "fast.log"),
+        ),
+    )
+
+    result = ManagedRuntimeAdapter(backend).stop_server()
+
+    assert result.ok is True
+    assert result.status == "not_running"
+    assert "externally managed runtimes were left untouched" in result.message
+    assert terminate_calls == []
 
 
 def test_runtime_state_catches_adapter_failures():

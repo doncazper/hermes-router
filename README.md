@@ -41,6 +41,8 @@ what ModelRouter owns as a local control center, what external runtimes own, and
 what host agents own.
 See [Runtime strategy](docs/runtime-strategy.md) for the runtime modes:
 `external_managed`, `external_cli`, and `bundled_future`.
+See [Runtime install flow](docs/runtime-install-flow.md) for preview-first
+runtime status, connect guidance, and the future install flow.
 
 For the local-model app roadmap, see
 [LM Studio parity roadmap](docs/lm-studio-parity-roadmap.md). LM Studio is the
@@ -1552,6 +1554,9 @@ integration point.
 - [Product boundaries](docs/product-boundaries.md)
 - [Runtime strategy](docs/runtime-strategy.md)
 - [Runtime adapter contract](docs/runtime-adapter-contract.md)
+- [Runtime install flow](docs/runtime-install-flow.md)
+- [Bundled runtime roadmap](docs/bundled-runtime-roadmap.md)
+- [Runtime parity gap report](docs/runtime-parity-gap-report.md)
 - [LM Studio parity roadmap](docs/lm-studio-parity-roadmap.md)
 - [Local server compatibility matrix](docs/local-server-compatibility.md)
 - [Business model](docs/business-model.md)

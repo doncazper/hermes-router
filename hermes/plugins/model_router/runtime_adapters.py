@@ -8,10 +8,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+import json
+import os
 from pathlib import Path
+import signal
 import shutil
 import subprocess
-from typing import Any, Mapping, Protocol
+import time
+from typing import Any, Mapping, Protocol, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
@@ -22,6 +26,13 @@ from hermes.plugins.model_router.proxy_config import ProxyBackendConfig
 JsonRequester = Any
 CommandRunner = Any
 CommandResolver = Any
+ProcessFactory = Any
+
+
+@dataclass(frozen=True)
+class _ManagedRuntimePidMarker:
+    pid: int
+    command: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -237,6 +248,7 @@ class GenericOpenAICompatibleAdapter:
         requester: JsonRequester | None = None,
         command_runner: CommandRunner | None = None,
         command_resolver: CommandResolver | None = None,
+        process_factory: ProcessFactory | None = None,
         provider: str | None = None,
         runtime_kind: str | None = None,
     ) -> None:
@@ -244,6 +256,7 @@ class GenericOpenAICompatibleAdapter:
         self._requester = requester or _request_json
         self._command_runner = command_runner or _run_command
         self._command_resolver = command_resolver or _resolve_command
+        self._process_factory = process_factory or subprocess.Popen
         self._provider = provider or provider_for_backend(backend)
         self._runtime_kind = runtime_kind or runtime_kind_for_backend(backend)
 
@@ -758,21 +771,26 @@ class ManagedRuntimeAdapter(GenericOpenAICompatibleAdapter):
         backend: ProxyBackendConfig,
         *,
         requester: JsonRequester | None = None,
+        command_runner: CommandRunner | None = None,
+        command_resolver: CommandResolver | None = None,
+        process_factory: ProcessFactory | None = None,
     ) -> None:
         super().__init__(
             backend,
             requester=requester,
+            command_runner=command_runner,
+            command_resolver=command_resolver,
+            process_factory=process_factory,
             provider=provider_for_backend(backend),
             runtime_kind=backend.runtime.kind,
         )
 
     def capabilities(self) -> RuntimeCapabilities:
         capabilities = super().capabilities()
-        lifecycle_reason = (
-            "Managed runtime lifecycle is executed by model-router-proxy for configured backends."
-            if self.backend.runtime.command
-            else "Managed runtime has no command configured."
-        )
+        command = self.backend.runtime.command
+        command_name = command[0] if command else ""
+        command_available = bool(command_name and self._command_resolver(command_name))
+        lifecycle_reason = _managed_lifecycle_disabled_reason(command, command_available)
         return RuntimeCapabilities(
             provider=capabilities.provider,
             runtime_kind=capabilities.runtime_kind,
@@ -781,19 +799,29 @@ class ManagedRuntimeAdapter(GenericOpenAICompatibleAdapter):
             health=capabilities.health,
             discover_models=capabilities.discover_models,
             list_loaded_models=AdapterSupport(
-                False,
-                "Managed runtime process state is owned by model-router-proxy.",
+                bool(command),
+                None
+                if command
+                else "Managed runtime has no command configured.",
             ),
             load_model=AdapterSupport(
-                False,
-                "Managed runtimes load by starting their configured process.",
+                command_available,
+                None if command_available else lifecycle_reason,
             ),
             unload_model=AdapterSupport(
-                False,
-                "Managed runtimes unload after idle timeout or proxy shutdown.",
+                command_available,
+                None if command_available else lifecycle_reason,
             ),
-            start_server=AdapterSupport(False, lifecycle_reason),
-            stop_server=AdapterSupport(False, lifecycle_reason),
+            start_server=AdapterSupport(
+                command_available,
+                None if command_available else lifecycle_reason,
+            ),
+            stop_server=AdapterSupport(
+                bool(command),
+                None
+                if command
+                else "Managed runtime has no command configured.",
+            ),
             logs=capabilities.logs,
         )
 
@@ -817,6 +845,244 @@ class ManagedRuntimeAdapter(GenericOpenAICompatibleAdapter):
                 )
             ),
             command=tuple(command),
+        )
+
+    def list_loaded_models(
+        self,
+        *,
+        timeout_seconds: float = 0.25,
+    ) -> tuple[RuntimeModel, ...]:
+        del timeout_seconds
+        pid = _managed_runtime_pid(self.backend)
+        if pid is None or not _pid_running(pid):
+            return ()
+        return (
+            RuntimeModel(
+                model_id=self.backend.model,
+                loaded=True,
+                source="modelrouter_managed",
+            ),
+        )
+
+    def start_server(self) -> RuntimeActionResult:
+        command = self.backend.runtime.command
+        if not command:
+            return RuntimeActionResult(
+                ok=False,
+                status="unsupported",
+                message="Managed runtime has no command configured.",
+                disabled_reason="Managed runtime has no command configured.",
+            )
+        command_name = command[0]
+        if not self._command_resolver(command_name):
+            reason = f"Managed runtime command missing: {command_name}"
+            return RuntimeActionResult(
+                ok=False,
+                status="unsupported",
+                message=reason,
+                disabled_reason=reason,
+            )
+        pid_path = _managed_runtime_pid_path(self.backend)
+        marker = _read_pid_marker(pid_path)
+        marker_mismatch = marker is not None and not _pid_marker_matches_backend(
+            marker,
+            self.backend,
+        )
+        if marker_mismatch and _pid_running(marker.pid):
+            reason = (
+                "Recorded ModelRouter runtime PID does not match the configured "
+                "runtime command; leaving the process untouched."
+            )
+            return RuntimeActionResult(
+                ok=False,
+                status="blocked",
+                message=reason,
+                disabled_reason=reason,
+            )
+        if marker_mismatch:
+            _remove_pid(pid_path)
+        elif marker is not None and _pid_running(marker.pid):
+            return RuntimeActionResult(
+                ok=True,
+                status="already_running",
+                message="ModelRouter-managed runtime process is already running.",
+            )
+        if self.health(timeout_seconds=0.2).ok:
+            return RuntimeActionResult(
+                ok=True,
+                status="already_running",
+                message=(
+                    "Runtime endpoint is already healthy; no new ModelRouter-managed "
+                    "process was started."
+                ),
+            )
+        return self._start_configured_process()
+
+    def stop_server(self) -> RuntimeActionResult:
+        pid_path = _managed_runtime_pid_path(self.backend)
+        marker = _read_pid_marker(pid_path)
+        if marker is None:
+            return RuntimeActionResult(
+                ok=True,
+                status="not_running",
+                message=(
+                    "No ModelRouter-managed runtime PID is recorded; externally "
+                    "managed runtimes were left untouched."
+                ),
+            )
+        if not _pid_marker_matches_backend(marker, self.backend):
+            if not _pid_running(marker.pid):
+                _remove_pid(pid_path)
+                return RuntimeActionResult(
+                    ok=True,
+                    status="not_running",
+                    message=(
+                        "Recorded ModelRouter-managed runtime PID is stale and "
+                        "did not match the configured command."
+                    ),
+                )
+            reason = (
+                "Recorded ModelRouter runtime PID does not match the configured "
+                "runtime command; leaving the process untouched."
+            )
+            return RuntimeActionResult(
+                ok=False,
+                status="blocked",
+                message=reason,
+                disabled_reason=reason,
+            )
+        if not _pid_running(marker.pid):
+            _remove_pid(pid_path)
+            return RuntimeActionResult(
+                ok=True,
+                status="not_running",
+                message="Recorded ModelRouter-managed runtime process is no longer running.",
+            )
+        if _terminate_pid(
+            marker.pid,
+            timeout_seconds=self.backend.runtime.shutdown_timeout_seconds,
+        ):
+            _remove_pid(pid_path)
+            return RuntimeActionResult(
+                ok=True,
+                status="stopped",
+                message="Stopped the ModelRouter-managed runtime process.",
+            )
+        return RuntimeActionResult(
+            ok=False,
+            status="error",
+            message="Timed out stopping the ModelRouter-managed runtime process.",
+        )
+
+    def load_model(self, model_id: str) -> RuntimeActionResult:
+        if model_id.strip() != self.backend.model:
+            return RuntimeActionResult(
+                ok=False,
+                status="invalid_request",
+                message=(
+                    "Managed runtime load only supports the backend's configured "
+                    "model; update config before loading a different model."
+                ),
+            )
+        result = self.start_server()
+        status = "already_loaded" if result.status == "already_running" else "loaded"
+        return RuntimeActionResult(
+            ok=result.ok,
+            status=status if result.ok else result.status,
+            message=result.message,
+            disabled_reason=result.disabled_reason,
+        )
+
+    def unload_model(self, model_id: str) -> RuntimeActionResult:
+        if model_id.strip() != self.backend.model:
+            return RuntimeActionResult(
+                ok=False,
+                status="invalid_request",
+                message=(
+                    "Managed runtime unload only supports the backend's configured "
+                    "model."
+                ),
+            )
+        result = self.stop_server()
+        status = "not_loaded" if result.status == "not_running" else "unloaded"
+        return RuntimeActionResult(
+            ok=result.ok,
+            status=status if result.ok else result.status,
+            message=result.message,
+            disabled_reason=result.disabled_reason,
+        )
+
+    def _start_configured_process(self) -> RuntimeActionResult:
+        runtime = self.backend.runtime
+        log_path = Path(runtime.log_path).expanduser()
+        pid_path = _managed_runtime_pid_path(self.backend)
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            pid_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("a", encoding="utf-8", buffering=1) as log_handle:
+                process = self._process_factory(
+                    list(runtime.command),
+                    stdin=subprocess.DEVNULL,
+                    stdout=log_handle,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    shell=False,
+                )
+        except FileNotFoundError:
+            reason = f"Managed runtime command missing: {runtime.command[0]}"
+            return RuntimeActionResult(
+                ok=False,
+                status="unsupported",
+                message=reason,
+                disabled_reason=reason,
+            )
+        except OSError as exc:
+            return RuntimeActionResult(
+                ok=False,
+                status="error",
+                message=f"Managed runtime failed to start: {exc.__class__.__name__}",
+            )
+        _write_pid(pid_path, int(process.pid), runtime.command)
+        ready = self._wait_until_ready(process)
+        if ready.ok:
+            return RuntimeActionResult(
+                ok=True,
+                status="started",
+                message="Started the ModelRouter-managed runtime process.",
+            )
+        self.stop_server()
+        return ready
+
+    def _wait_until_ready(self, process: Any) -> RuntimeActionResult:
+        runtime = self.backend.runtime
+        deadline = time.monotonic() + runtime.readiness_timeout_seconds
+        last_error = "not ready"
+        while time.monotonic() <= deadline:
+            if process.poll() is not None:
+                return RuntimeActionResult(
+                    ok=False,
+                    status="error",
+                    message="Managed runtime exited before readiness.",
+                )
+            timeout = max(0.05, min(1.0, deadline - time.monotonic()))
+            try:
+                _status, _payload = self._requester(
+                    runtime.readiness_url,
+                    _auth_headers(self.backend),
+                    timeout,
+                )
+                return RuntimeActionResult(
+                    ok=True,
+                    status="ready",
+                    message="Managed runtime readiness endpoint responded.",
+                )
+            except Exception as exc:
+                last_error = exc.__class__.__name__
+                time.sleep(min(0.2, max(0.01, deadline - time.monotonic())))
+        return RuntimeActionResult(
+            ok=False,
+            status="error",
+            message=f"Managed runtime readiness failed: {last_error}",
         )
 
 
@@ -1113,6 +1379,126 @@ def _install_hint(
     if not health.reachable and _is_local_base_url(backend.base_url):
         return "Start the configured local runtime or update backend base_url."
     return None
+
+
+def _managed_lifecycle_disabled_reason(
+    command: tuple[str, ...],
+    command_available: bool,
+) -> str:
+    if not command:
+        return "Managed runtime has no command configured."
+    if not command_available:
+        return f"Managed runtime command missing: {command[0]}"
+    return ""
+
+
+def _managed_runtime_pid_path(backend: ProxyBackendConfig) -> Path:
+    log_path = Path(backend.runtime.log_path).expanduser()
+    return log_path.with_name(f"{log_path.name}.{backend.name}.pid")
+
+
+def _managed_runtime_pid(backend: ProxyBackendConfig) -> int | None:
+    marker = _read_pid_marker(_managed_runtime_pid_path(backend))
+    if marker is None or not _pid_marker_matches_backend(marker, backend):
+        return None
+    return marker.pid
+
+
+def _read_pid_marker(path: Path) -> _ManagedRuntimePidMarker | None:
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, Mapping):
+        try:
+            pid = int(payload.get("pid"))
+        except (TypeError, ValueError):
+            return None
+        command = payload.get("command")
+        if not isinstance(command, Sequence) or isinstance(command, (str, bytes)):
+            return None
+        command_tuple = tuple(_clean_runtime_command_token(token) for token in command)
+        if not command_tuple or any(not token for token in command_tuple):
+            return None
+        return (
+            _ManagedRuntimePidMarker(pid=pid, command=command_tuple)
+            if pid > 0
+            else None
+        )
+    try:
+        pid = int(raw)
+    except ValueError:
+        return None
+    return _ManagedRuntimePidMarker(pid=pid, command=()) if pid > 0 else None
+
+
+def _write_pid(path: Path, pid: int, command: tuple[str, ...]) -> None:
+    payload = {
+        "pid": pid,
+        "command": list(command),
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _pid_marker_matches_backend(
+    marker: _ManagedRuntimePidMarker,
+    backend: ProxyBackendConfig,
+) -> bool:
+    command = tuple(_clean_runtime_command_token(token) for token in backend.runtime.command)
+    return bool(command and marker.command == command)
+
+
+def _clean_runtime_command_token(value: Any) -> str:
+    return str(value).strip() if value is not None else ""
+
+
+def _remove_pid(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+
+
+def _pid_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _terminate_pid(pid: int, *, timeout_seconds: float) -> bool:
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+    deadline = time.monotonic() + max(0.1, timeout_seconds)
+    while time.monotonic() <= deadline:
+        if not _pid_running(pid):
+            return True
+        time.sleep(0.05)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+    return not _pid_running(pid)
 
 
 def _request_json(

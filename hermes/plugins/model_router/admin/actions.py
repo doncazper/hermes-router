@@ -615,20 +615,22 @@ def _runtime_read_action(
     if action_id == "runtime.models":
         capability = adapter.capabilities().discover_models
         if not capability.supported:
-            return _runtime_disabled_payload(backend.name, capability.disabled_reason)
+            return _runtime_disabled_payload(backend, capability.disabled_reason)
         models = adapter.discover_models(timeout_seconds=timeout_seconds)
         return {
             "ok": True,
             "backend": backend.name,
+            **_runtime_ownership_fields(backend),
             "models": [model.to_dict() for model in models],
         }
     capability = adapter.capabilities().list_loaded_models
     if not capability.supported:
-        return _runtime_disabled_payload(backend.name, capability.disabled_reason)
+        return _runtime_disabled_payload(backend, capability.disabled_reason)
     models = adapter.list_loaded_models(timeout_seconds=timeout_seconds)
     return {
         "ok": True,
         "backend": backend.name,
+        **_runtime_ownership_fields(backend),
         "loaded_models": [model.to_dict() for model in models],
     }
 
@@ -648,26 +650,26 @@ def _runtime_mutating_action(
     if action_id == "runtime.start_server":
         capability = capabilities.start_server
         if not capability.supported:
-            return _runtime_disabled_payload(backend.name, capability.disabled_reason)
+            return _runtime_disabled_payload(backend, capability.disabled_reason)
         result = adapter.start_server()
     elif action_id == "runtime.stop_server":
         capability = capabilities.stop_server
         if not capability.supported:
-            return _runtime_disabled_payload(backend.name, capability.disabled_reason)
+            return _runtime_disabled_payload(backend, capability.disabled_reason)
         result = adapter.stop_server()
     elif action_id == "runtime.load_model":
         capability = capabilities.load_model
         if not capability.supported:
-            return _runtime_disabled_payload(backend.name, capability.disabled_reason)
+            return _runtime_disabled_payload(backend, capability.disabled_reason)
         result = adapter.load_model(_runtime_model_from_payload(payload))
     elif action_id == "runtime.unload_model":
         capability = capabilities.unload_model
         if not capability.supported:
-            return _runtime_disabled_payload(backend.name, capability.disabled_reason)
+            return _runtime_disabled_payload(backend, capability.disabled_reason)
         result = adapter.unload_model(_runtime_model_from_payload(payload))
     else:  # pragma: no cover - dispatch protects this branch.
         raise AdminActionError(f"Unknown runtime action: {action_id}")
-    return _runtime_action_payload(backend.name, result)
+    return _runtime_action_payload(backend, result)
 
 
 def _load_runtime_proxy_config(paths: Mapping[str, Path]) -> Any:
@@ -697,27 +699,38 @@ def _runtime_model_from_payload(payload: Mapping[str, Any]) -> str:
 
 
 def _runtime_disabled_payload(
-    backend: str,
+    backend: Any,
     disabled_reason: str | None,
 ) -> dict[str, Any]:
     return {
         "ok": False,
-        "backend": backend,
+        "backend": backend.name,
+        **_runtime_ownership_fields(backend),
         "status": "unsupported",
         "disabled_reason": disabled_reason or "Runtime adapter does not support this action.",
     }
 
 
 def _runtime_action_payload(
-    backend: str,
+    backend: Any,
     result: RuntimeActionResult,
 ) -> dict[str, Any]:
     return {
         "ok": result.ok,
-        "backend": backend,
+        "backend": backend.name,
+        **_runtime_ownership_fields(backend),
         "result": result.to_dict(),
         "status": result.status,
         "disabled_reason": result.disabled_reason,
+    }
+
+
+def _runtime_ownership_fields(backend: Any) -> dict[str, Any]:
+    managed = bool(getattr(getattr(backend, "runtime", None), "enabled", False))
+    return {
+        "runtime_mode": runtime_mode_for_backend(backend),
+        "managed_by_modelrouter": managed,
+        "process_owner": "modelrouter" if managed else "external",
     }
 
 

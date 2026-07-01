@@ -4,9 +4,33 @@ from hermes.plugins.model_router.config import load_router_config
 from hermes.plugins.model_router.model_registry import build_model_registry
 from hermes.plugins.model_router.policy import ModelRouter
 from hermes.plugins.model_router.product import initialize_product_config
-from hermes.plugins.model_router.proxy_config import load_proxy_config
+from hermes.plugins.model_router.proxy_config import (
+    ProxyBackendConfig,
+    ProxyRuntimeConfig,
+    ProxyServerConfig,
+    RoutingProxyConfig,
+    load_proxy_config,
+)
 from hermes.plugins.model_router.runtime_adapters import RuntimeModel
 from hermes.plugins.model_router.setup_assistant import DiscoveredModel, SetupDiscovery
+
+
+def _proxy_config(*backends: ProxyBackendConfig) -> RoutingProxyConfig:
+    return RoutingProxyConfig(
+        proxy=ProxyServerConfig(),
+        router_config=None,
+        backends={backend.name: backend for backend in backends},
+        engine_backends={
+            route: backend.name for route, backend in zip(
+                ("fast_local", "balanced_local", "code_agent"),
+                backends,
+                strict=False,
+            )
+        }
+        or {"fast_local": backends[0].name},
+        fallback_backends={},
+        source_path="test",
+    )
 
 
 def test_registry_tracks_local_model_with_json_safe_metadata(tmp_path):
@@ -109,9 +133,10 @@ def test_registry_imports_models_from_router_and_proxy_config(tmp_path, monkeypa
     assert proxy_model["runtime"] == "lmstudio"
     assert proxy_model["backend"] == "fast"
     assert proxy_model["routing_eligible"] is True
-    assert runtime_model["source"] == "runtime"
+    assert runtime_model["source"] == "runtime_import"
     assert runtime_model["load_state"] == "loaded"
     assert runtime_model["backend"] == "fast"
+    assert runtime_model["routing_eligible"] is False
 
 
 def test_registry_detects_lmstudio_imported_model_folder():
@@ -135,6 +160,189 @@ def test_registry_detects_lmstudio_imported_model_folder():
     assert model["runtime"] == "lmstudio"
     assert model["source"] == "lmstudio"
     assert model["install_state"] == "installed"
+
+
+def test_registry_imports_lmstudio_runtime_state_idempotently():
+    config = _proxy_config(
+        ProxyBackendConfig(
+            name="fast",
+            base_url="http://127.0.0.1:1234/v1",
+            model="configured-model",
+        )
+    )
+    runtime_state = {
+        "runtime_id": "lmstudio",
+        "provider": "lmstudio",
+        "runtime_kind": "lmstudio",
+        "endpoint": "http://127.0.0.1:1234/v1",
+        "detected": True,
+        "last_checked_at": "2026-06-30T12:00:00Z",
+        "health": {"status": "ready", "ok": True},
+        "models": [
+            {
+                "id": "publisher/runtime-fast",
+                "display_name": "Runtime Fast",
+                "loaded": True,
+                "context_length": 8192,
+                "capabilities": {"vision": True, "tool_calls": False},
+                "owned_by": "lm-studio",
+            }
+        ],
+        "loaded_models": [],
+        "capabilities": {
+            "discover_models": {"supported": True},
+            "list_loaded_models": {"supported": False},
+        },
+    }
+
+    first = build_model_registry(
+        proxy_config=config,
+        runtime_models={"fast": runtime_state},
+    ).to_dict()
+    second = build_model_registry(
+        proxy_config=config,
+        runtime_models={"fast": runtime_state},
+    ).to_dict()
+
+    assert first == second
+    model = next(item for item in first["models"] if item["model_id"] == "publisher/runtime-fast")
+    assert model["source"] == "runtime_import"
+    assert model["runtime_id"] == "lmstudio"
+    assert model["name"] == "Runtime Fast"
+    assert model["context_length"] == 8192
+    assert model["load_state"] == "loaded"
+    assert model["routing_eligible"] is True
+    assert model["last_seen_at"] == "2026-06-30T12:00:00Z"
+    assert "models" in model["capabilities"]
+    assert "vision" in model["capabilities"]
+    assert model["metadata"]["owned_by"] == "lm-studio"
+    json.dumps(first)
+
+
+def test_registry_imports_ollama_models_and_loaded_state():
+    config = _proxy_config(
+        ProxyBackendConfig(
+            name="fast",
+            base_url="http://127.0.0.1:11434/v1",
+            model="qwen3:4b",
+        )
+    )
+    registry = build_model_registry(
+        proxy_config=config,
+        runtime_models={
+            "fast": {
+                "runtime_id": "ollama",
+                "provider": "ollama",
+                "runtime_kind": "ollama",
+                "endpoint": "http://127.0.0.1:11434/v1",
+                "detected": True,
+                "last_checked_at": "2026-06-30T12:05:00Z",
+                "health": {"status": "ready", "ok": True},
+                "models": [
+                    {"model_id": "qwen3:4b", "loaded": False, "source": "ollama_cli"},
+                    {
+                        "model_id": "llama3.2:latest",
+                        "loaded": False,
+                        "source": "ollama_cli",
+                    },
+                ],
+                "loaded_models": [
+                    {"model_id": "qwen3:4b", "source": "ollama_cli"},
+                ],
+                "capabilities": {
+                    "discover_models": {"supported": True},
+                    "list_loaded_models": {"supported": True},
+                    "unload_model": {"supported": True},
+                },
+            }
+        },
+    )
+    models = registry.to_dict()["models"]
+
+    qwen = next(item for item in models if item["model_id"] == "qwen3:4b")
+    other = next(item for item in models if item["model_id"] == "llama3.2:latest")
+
+    assert qwen["source"] == "proxy_config+runtime_import"
+    assert qwen["load_state"] == "loaded"
+    assert qwen["metadata"]["runtime_source"] == "ollama_cli"
+    assert qwen["runtime_id"] == "ollama"
+    assert other["source"] == "runtime_import"
+    assert other["load_state"] == "unloaded"
+    assert other["routing_eligible"] is True
+    assert "model_unload" in other["capabilities"]
+
+
+def test_registry_imports_configured_llamacpp_and_mlx_model_paths():
+    config = _proxy_config(
+        ProxyBackendConfig(
+            name="fast",
+            base_url="http://127.0.0.1:8090/v1",
+            model="fast-local",
+            runtime=ProxyRuntimeConfig(
+                enabled=True,
+                kind="llama-server",
+                command=("llama-server", "-m", "/models/Fast-Q4_K_M.gguf", "--port", "8090"),
+                readiness_url="http://127.0.0.1:8090/v1/models",
+            ),
+        ),
+        ProxyBackendConfig(
+            name="deep",
+            base_url="http://127.0.0.1:8091/v1",
+            model="mlx-local",
+            runtime=ProxyRuntimeConfig(
+                enabled=True,
+                kind="mlx-lm",
+                command=("python", "-m", "mlx_lm.server", "--model", "/models/mlx/Qwen"),
+                readiness_url="http://127.0.0.1:8091/v1/models",
+            ),
+        ),
+    )
+
+    models = build_model_registry(proxy_config=config).to_dict()["models"]
+    fast = next(item for item in models if item["backend"] == "fast")
+    deep = next(item for item in models if item["backend"] == "deep")
+
+    assert fast["source"] == "proxy_config"
+    assert fast["local_path"] == "/models/Fast-Q4_K_M.gguf"
+    assert fast["format"] == "GGUF"
+    assert fast["quantization"] == "Q4_K_M"
+    assert deep["local_path"] == "/models/mlx/Qwen"
+    assert deep["format"] == "MLX"
+
+
+def test_registry_allows_missing_runtime_metadata_and_marks_stale_models():
+    config = _proxy_config(
+        ProxyBackendConfig(
+            name="fast",
+            base_url="http://127.0.0.1:1234/v1",
+            model="configured-model",
+        )
+    )
+    registry = build_model_registry(
+        proxy_config=config,
+        runtime_models={
+            "fast": {
+                "runtime_id": "lmstudio",
+                "runtime_kind": "lmstudio",
+                "health": {"status": "ready", "ok": True},
+                "models": [{"id": "metadata-light"}],
+                "stale_models": ["stale-runtime-model"],
+            }
+        },
+    )
+
+    models = registry.to_dict()["models"]
+    imported = next(item for item in models if item["model_id"] == "metadata-light")
+    stale = next(item for item in models if item["model_id"] == "stale-runtime-model")
+
+    assert imported["source"] == "runtime_import"
+    assert imported["routing_eligible"] is True
+    assert imported["metadata"]["stale"] is False
+    assert stale["install_state"] == "stale"
+    assert stale["load_state"] == "stale"
+    assert stale["routing_eligible"] is False
+    assert stale["metadata"]["stale"] is True
+    json.dumps(registry.to_dict())
 
 
 def test_route_fast_does_not_depend_on_model_registry(monkeypatch, tmp_path):

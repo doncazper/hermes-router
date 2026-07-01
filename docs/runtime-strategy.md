@@ -124,6 +124,8 @@ The adapter contract also gives the UI and CLI a stable shape: supported
 actions are enabled, unsupported actions are disabled with reasons, and mutating
 actions require confirmation. The target product contract is defined in
 `docs/runtime-adapter-contract.md`.
+Installer-assisted runtime setup should follow the same plan-first boundary in
+`docs/runtime-install-flow.md`.
 
 ## Why Bundled Runtimes Come Later
 

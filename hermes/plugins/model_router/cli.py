@@ -59,6 +59,13 @@ from hermes.plugins.model_router.routing_log import (
     RoutingLogWriter,
     build_feedback,
 )
+from hermes.plugins.model_router.runtime_install import (
+    RuntimeConnectRequest,
+    RuntimeInstallError,
+    build_runtime_connect_plan,
+    runtime_doctor_report,
+    runtime_status_report,
+)
 from hermes.plugins.model_router.setup_assistant import (
     DiscoveredModel,
     DownloadPlan,
@@ -665,6 +672,69 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
         func=_cmd_runtime_action,
         runtime_action_id="runtime.unload_model",
     )
+
+    runtimes = subparsers.add_parser(
+        "runtimes",
+        help="Guided runtime status, doctor, and connect assistant",
+        description=(
+            "Guided runtime status, doctor, and connect assistant. Plans are "
+            "preview-only by default; config writes require --write --yes."
+        ),
+    )
+    runtimes_subparsers = runtimes.add_subparsers(
+        dest="runtimes_command",
+        required=True,
+    )
+    runtimes_status = runtimes_subparsers.add_parser(
+        "status",
+        help="Show configured runtime status and guidance",
+    )
+    _add_guided_runtime_common_args(runtimes_status)
+    runtimes_status.set_defaults(func=_cmd_runtimes_status)
+
+    runtimes_doctor = runtimes_subparsers.add_parser(
+        "doctor",
+        help="Diagnose runtime connectivity and show next actions",
+    )
+    _add_guided_runtime_common_args(runtimes_doctor)
+    runtimes_doctor.set_defaults(func=_cmd_runtimes_doctor)
+
+    runtimes_connect = runtimes_subparsers.add_parser(
+        "connect",
+        help="Preview or apply a safe backend connection for a runtime",
+    )
+    runtimes_connect.add_argument(
+        "runtime_id",
+        choices=("lmstudio", "ollama", "llamacpp"),
+        help="Runtime to connect",
+    )
+    _add_guided_runtime_common_args(runtimes_connect)
+    runtimes_connect.add_argument(
+        "--backend",
+        default="fast",
+        help="Existing backend to update when --write --yes is supplied",
+    )
+    runtimes_connect.add_argument(
+        "--endpoint",
+        default=None,
+        help="OpenAI-compatible endpoint; defaults depend on runtime",
+    )
+    runtimes_connect.add_argument(
+        "--model",
+        default=None,
+        help="Model id/tag to write into the selected backend",
+    )
+    runtimes_connect.add_argument(
+        "--write",
+        action="store_true",
+        help="Write the previewed backend config patch",
+    )
+    runtimes_connect.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm the explicit config write",
+    )
+    runtimes_connect.set_defaults(func=_cmd_runtimes_connect)
 
     feedback = subparsers.add_parser(
         "feedback",
@@ -1349,6 +1419,22 @@ def _add_runtime_common_args(
         )
 
 
+def _add_guided_runtime_common_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=Path(DEFAULT_CONFIG_DIR) / "routing_proxy.yaml",
+        help="Path to routing_proxy.yaml",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=0.25,
+        help="Bounded local runtime health timeout in seconds",
+    )
+    parser.add_argument("--json", action="store_true", help="Emit JSON output")
+
+
 def _runtime_cli_paths(config_path: Path) -> dict[str, Path]:
     config_dir = config_path.expanduser().parent
     return {
@@ -1533,6 +1619,87 @@ def _cmd_runtime_action(args: argparse.Namespace) -> int:
     body = result.get("payload")
     ok = isinstance(body, dict) and body.get("ok", result.get("ok")) is not False
     return 0 if ok else 1
+
+
+def _cmd_runtimes_status(args: argparse.Namespace) -> int:
+    try:
+        report = runtime_status_report(
+            args.config,
+            timeout_seconds=args.timeout,
+        )
+    except (RuntimeInstallError, ProxyConfigError, OSError, ValueError) as exc:
+        return _print_runtime_install_error(exc, json_output=args.json)
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        _print_runtimes_status(report)
+    return 0
+
+
+def _cmd_runtimes_doctor(args: argparse.Namespace) -> int:
+    try:
+        report = runtime_doctor_report(
+            args.config,
+            timeout_seconds=args.timeout,
+        )
+    except (RuntimeInstallError, ProxyConfigError, OSError, ValueError) as exc:
+        return _print_runtime_install_error(exc, json_output=args.json)
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        _print_runtimes_doctor(report)
+    return 0
+
+
+def _cmd_runtimes_connect(args: argparse.Namespace) -> int:
+    confirmed = bool(args.yes)
+    if args.write and not confirmed and not args.json:
+        try:
+            preview = build_runtime_connect_plan(
+                RuntimeConnectRequest(
+                    runtime_id=args.runtime_id,
+                    config_path=args.config,
+                    backend=args.backend,
+                    endpoint=args.endpoint,
+                    model=args.model,
+                    write=False,
+                    confirmed=False,
+                    timeout_seconds=args.timeout,
+                )
+            )
+        except (RuntimeInstallError, ProxyConfigError, OSError, ValueError) as exc:
+            return _print_runtime_install_error(exc, json_output=args.json)
+        _print_runtimes_connect_plan(preview)
+        answer = input("Write this runtime backend config patch? [y/N] ").strip().lower()
+        confirmed = answer in {"y", "yes"}
+    try:
+        plan = build_runtime_connect_plan(
+            RuntimeConnectRequest(
+                runtime_id=args.runtime_id,
+                config_path=args.config,
+                backend=args.backend,
+                endpoint=args.endpoint,
+                model=args.model,
+                write=args.write,
+                confirmed=confirmed,
+                timeout_seconds=args.timeout,
+            )
+        )
+    except (RuntimeInstallError, ProxyConfigError, OSError, ValueError) as exc:
+        return _print_runtime_install_error(exc, json_output=args.json)
+    if args.json:
+        print(json.dumps(plan, indent=2, sort_keys=True))
+    else:
+        _print_runtimes_connect_plan(plan)
+    return 0 if plan.get("ok") else 1
+
+
+def _print_runtime_install_error(exc: Exception, *, json_output: bool) -> int:
+    if json_output:
+        print(json.dumps({"ok": False, "error": str(exc)}, indent=2, sort_keys=True))
+    else:
+        print(f"Runtime guidance failed: {exc}", file=sys.stderr)
+    return 1
 
 
 def _cmd_feedback(args: argparse.Namespace) -> int:
@@ -2602,8 +2769,130 @@ def _print_runtime_action_result(result: Mapping[str, Any]) -> None:
     action_result = body.get("result")
     if isinstance(action_result, Mapping):
         print(f"Result: {action_result.get('status', 'unknown')}")
+        if body.get("process_owner") or body.get("runtime_mode"):
+            print(
+                "Owner: "
+                f"{body.get('process_owner', 'unknown')} "
+                f"({body.get('runtime_mode', 'unknown')})"
+            )
         if action_result.get("message"):
             print(f"Message: {action_result['message']}")
+
+
+def _print_runtimes_status(report: Mapping[str, Any]) -> None:
+    print("Runtime Status")
+    print(f"Config: {report.get('config_path')}")
+    print(f"Ready: {report.get('ready_count', 0)}/{report.get('runtime_count', 0)}")
+    print(f"Imported models: {report.get('imported_model_count', 0)}")
+    print("Runtimes:")
+    runtimes = report.get("runtimes") if isinstance(report.get("runtimes"), list) else []
+    if not runtimes:
+        print("- none")
+    for item in runtimes:
+        if not isinstance(item, Mapping):
+            continue
+        detected = item.get("detected")
+        detected_text = "unknown" if detected is None else str(detected).lower()
+        print(
+            f"- {item.get('backend')}: {item.get('runtime_id')} "
+            f"health={item.get('health_status', 'unknown')} "
+            f"detected={detected_text}"
+        )
+        if item.get("endpoint"):
+            print(f"  endpoint: {item['endpoint']}")
+        if item.get("install_hint"):
+            print(f"  install hint: {item['install_hint']}")
+    imported = (
+        report.get("imported_models")
+        if isinstance(report.get("imported_models"), list)
+        else []
+    )
+    if imported:
+        print("Imported Models:")
+        for item in imported[:20]:
+            if not isinstance(item, Mapping):
+                continue
+            suffix = ""
+            if item.get("load_state") not in {None, "unknown"}:
+                suffix = f" ({item.get('load_state')})"
+            print(
+                f"- {item.get('backend')}: {item.get('model_id')}{suffix}"
+            )
+    _print_notes(report)
+
+
+def _print_runtimes_doctor(report: Mapping[str, Any]) -> None:
+    _print_runtimes_status(report)
+    print("Guidance:")
+    guidance = report.get("guidance") if isinstance(report.get("guidance"), list) else []
+    if not guidance:
+        print("- none")
+    for item in guidance:
+        if not isinstance(item, Mapping):
+            continue
+        print(
+            f"- {item.get('backend')}: {item.get('next_action')} "
+            f"({item.get('runtime_id')})"
+        )
+        if item.get("message"):
+            print(f"  {item['message']}")
+
+
+def _print_runtimes_connect_plan(plan: Mapping[str, Any]) -> None:
+    print("Runtime Connect Plan")
+    print(f"Runtime: {plan.get('runtime_id')}")
+    print(f"Backend: {plan.get('backend')}")
+    print(f"Endpoint: {plan.get('endpoint')}")
+    print(f"Model: {plan.get('model')}")
+    print(f"Dry run: {str(plan.get('dry_run', True)).lower()}")
+    print(f"Config written: {str(plan.get('config_written', False)).lower()}")
+    if plan.get("backup_path"):
+        print(f"Backup: {plan['backup_path']}")
+    health = plan.get("health") if isinstance(plan.get("health"), Mapping) else {}
+    if health:
+        print(
+            "Health: "
+            f"{health.get('health_status', 'unknown')} "
+            f"detected={str(health.get('detected')).lower()}"
+        )
+        if health.get("install_hint"):
+            print(f"Install hint: {health['install_hint']}")
+    if plan.get("error"):
+        print(f"Error: {plan['error']}")
+    warnings = plan.get("warnings") if isinstance(plan.get("warnings"), list) else []
+    if warnings:
+        print("Warnings:")
+        for warning in warnings:
+            print(f"- {warning}")
+    print("Config patch preview:")
+    print(str(plan.get("config_diff") or "none").rstrip())
+    print("Guidance:")
+    guidance = plan.get("guidance") if isinstance(plan.get("guidance"), list) else []
+    if not guidance:
+        print("- none")
+    for item in guidance:
+        print(f"- {item}")
+    print("Actions:")
+    actions = plan.get("actions") if isinstance(plan.get("actions"), list) else []
+    if not actions:
+        print("- none")
+    for action in actions:
+        if not isinstance(action, Mapping):
+            continue
+        print(f"- {action.get('label')} ({action.get('kind')})")
+        if action.get("preview"):
+            print(f"  {action['preview']}")
+        elif action.get("url"):
+            print(f"  {action['url']}")
+    _print_notes(plan)
+
+
+def _print_notes(payload: Mapping[str, Any]) -> None:
+    notes = payload.get("notes") if isinstance(payload.get("notes"), list) else []
+    if notes:
+        print("Notes:")
+        for note in notes:
+            print(f"- {note}")
 
 
 def _print_dogfood_report(report) -> None:

@@ -4142,18 +4142,14 @@ def _redacted_backend_states(config: RoutingProxyConfig | None) -> list[dict[str
 
 def _runtime_models_from_backend_states(
     backend_states: list[dict[str, Any]],
-) -> dict[str, list[dict[str, Any]]]:
-    runtime_models: dict[str, list[dict[str, Any]]] = {}
+) -> dict[str, dict[str, Any]]:
+    runtime_models: dict[str, dict[str, Any]] = {}
     for backend in backend_states:
         backend_name = str(backend.get("name") or "")
         adapter = backend.get("runtime_adapter")
         if not backend_name or not isinstance(adapter, dict):
             continue
-        models = adapter.get("models")
-        if isinstance(models, list) and models:
-            runtime_models[backend_name] = [
-                model for model in models if isinstance(model, dict)
-            ]
+        runtime_models[backend_name] = dict(adapter)
     return runtime_models
 
 

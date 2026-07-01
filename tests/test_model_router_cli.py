@@ -298,6 +298,216 @@ def test_runtime_cli_mutating_json_requires_yes(tmp_path):
     assert payload["error"] == "Runtime unload model requires confirm=true."
 
 
+def test_runtime_cli_mutating_json_reports_external_owner(tmp_path):
+    init = _run_cli(
+        "init",
+        "--preset",
+        "localai",
+        "--yes",
+        "--config-dir",
+        str(tmp_path),
+        "--json",
+    )
+    assert init.returncode == 0
+
+    result = _run_cli(
+        "runtime",
+        "stop",
+        "--config",
+        str(tmp_path / "routing_proxy.yaml"),
+        "--backend",
+        "fast",
+        "--yes",
+        "--json",
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["action_id"] == "runtime.stop_server"
+    assert payload["payload"]["status"] == "unsupported"
+    assert payload["payload"]["process_owner"] == "external"
+    assert payload["payload"]["managed_by_modelrouter"] is False
+
+
+def test_guided_runtimes_status_json_uses_configured_backends(tmp_path):
+    init = _run_cli(
+        "init",
+        "--preset",
+        "lmstudio",
+        "--yes",
+        "--config-dir",
+        str(tmp_path),
+        "--json",
+    )
+    assert init.returncode == 0
+
+    result = _run_cli(
+        "runtimes",
+        "status",
+        "--config",
+        str(tmp_path / "routing_proxy.yaml"),
+        "--timeout",
+        "0.05",
+        "--json",
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["config_path"] == str(tmp_path / "routing_proxy.yaml")
+    assert payload["runtime_count"] >= 1
+    assert payload["runtimes"][0]["backend"]
+    assert "Runtime status is advisory" in payload["notes"][0]
+
+
+def test_guided_runtimes_doctor_outputs_actionable_guidance(tmp_path):
+    init = _run_cli(
+        "init",
+        "--preset",
+        "ollama",
+        "--yes",
+        "--config-dir",
+        str(tmp_path),
+        "--json",
+    )
+    assert init.returncode == 0
+
+    result = _run_cli(
+        "runtimes",
+        "doctor",
+        "--config",
+        str(tmp_path / "routing_proxy.yaml"),
+        "--timeout",
+        "0.05",
+    )
+
+    assert result.returncode == 0
+    assert "Runtime Status" in result.stdout
+    assert "Guidance:" in result.stdout
+    assert "routing uses configured backend policy" in result.stdout
+
+
+def test_guided_runtimes_connect_preview_does_not_mutate_config(tmp_path):
+    init = _run_cli(
+        "init",
+        "--preset",
+        "ollama",
+        "--yes",
+        "--config-dir",
+        str(tmp_path),
+        "--json",
+    )
+    assert init.returncode == 0
+    config_path = tmp_path / "routing_proxy.yaml"
+    before = config_path.read_text(encoding="utf-8")
+
+    result = _run_cli(
+        "runtimes",
+        "connect",
+        "ollama",
+        "--config",
+        str(config_path),
+        "--backend",
+        "fast",
+        "--model",
+        "qwen3:4b",
+        "--json",
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["runtime_id"] == "ollama"
+    assert payload["dry_run"] is True
+    assert payload["config_written"] is False
+    assert payload["config_patch"]["base_url"] == "http://127.0.0.1:11434/v1"
+    assert any(action["id"] == "runtime.ollama.pull" for action in payload["actions"])
+    write_action = next(
+        action
+        for action in payload["actions"]
+        if action["id"] == "runtime.ollama.write_config"
+    )
+    assert "--config" in write_action["command"]
+    assert str(config_path) in write_action["command"]
+    assert config_path.read_text(encoding="utf-8") == before
+
+
+def test_guided_runtimes_connect_write_requires_confirmation(tmp_path):
+    init = _run_cli(
+        "init",
+        "--preset",
+        "lmstudio",
+        "--yes",
+        "--config-dir",
+        str(tmp_path),
+        "--json",
+    )
+    assert init.returncode == 0
+    config_path = tmp_path / "routing_proxy.yaml"
+    before = config_path.read_text(encoding="utf-8")
+
+    result = _run_cli(
+        "runtimes",
+        "connect",
+        "lmstudio",
+        "--config",
+        str(config_path),
+        "--backend",
+        "fast",
+        "--model",
+        "lmstudio-test-model",
+        "--write",
+        "--json",
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert payload["error"] == "Runtime connect config write requires --yes."
+    assert config_path.read_text(encoding="utf-8") == before
+
+
+def test_guided_runtimes_connect_confirmed_write_updates_existing_backend(tmp_path):
+    init = _run_cli(
+        "init",
+        "--preset",
+        "lmstudio",
+        "--yes",
+        "--config-dir",
+        str(tmp_path),
+        "--json",
+    )
+    assert init.returncode == 0
+    config_path = tmp_path / "routing_proxy.yaml"
+
+    result = _run_cli(
+        "runtimes",
+        "connect",
+        "llamacpp",
+        "--config",
+        str(config_path),
+        "--backend",
+        "fast",
+        "--endpoint",
+        "http://127.0.0.1:8080/v1",
+        "--model",
+        "local-gguf-model",
+        "--write",
+        "--yes",
+        "--json",
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["config_written"] is True
+    assert payload["restart_recommended"] is True
+    assert Path(payload["backup_path"]).exists()
+    updated = (tmp_path / "routing_proxy.yaml").read_text(encoding="utf-8")
+    assert "http://127.0.0.1:8080/v1" in updated
+    assert "local-gguf-model" in updated
+
+
 def test_tui_cli_help_exposes_terminal_control_center():
     result = _run_cli("tui", "--help")
 

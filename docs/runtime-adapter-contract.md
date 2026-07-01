@@ -346,7 +346,10 @@ silently.
 
 For configured managed processes, ModelRouter may start/stop the exact argv
 declared in `routing_proxy.yaml` after confirmation or proxy demand-start rules.
-It must not infer arbitrary model paths or download GGUF files.
+Operator-triggered start writes a ModelRouter-owned PID marker; stop/unload only
+targets that marked process and leaves externally started runtimes alone. It
+must not infer arbitrary model paths, kill unrelated processes, or download GGUF
+files.
 
 ### MLX-LM
 
@@ -416,6 +419,9 @@ The current runtime implementation already has the right skeleton:
 - `AdapterSupport` and `RuntimeCapabilities` for first-class disabled reasons.
 - Runtime-specific adapters for generic OpenAI-compatible endpoints, LM Studio,
   Ollama, LocalAI, vLLM, and configured managed runtimes.
+- Confirmed start/stop/load/unload controls for configured managed CLI runtimes
+  when the declared command is available, with unsupported reasons when the
+  command or capability is missing.
 - Runtime detection reports include `runtime_id`, family `runtime_kind`,
   ownership `runtime_mode`, detected state, endpoint, optional version,
   health status, missing dependency, install hint, and `last_checked_at`.

@@ -503,9 +503,11 @@ def test_settings_state_feeds_runtime_models_into_registry(tmp_path, monkeypatch
     runtime_model = next(
         model for model in registry_models if model["model_id"] == "runtime-visible-fast"
     )
-    assert runtime_model["source"] == "runtime"
+    assert runtime_model["source"] == "runtime_import"
     assert runtime_model["provider"] == "lmstudio"
+    assert runtime_model["runtime_id"] == "lmstudio"
     assert runtime_model["backend"] == "fast"
+    assert runtime_model["routing_eligible"] is True
 
 
 def test_runtime_status_panel_renders_compact_available_runtime(
@@ -788,7 +790,7 @@ def test_dashboard_route_map_reflects_configured_backends(tmp_path, monkeypatch)
         "enabled": True,
         "kind": "llama-server",
         "command": [
-            "llama-server",
+            "definitely-missing-model-router-runtime",
             "-m",
             "/models/local-code.gguf",
             "--port",
@@ -811,7 +813,9 @@ def test_dashboard_route_map_reflects_configured_backends(tmp_path, monkeypatch)
     assert state["provider_runtime"]["detail"]["adapter_provider"] == "llamacpp"
     assert state["provider_runtime"]["detail"]["capabilities"]["load_model"] == {
         "supported": False,
-        "disabled_reason": "Managed runtimes load by starting their configured process.",
+        "disabled_reason": (
+            "Managed runtime command missing: definitely-missing-model-router-runtime"
+        ),
     }
 
 
@@ -1093,6 +1097,8 @@ def test_runtime_actions_status_models_and_mutation_are_explicit(
     assert blocked.json()["error"] == "Runtime unload model requires confirm=true."
     assert unloaded.status_code == 200
     assert unloaded.json()["payload"]["result"]["status"] == "unloaded"
+    assert unloaded.json()["payload"]["process_owner"] == "external"
+    assert unloaded.json()["payload"]["managed_by_modelrouter"] is False
     assert calls == ["unload_model:fake-model"]
 
 
@@ -1115,7 +1121,45 @@ def test_runtime_action_unsupported_returns_disabled_reason(tmp_path, monkeypatc
     assert response["payload"]["ok"] is False
     assert response["payload"]["status"] == "unsupported"
     assert response["payload"]["disabled_reason"] == "adapter disabled this operation"
+    assert response["payload"]["process_owner"] == "external"
     assert calls == []
+
+
+def test_runtime_action_payload_marks_modelrouter_managed_process(
+    tmp_path,
+    monkeypatch,
+):
+    _init_config(tmp_path)
+    _stub_scan(monkeypatch)
+    config_path = tmp_path / "routing_proxy.yaml"
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    data["backends"]["fast"]["runtime"] = {
+        "enabled": True,
+        "kind": "llama-server",
+        "command": ["llama-server", "-m", "/models/fast.gguf", "--port", "8090"],
+        "readiness_url": "http://127.0.0.1:8090/v1/models",
+        "log_path": str(tmp_path / "runtime.log"),
+    }
+    config_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    calls: list[str] = []
+
+    def fake_adapter(backend, *, requester=None):
+        del requester
+        return _RuntimeActionAdapter(backend, calls)
+
+    monkeypatch.setattr(admin_actions, "adapter_for_backend", fake_adapter)
+
+    response = run_admin_action(
+        "runtime.start_server",
+        settings_ui.settings_paths(tmp_path),
+        {"backend": "fast", "confirm": True},
+    )
+
+    assert response["payload"]["result"]["status"] == "started"
+    assert response["payload"]["runtime_mode"] == "external_cli"
+    assert response["payload"]["process_owner"] == "modelrouter"
+    assert response["payload"]["managed_by_modelrouter"] is True
+    assert calls == ["start_server"]
 
 
 def test_settings_render_does_not_invoke_mutating_runtime_actions(

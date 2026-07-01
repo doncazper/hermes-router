@@ -162,6 +162,7 @@ def test_hot_paths_do_not_depend_on_runtime_adapters():
 
     for source in (policy_source, proxy_source):
         assert "runtime_adapters" not in source
+        assert "runtime_install" not in source
         assert "adapter_for_backend" not in source
         assert "runtime_state_for_backend" not in source
 
