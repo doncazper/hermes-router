@@ -293,6 +293,7 @@ def review_queue(
         "skipped_labeled": skipped_labeled,
         "skipped_private": skipped_private,
         "catalog_coverage": usage_summary["catalog_coverage"],
+        "catalog_coverage_gaps": usage_summary["catalog_coverage_gaps"],
         "privacy": (
             "Prompts, prompt previews, request bodies, feedback notes, and "
             "secrets are hidden by default."
@@ -317,6 +318,7 @@ def usage_telemetry_summary(
     missing_catalog_match_rows = 0
     placeholder_pricing_rows = 0
     insufficient_usage_rows = 0
+    catalog_gap_groups: dict[tuple[str, ...], dict[str, Any]] = {}
 
     for event in events:
         usage = event_usage_summary(event)
@@ -334,6 +336,7 @@ def usage_telemetry_summary(
             PRICING_MISSING_PRICE,
         }:
             missing_catalog_match_rows += 1
+            _merge_catalog_gap_group(catalog_gap_groups, event, usage, cost, pricing_status)
         if _pricing_is_placeholder(cost):
             placeholder_pricing_rows += 1
         _merge_usage_totals(totals, usage)
@@ -384,6 +387,7 @@ def usage_telemetry_summary(
             insufficient_usage_rows=insufficient_usage_rows,
             catalog=catalog,
         ),
+        "catalog_coverage_gaps": _sorted_catalog_gap_groups(catalog_gap_groups),
         **cost_totals,
     }
 
@@ -501,6 +505,43 @@ def _group_totals(groups: dict[str, dict[str, int]], key: str) -> dict[str, int]
     return groups[key]
 
 
+def _merge_catalog_gap_group(
+    groups: dict[tuple[str, ...], dict[str, Any]],
+    event: dict[str, Any],
+    usage: dict[str, Any],
+    cost: dict[str, Any],
+    pricing_status: str,
+) -> None:
+    provider = _safe_group_key(event.get("provider") or event.get("backend_provider"))
+    backend = _safe_group_key(event.get("backend") or event.get("selected_backend"))
+    backend_model = _safe_group_key(event.get("backend_model"))
+    upstream_model = _safe_group_key(event.get("upstream_model"))
+    selected_engine = _safe_group_key(event.get("selected_engine"))
+    model = _safe_group_key(cost.get("pricing_model")) or _safe_model_key(event)
+    key = (
+        pricing_status,
+        provider or "unknown",
+        model or "unknown",
+        backend or "unknown",
+        backend_model or "unknown",
+        upstream_model or "unknown",
+        selected_engine or "unknown",
+    )
+    if key not in groups:
+        groups[key] = {
+            "pricing_match_status": key[0],
+            "provider": key[1],
+            "model": key[2],
+            "backend": key[3],
+            "backend_model": key[4],
+            "upstream_model": key[5],
+            "selected_engine": key[6],
+            **_empty_usage_totals(),
+            "events": 0,
+        }
+    _merge_usage_totals(groups[key], usage)
+
+
 def _merge_cost_totals(target: dict[str, Any], cost: dict[str, Any]) -> None:
     if cost.get("pricing_match_status") != "matched":
         return
@@ -533,6 +574,25 @@ def _sorted_usage_groups(groups: dict[str, dict[str, int]]) -> dict[str, dict[st
             ),
         )
     }
+
+
+def _sorted_catalog_gap_groups(
+    groups: dict[tuple[str, ...], dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [
+        groups[key]
+        for key in sorted(
+            groups,
+            key=lambda item: (
+                -groups[item].get("events", 0),
+                -groups[item].get("usage_total_tokens", 0),
+                groups[item].get("pricing_match_status", ""),
+                groups[item].get("provider", ""),
+                groups[item].get("model", ""),
+                groups[item].get("backend", ""),
+            ),
+        )
+    ]
 
 
 def _safe_model_key(event: dict[str, Any]) -> str:

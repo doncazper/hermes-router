@@ -326,6 +326,7 @@ entries:
         "total_routing_rows": 2,
         "total_rows_with_usage": 1,
     }
+    assert payload["telemetry"]["catalog_coverage_gaps"] == []
     assert payload["telemetry"]["estimated_total_cost"] == 0.000072
     assert payload["telemetry"]["estimated_cost_currency"] == "USD"
     assert payload["telemetry"]["recent_request_ids"] == ["req-1", "req-2"]
@@ -449,10 +450,14 @@ def test_dashboard_uses_latest_safe_route_receipt_without_prompt_leakage(
     assert state["review"]["items"][0]["usage_tokens"] == "p=40 c=12 t=52 cache=8"
     assert state["review"]["catalog_coverage"]["total_rows_with_usage"] == 1
     assert state["review"]["catalog_coverage"]["rows_missing_provider_model_catalog_match"] == 1
+    assert state["review"]["catalog_coverage_gaps"][0]["model"] == "actual-code-model"
+    assert state["review"]["catalog_coverage_gaps"][0]["backend"] == "code"
+    assert state["review"]["catalog_coverage_gaps"][0]["usage_total_tokens"] == 52
     assert "route.coding" in html
     assert "req-secret" in html
     assert "p=40 c=12 t=52 cache=8" in html
     assert "Catalog coverage" in html
+    assert "Coverage gaps" in html
     assert "api_key=super-secret" not in serialized
     assert "api_key=super-secret" not in html
     assert "fix this repository" not in serialized

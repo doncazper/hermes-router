@@ -2519,6 +2519,7 @@ def _print_telemetry_summary(summary: dict[str, Any]) -> None:
     print(f"Estimated cost: {cost or 'none'}")
     print(f"Pricing catalog: {summary.get('pricing_catalog_source', 'unknown')}")
     print(f"Catalog coverage: {_format_catalog_coverage(summary.get('catalog_coverage'))}")
+    _print_catalog_coverage_gaps(summary.get("catalog_coverage_gaps"))
     _print_counter("Outcome labels", summary.get("outcome_label_counts", {}))
     _print_counter("Pricing matches", summary.get("pricing_match_counts", {}))
     _print_counter("Selected engines", summary["selected_engine_counts"])
@@ -2574,6 +2575,7 @@ def _print_telemetry_review(summary: dict[str, Any]) -> None:
     print(f"Skipped labeled: {summary['skipped_labeled']}")
     print(f"Skipped private/no-prompt: {summary['skipped_private']}")
     print(f"Catalog coverage: {_format_catalog_coverage(summary.get('catalog_coverage'))}")
+    _print_catalog_coverage_gaps(summary.get("catalog_coverage_gaps"))
     print(f"Privacy: {summary['privacy']}")
     print("Items:")
     if not summary["items"]:
@@ -2618,6 +2620,29 @@ def _print_usage_groups(title: str, values: Any) -> None:
         cost = _format_cost_summary(usage)
         suffix = f"; cost={cost}" if cost else ""
         print(f"- {key}: {formatted or 'no usage'}{suffix}")
+
+
+def _print_catalog_coverage_gaps(values: Any) -> None:
+    print("Catalog coverage gaps:")
+    if not isinstance(values, list) or not values:
+        print("- none")
+        return
+    for gap in values:
+        if not isinstance(gap, dict):
+            continue
+        usage = _format_usage_summary(gap)
+        print(
+            "- "
+            f"{gap.get('pricing_match_status') or 'unknown'}: "
+            f"provider={gap.get('provider') or 'unknown'} "
+            f"model={gap.get('model') or 'unknown'} "
+            f"backend={gap.get('backend') or 'unknown'} "
+            f"backend_model={gap.get('backend_model') or 'unknown'} "
+            f"upstream_model={gap.get('upstream_model') or 'unknown'} "
+            f"route={gap.get('selected_engine') or 'unknown'} "
+            f"events={_safe_usage_int(gap.get('events'))}"
+            + (f" usage={usage}" if usage else "")
+        )
 
 
 def _format_usage_summary(value: Any) -> str:

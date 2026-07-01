@@ -532,6 +532,9 @@ def render_settings_page(state: Mapping[str, Any]) -> str:
     telemetry_catalog_coverage = escape(
         _format_catalog_coverage(telemetry.get("catalog_coverage"))
     )
+    telemetry_catalog_gaps = escape(
+        _format_catalog_gap_list(telemetry.get("catalog_coverage_gaps"))
+    )
     engine_counts = escape(_compact_counts(telemetry.get("selected_engine_counts", {})))
     backend_counts = escape(_compact_counts(telemetry.get("backend_counts", {})))
     status_counts = escape(_compact_counts(telemetry.get("status_counts", {})))
@@ -815,6 +818,7 @@ def render_settings_page(state: Mapping[str, Any]) -> str:
           <div><h3>outcomes</h3><span class="mono">{telemetry_outcomes}</span></div>
           <div><h3>pricing</h3><span class="mono">{telemetry_pricing_matches}</span></div>
           <div><h3>catalog coverage</h3><span class="mono">{telemetry_catalog_coverage}</span></div>
+          <div><h3>coverage gaps</h3><span class="mono">{telemetry_catalog_gaps}</span></div>
           <div><h3>engines</h3><span class="mono">{engine_counts}</span></div>
           <div><h3>backends</h3><span class="mono">{backend_counts}</span></div>
           <div><h3>usage by backend</h3><span class="mono">{usage_backend_counts}</span></div>
@@ -3527,6 +3531,7 @@ def _recent_requests_table(state: Mapping[str, Any]) -> str:
     catalog_coverage = escape(
         _format_catalog_coverage(telemetry.get("catalog_coverage"))
     )
+    catalog_gaps = escape(_format_catalog_gap_list(telemetry.get("catalog_coverage_gaps")))
     body = "\n".join(
         f"""<tr>
           <td>{escape(str(row.get("time") or "—"))}</td>
@@ -3544,6 +3549,7 @@ def _recent_requests_table(state: Mapping[str, Any]) -> str:
     if not body:
         body = '<tr><td colspan="8" class="muted">No routing telemetry yet. Start the proxy and send a request.</td></tr>'
     return f"""<p class="muted">Catalog coverage: <span class="code">{catalog_coverage}</span></p>
+    <p class="muted">Coverage gaps: <span class="code">{catalog_gaps}</span></p>
     <table class="data-table">
       <thead>
         <tr>
@@ -3863,6 +3869,8 @@ def _sanitize_telemetry_summary(summary: Mapping[str, Any]) -> dict[str, Any]:
             payload[key] = _safe_usage_group_mapping(value)
         elif key == "catalog_coverage":
             payload[key] = _safe_catalog_coverage(value)
+        elif key == "catalog_coverage_gaps":
+            payload[key] = _safe_catalog_gap_list(value)
         elif key in {
             "unlabeled_replayable_request_ids",
             "skipped_no_prompt_request_ids",
@@ -4011,6 +4019,46 @@ def _safe_catalog_coverage(value: Any) -> dict[str, Any]:
     if confidence:
         coverage["cost_confidence"] = confidence
     return coverage
+
+
+def _safe_catalog_gap_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    gaps: list[dict[str, Any]] = []
+    for item in value[:20]:
+        if not isinstance(item, Mapping):
+            continue
+        gap = {
+            "pricing_match_status": _safe_event_string(
+                item.get("pricing_match_status"),
+                max_chars=80,
+            ),
+            "provider": _safe_event_string(item.get("provider"), max_chars=120),
+            "model": _safe_event_string(item.get("model"), max_chars=160),
+            "backend": _safe_event_string(item.get("backend"), max_chars=120),
+            "backend_model": _safe_event_string(
+                item.get("backend_model"),
+                max_chars=160,
+            ),
+            "upstream_model": _safe_event_string(
+                item.get("upstream_model"),
+                max_chars=160,
+            ),
+            "selected_engine": _safe_event_string(
+                item.get("selected_engine"),
+                max_chars=120,
+            ),
+            "events": _safe_int(item.get("events")),
+            "usage_prompt_tokens": _safe_int(item.get("usage_prompt_tokens")),
+            "usage_completion_tokens": _safe_int(item.get("usage_completion_tokens")),
+            "usage_total_tokens": _safe_int(item.get("usage_total_tokens")),
+            "usage_cached_input_tokens": _safe_int(
+                item.get("usage_cached_input_tokens")
+            ),
+        }
+        if gap["model"] or gap["backend"] or gap["provider"]:
+            gaps.append(gap)
+    return gaps
 
 
 def _empty_catalog_coverage() -> dict[str, Any]:
@@ -4355,6 +4403,7 @@ def _review_state(paths: Mapping[str, Path]) -> dict[str, Any]:
             "skipped_labeled": 0,
             "skipped_private": 0,
             "catalog_coverage": _empty_catalog_coverage(),
+            "catalog_coverage_gaps": [],
             "error": str(exc),
             "privacy": (
                 "Prompts, prompt previews, request bodies, feedback notes, and "
@@ -4403,6 +4452,9 @@ def _sanitize_review_state(
         "skipped_labeled": _safe_int(payload.get("skipped_labeled")),
         "skipped_private": _safe_int(payload.get("skipped_private")),
         "catalog_coverage": _safe_catalog_coverage(payload.get("catalog_coverage")),
+        "catalog_coverage_gaps": _safe_catalog_gap_list(
+            payload.get("catalog_coverage_gaps")
+        ),
         "privacy": _safe_event_string(
             payload.get("privacy"),
             max_chars=320,
@@ -5076,6 +5128,26 @@ def _format_catalog_coverage(value: Any) -> str:
     if isinstance(confidence, str) and confidence:
         parts.append(confidence)
     return " ".join(parts)
+
+
+def _format_catalog_gap_list(value: Any) -> str:
+    gaps = _safe_catalog_gap_list(value)
+    if not gaps:
+        return "none"
+    parts: list[str] = []
+    for gap in gaps[:5]:
+        status = gap.get("pricing_match_status") or "unknown"
+        model = gap.get("model") or "unknown-model"
+        backend = gap.get("backend") or "unknown-backend"
+        provider = gap.get("provider") or "unknown-provider"
+        events = _safe_int(gap.get("events"))
+        total = _safe_int(gap.get("usage_total_tokens"))
+        parts.append(
+            f"{provider}/{model}@{backend} {status} events={events} t={total}"
+        )
+    if len(gaps) > 5:
+        parts.append(f"+{len(gaps) - 5} more")
+    return "; ".join(parts)
 
 
 def _download_row(item: Mapping[str, Any]) -> str:

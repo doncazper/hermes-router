@@ -260,6 +260,23 @@ def test_replay_routing_log_estimates_cost_from_local_catalog(tmp_path):
     assert coverage["rows_using_placeholder_pricing"] == 0
     assert coverage["rows_with_estimated_cost"] == 1
     assert coverage["cost_confidence"] == "partial_catalog_match"
+    gaps = summary["catalog_coverage_gaps"]
+    assert gaps == [
+        {
+            "backend": "balanced",
+            "backend_model": "unknown-model",
+            "events": 1,
+            "model": "unknown-model",
+            "pricing_match_status": "missing_price",
+            "provider": "unknown",
+            "selected_engine": "balanced_local",
+            "upstream_model": "unknown",
+            "usage_cached_input_tokens": 0,
+            "usage_completion_tokens": 8,
+            "usage_prompt_tokens": 20,
+            "usage_total_tokens": 28,
+        }
+    ]
     assert "secret-value" not in serialized
 
 
@@ -301,7 +318,9 @@ def test_replay_routing_log_reports_placeholder_pricing_coverage(tmp_path):
     assert summary["pricing_match_counts"] == {"matched": 1}
     assert summary["catalog_coverage"]["rows_using_placeholder_pricing"] == 1
     assert summary["catalog_coverage"]["cost_confidence"] == "placeholder_pricing"
+    assert summary["catalog_coverage_gaps"] == []
     assert review["catalog_coverage"]["rows_using_placeholder_pricing"] == 1
+    assert review["catalog_coverage_gaps"] == []
     assert review["items"][0]["cost"]["pricing_is_placeholder"] is True
     assert "secret-value" not in serialized
 
@@ -453,6 +472,65 @@ def test_telemetry_cli_summary_and_review_show_usage_without_prompt_text(tmp_pat
     assert "confidence=catalog_matched" in review.stdout
     assert "secret-value" not in review.stdout
     assert "rewrite this" not in review.stdout
+
+
+def test_telemetry_cli_summary_and_review_show_catalog_gap_drilldown(tmp_path):
+    events = tmp_path / "events.jsonl"
+    feedback = tmp_path / "feedback.jsonl"
+    pricing = tmp_path / "pricing_catalog.yaml"
+    _write_jsonl(feedback, [])
+    _write_pricing_catalog(pricing)
+    _write_jsonl(
+        events,
+        [
+            {
+                "event_type": "routing_event",
+                "request_id": "gap-cli",
+                "prompt": "api_key=secret-value summarize this",
+                "selected_engine": "balanced_local",
+                "backend": "balanced",
+                "backend_model": "unknown-model",
+                "status": "forwarded",
+                "usage_prompt_tokens": 20,
+                "usage_completion_tokens": 8,
+                "usage_total_tokens": 28,
+            }
+        ],
+    )
+
+    summary = _run_cli(
+        "telemetry",
+        "summary",
+        "--events",
+        str(events),
+        "--feedback",
+        str(feedback),
+        "--pricing-catalog",
+        str(pricing),
+    )
+    review = _run_cli(
+        "telemetry",
+        "review",
+        "--events",
+        str(events),
+        "--feedback",
+        str(feedback),
+        "--pricing-catalog",
+        str(pricing),
+    )
+
+    assert summary.returncode == 0
+    assert "Catalog coverage gaps:" in summary.stdout
+    assert "missing_price: provider=unknown model=unknown-model" in summary.stdout
+    assert "backend=balanced" in summary.stdout
+    assert "events=1 usage=prompt=20, completion=8, total=28" in summary.stdout
+    assert "secret-value" not in summary.stdout
+    assert "summarize this" not in summary.stdout
+    assert review.returncode == 0
+    assert "Catalog coverage gaps:" in review.stdout
+    assert "missing_price: provider=unknown model=unknown-model" in review.stdout
+    assert "secret-value" not in review.stdout
+    assert "summarize this" not in review.stdout
 
 
 def test_replay_fixture_corpus_has_no_expected_mismatches():
