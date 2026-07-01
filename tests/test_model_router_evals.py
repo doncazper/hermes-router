@@ -439,6 +439,7 @@ def test_eval_runner_runs_category_and_all_with_mocked_backend(tmp_path):
         all_fixtures=True,
         output_path=output,
         run_id="evalrun_all",
+        confirm_large_run=True,
         runner=runner,
     )
 
@@ -447,6 +448,31 @@ def test_eval_runner_runs_category_and_all_with_mocked_backend(tmp_path):
     assert len(all_run.results) == 8
     rows = load_eval_results(output)
     assert len(rows) == 10
+
+
+def test_eval_runner_blocks_full_fixture_sweep_without_confirmation(tmp_path):
+    initialize_product_config(
+        preset="lmstudio",
+        config_dir=tmp_path,
+        force=False,
+        interactive=False,
+    )
+    output = tmp_path / "results.jsonl"
+
+    with pytest.raises(EvalFixtureError, match="confirm-large-run"):
+        execute_eval_run(
+            config_path=tmp_path / "routing_proxy.yaml",
+            backend="fast",
+            all_fixtures=True,
+            output_path=output,
+            run_id="evalrun_blocked_all",
+            runner=lambda _request: EvalBackendResponse(
+                status="completed",
+                output="- one\n- two\n- three",
+            ),
+        )
+
+    assert not output.exists()
 
 
 def test_eval_report_latest_is_privacy_safe(tmp_path):
@@ -825,6 +851,49 @@ def test_eval_run_cli_invokes_mocked_backend_and_writes_json(
     assert payload["run_id"] == "evalrun_cli"
     assert payload["results"][0]["score_percent"] == 100.0
     assert output.exists()
+
+
+def test_eval_run_cli_requires_confirmation_for_all_fixtures(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    initialize_product_config(
+        preset="lmstudio",
+        config_dir=tmp_path,
+        force=False,
+        interactive=False,
+    )
+    output = tmp_path / "blocked-results.jsonl"
+
+    def runner(_request):
+        raise AssertionError("blocked broad eval run should not call a backend")
+
+    monkeypatch.setattr(
+        "hermes.plugins.model_router.eval_runner.run_backend_eval_request",
+        runner,
+    )
+
+    exit_code = model_router_cli.main(
+        [
+            "eval",
+            "run",
+            "--json",
+            "--config",
+            str(tmp_path / "routing_proxy.yaml"),
+            "--backend",
+            "fast",
+            "--all-fixtures",
+            "--output",
+            str(output),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert "confirm-large-run" in payload["error"]
+    assert "sweep discovered models" in payload["error"]
+    assert not output.exists()
 
 
 def test_eval_list_cli_emits_privacy_safe_json(capsys):

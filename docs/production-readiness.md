@@ -6,8 +6,9 @@ receipts, safety gates, and full provider control.
 
 Its production surface is intentionally small: initialize `ModelRouter` once,
 keep it in memory, and call `route_fast(prompt)` for live traffic. The local
-proxy, optional verifier, workflow benchmarks, catalog maintenance, and future
-adapters sit outside that hot path.
+proxy, optional verifier, workflow benchmarks, model evals, catalog
+maintenance, pricing reports, model discovery/import, and runtime adapters sit
+outside that hot path.
 
 ## API Contract
 
@@ -123,8 +124,12 @@ workers or delegate tasks.
 
 Receipts are diagnostic artifacts, not the production hot path.
 `route_fast(...)` still returns only an engine string and does not build
-receipts, call classifiers, start runtimes, log prompts, or perform provider
-calls.
+receipts, call classifiers, summarize telemetry, load pricing catalogs, scan or
+import models, start runtimes, run benchmarks/evals, log prompts, scan the
+filesystem, make network requests, or perform provider calls. `route(...)` may
+build diagnostic scores and route details, but it must not run live pricing
+refresh, runtime lifecycle actions, workflow benchmarks, model evals, or
+provider/runtime network calls.
 
 ## Explicit Verification Boundary
 

@@ -501,6 +501,30 @@ def test_model_library_dashboard_renders_cached_eval_evidence(tmp_path, monkeypa
     assert '"route":"balanced"' not in html
 
 
+def test_settings_state_does_not_execute_eval_runs(tmp_path, monkeypatch):
+    _init_config(tmp_path)
+    _stub_scan(monkeypatch)
+
+    def fail_eval_execution(*_args, **_kwargs):
+        raise AssertionError("settings render must not execute eval runs")
+
+    monkeypatch.setattr(
+        "hermes.plugins.model_router.eval_runner.run_backend_eval_request",
+        fail_eval_execution,
+    )
+    monkeypatch.setattr(
+        "hermes.plugins.model_router.eval_runner.execute_eval_run",
+        fail_eval_execution,
+    )
+
+    state = settings_ui.build_settings_state(settings_ui.settings_paths(tmp_path))
+    html = settings_ui.render_dashboard_page(state)
+
+    assert "Eval evidence" in html
+    assert "not_evaluated" in html
+    assert "Advisory only; cached eval evidence does not change routing automatically." in html
+
+
 def test_settings_state_feeds_runtime_models_into_registry(tmp_path, monkeypatch):
     _init_config(tmp_path)
     _stub_empty_scan(monkeypatch)

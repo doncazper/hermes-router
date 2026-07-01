@@ -423,8 +423,10 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
     )
     fixture_selection.add_argument(
         "--all",
+        "--all-fixtures",
+        dest="all",
         action="store_true",
-        help="Run all built-in eval fixtures",
+        help="Run all built-in eval fixtures; requires --confirm-large-run",
     )
     eval_run.add_argument(
         "--output",
@@ -442,6 +444,14 @@ def configure_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
         "--run-id",
         default=None,
         help="Optional run id for automation; defaults to a timestamped id",
+    )
+    eval_run.add_argument(
+        "--confirm-large-run",
+        action="store_true",
+        help=(
+            "Confirm a broad eval run after reviewing time/cost risk; "
+            "required with --all-fixtures"
+        ),
     )
     eval_run.add_argument("--json", action="store_true", help="Emit JSON output")
     eval_run.set_defaults(func=_cmd_eval_run)
@@ -1341,6 +1351,7 @@ def _cmd_eval_run(args: argparse.Namespace) -> int:
             output_path=args.output,
             timeout_seconds=args.timeout,
             run_id=args.run_id,
+            confirm_large_run=args.confirm_large_run,
         )
     except (EvalFixtureError, ProxyConfigError, OSError, ValueError) as exc:
         payload = {"ok": False, "error": str(exc)}

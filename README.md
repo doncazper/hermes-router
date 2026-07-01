@@ -49,6 +49,74 @@ For the local-model app roadmap, see
 floor, not the ceiling: ModelRouter should be able to replace LM Studio for
 common local workflows while also working above or alongside it.
 
+## Public Preview Snapshot
+
+ModelRouter is a public developer-preview project. The most mature surface is
+the deterministic local routing/control path; the broader control-center and
+runtime-management experience is intentionally growing behind explicit operator
+actions, adapter contracts, and preview-safe docs.
+
+What works today:
+
+- Deterministic `route_fast(...)` routing with a microsecond latency guard.
+- Receipt-rich `route(...)` diagnostics for explainability and policy review.
+- A local OpenAI-compatible proxy for configured local, hosted, and internal
+  OpenAI-compatible backends.
+- Settings/TUI control-center surfaces for proxy status, routing mode, active
+  backend/model, runtime status, model library, telemetry, pricing catalog
+  coverage, feedback labels, and safety/policy state.
+- Runtime detection and adapter-shaped lifecycle surfaces for LM Studio,
+  Ollama, llama.cpp, MLX/MLX-LM, LocalAI, vLLM, and generic hosted
+  OpenAI-compatible backends.
+- Privacy-safe telemetry, manual outcome labels, local pricing catalog
+  reporting, workflow fixtures, and opt-in bounded model suitability evals.
+
+What it is not:
+
+- Not a hidden agent planner, worker orchestrator, or task executor.
+- Not a custom inference engine or replacement for proven runtime kernels.
+- Not an automatic benchmark sweeper over every discovered local model.
+- Not a live-pricing fetcher in routing or proxy hot paths.
+- Not a claim of benchmark parity, cost reduction, or frontier-model
+  performance.
+
+## Screenshots
+
+The main UI is a control center, not a chat surface. It should make operational
+state scannable first: proxy status, routing mode, active backend/model, runtime
+state, model library, telemetry/cost/outcome/catalog coverage, and safety
+policy.
+
+![ModelRouter full control center](docs/assets/screenshots/control-center.png)
+
+Compact mode is a standalone smaller app surface for quick status and safe
+controls. It is not an overlay, child window, or modal on top of the full
+control center.
+
+![ModelRouter compact control panel](docs/assets/screenshots/compact-mode.png)
+
+The north-star product visual is intentionally directional:
+
+![ModelRouter UI modes](docs/assets/model-router-ui-modes.svg)
+
+## Architecture
+
+```mermaid
+flowchart LR
+  clients["Agents and OpenAI-compatible clients"] --> proxy["Local /v1 proxy"]
+  operator["Operator CLI / settings / TUI"] --> control["Routing and control plane"]
+  proxy --> control
+  control --> policy["Profiles, provider policy, safety gates"]
+  control --> receipts["Route receipts, telemetry, feedback, cost reports"]
+  control --> registry["Model registry and recommendations"]
+  operator --> runtime["Runtime adapters and explicit lifecycle actions"]
+  runtime --> registry
+  policy --> backends["LM Studio, Ollama, llama.cpp, MLX, LocalAI, vLLM, hosted OpenAI-compatible backends"]
+  proxy --> backends
+  harness["Host agent or Fusion-like harness"] -. "uses policy, receipts, telemetry" .-> proxy
+  harness -. "owns planning, tools, delegation, review" .-> clients
+```
+
 ## Use With Your Agent In 3 Minutes
 
 Install the proxy extra:
@@ -264,15 +332,21 @@ configured local model-server processes.
 
 ## Project Status
 
-ModelRouter is a lean production-ready decision layer when embedded through
-the initialized Python API, and a growing local AI control center when used
-through the proxy/settings/TUI surfaces. The stable surface today is:
+ModelRouter is a developer-preview local AI control center with a stable,
+deterministic routing core. When embedded through the initialized Python API,
+the hot path is intentionally small and guarded by latency tests. The broader
+proxy/settings/TUI experience is usable but still evolving behind explicit
+operator controls. The stable surface today is:
 
 - `ModelRouter.route_fast(...)` for production routing.
 - `ModelRouter.route(...)` for diagnostic and audit receipts.
 - Config-driven model/agent catalog.
 - Safe dry-run dispatch plans.
 - Local setup wizard and recommendations.
+- Local OpenAI-compatible proxy and settings UI for configured backends.
+- Runtime detection/status and explicit adapter-shaped maintenance actions.
+- Privacy-safe telemetry, manual outcome labels, pricing catalog coverage, and
+  bounded opt-in suitability evals.
 
 The local proxy is the main product path for agents. Direct dispatch beyond
 OpenAI-compatible chat forwarding remains intentionally behind explicit adapter
@@ -621,16 +695,21 @@ backend/model on this machine:
 
 ```bash
 model-router eval list
-model-router eval run --config ~/.model-router/routing_proxy.yaml --fixture structured_output --backend fast
+model-router eval run --config ~/.model-router/routing_proxy.yaml --fixture strict_json_routing_control_decision --backend fast --model local-fast-model
+model-router eval run --config ~/.model-router/routing_proxy.yaml --fixture structured_output --backend fast --model local-fast-model
 model-router eval report latest
 model-router eval evidence --model local-fast-model --backend fast
 ```
 
-Evals execute only the explicitly selected backend, store hashes/scores/status,
-latency, usage when returned, and sanitized errors, and do not retain raw
-prompts or raw outputs by default. Eval reports are advisory local evidence for
-model recommendations and diagnostics; they do not automatically change
-`route_fast(...)`, `route(...)`, proxy forwarding, or route assignments.
+Evals are explicit, bounded operator actions. They execute only the selected
+backend/model and named fixture/category, store hashes/scores/status, latency,
+usage when returned, and sanitized errors, and do not retain raw prompts or raw
+outputs by default. They never run during setup, model discovery/import,
+runtime detection, `route_fast(...)`, `route(...)`, or proxy forwarding.
+ModelRouter does not recursively benchmark discovered GGUF/model files or auto
+assign a "best model." Full fixture sweeps require `--confirm-large-run`.
+Reports are advisory local evidence for model recommendations and diagnostics;
+they do not automatically change route assignments.
 
 Inspect packaged catalog updates without changing local policy:
 
@@ -1455,6 +1534,21 @@ initialized routers keep YAML config and availability results in memory. The
 richer `route(...)` path does more work by design because it builds scores,
 explanations, rejected-engine details, alternatives, and receipt fields.
 
+Hot-path boundaries are intentionally strict:
+
+- `route_fast(...)` does not build receipts, summarize telemetry, load pricing
+  catalogs, run runtime adapters, scan/import models, execute benchmarks/evals,
+  make network requests, or scan the filesystem.
+- `route(...)` may build diagnostic scores and route details, but it must not
+  fetch live prices, run runtime lifecycle actions, execute benchmarks/evals,
+  or make provider/runtime network calls.
+- Default proxy forwarding uses the selected route and configured backend. It
+  must not run pricing maintenance, telemetry review/summary work, workflow
+  benchmarks, or model evals. Runtime lifecycle actions occur only for
+  explicitly configured managed runtimes.
+- Benchmarks, evals, pricing maintenance, runtime controls, and model discovery
+  are explicit operator/admin actions, not side effects of routing.
+
 The CLI is intended for humans, diagnostics, and scripts. Latency-sensitive
 services should not spawn a Python process per prompt; instantiate `ModelRouter`
 once and call the Python API in process.
@@ -1566,6 +1660,7 @@ integration point.
 ## Documentation
 
 - [Model router details](docs/model-router.md)
+- [Public preview readiness](docs/public-preview-readiness.md)
 - [Product north star](docs/product-north-star.md)
 - [Product boundaries](docs/product-boundaries.md)
 - [Runtime strategy](docs/runtime-strategy.md)

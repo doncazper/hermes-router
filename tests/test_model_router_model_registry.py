@@ -427,6 +427,32 @@ def test_registry_marks_missing_eval_evidence_as_not_evaluated():
     assert any("does not block routing" in note for note in summary["notes"])
 
 
+def test_model_registry_import_does_not_summarize_eval_evidence_by_default(
+    monkeypatch,
+):
+    import hermes.plugins.model_router.model_registry as model_registry
+
+    def fail_eval(*_args, **_kwargs):
+        raise AssertionError("model import must not summarize eval evidence by default")
+
+    monkeypatch.setattr(model_registry, "eval_evidence_from_rows", fail_eval)
+
+    registry = build_model_registry(
+        user_models=(
+            {
+                "provider": "lmstudio",
+                "model": "imported-model",
+                "backend": "fast",
+                "runtime": "lmstudio",
+            },
+        )
+    )
+
+    model = registry.to_dict()["models"][0]
+    assert model["model_id"] == "imported-model"
+    assert "latest_eval_summary" not in model["metadata"]
+
+
 def test_route_fast_does_not_depend_on_model_registry(monkeypatch, tmp_path):
     initialize_product_config(
         preset="lmstudio",

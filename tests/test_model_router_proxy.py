@@ -511,6 +511,65 @@ def test_proxy_forwarding_does_not_require_runtime_adapters(monkeypatch):
     assert _FakeAsyncClient.requests[0]["backend"] == "fast"
 
 
+def test_proxy_forwarding_does_not_execute_evals(monkeypatch):
+    import hermes.plugins.model_router.eval_runner as eval_runner
+
+    def explode(*_args, **_kwargs):
+        raise AssertionError("evals must not run during proxy forwarding")
+
+    monkeypatch.setattr(eval_runner, "execute_eval_run", explode)
+    monkeypatch.setattr(eval_runner, "run_backend_eval_request", explode)
+
+    with _client(monkeypatch, _config()) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "client-visible-model",
+                "messages": [{"role": "user", "content": "rewrite this text"}],
+            },
+        )
+
+    assert response.status_code == 200
+    _assert_route_headers(response, engine="fast_local", backend="fast")
+    assert _FakeAsyncClient.requests[0]["backend"] == "fast"
+
+
+def test_proxy_forwarding_does_not_call_operator_reporting_paths(monkeypatch):
+    blocked_paths = (
+        "hermes.plugins.model_router.telemetry.replay_events",
+        "hermes.plugins.model_router.telemetry.review_queue",
+        "hermes.plugins.model_router.telemetry.usage_telemetry_summary",
+        "hermes.plugins.model_router.pricing_catalog.pricing_status",
+        "hermes.plugins.model_router.pricing_catalog.pricing_diff",
+        "hermes.plugins.model_router.pricing_catalog.apply_pricing_catalog",
+        "hermes.plugins.model_router.setup_assistant.scan_local_environment",
+        "hermes.plugins.model_router.workflow_benchmark.run_workflow_benchmarks",
+        "hermes.plugins.model_router.model_benchmark.plan_backend_benchmarks",
+        "hermes.plugins.model_router.model_benchmark.execute_benchmark_plan",
+        "hermes.plugins.model_router.eval_runner.execute_eval_run",
+        "hermes.plugins.model_router.eval_runner.run_backend_eval_request",
+    )
+
+    def explode(*_args, **_kwargs):
+        raise AssertionError("proxy forwarding touched an operator/reporting path")
+
+    for path in blocked_paths:
+        monkeypatch.setattr(path, explode)
+
+    with _client(monkeypatch, _config()) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "client-visible-model",
+                "messages": [{"role": "user", "content": "rewrite this text"}],
+            },
+        )
+
+    assert response.status_code == 200
+    _assert_route_headers(response, engine="fast_local", backend="fast")
+    assert _FakeAsyncClient.requests[0]["backend"] == "fast"
+
+
 def test_proxy_auth_rejects_models_without_upstream_call(monkeypatch):
     with _client(monkeypatch, _config(api_key="proxy-secret")) as client:
         response = client.get("/v1/models")

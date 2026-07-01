@@ -179,6 +179,9 @@ runtime capability model, receipts, telemetry, and safety gates.
 - No custom low-level inference engine now.
 - No silent install, pull, download, config mutation, hosted-provider enablement,
   or runtime lifecycle action.
+- No implicit evals, benchmark sweeps, or recursive benchmarking of discovered
+  GGUF/model files during setup, model import, runtime detection, routing, or
+  proxy forwarding.
 - No route decisions based on live runtime discovery.
 - No dependency on runtime adapters for `route_fast(...)`, `route(...)`, or
   default proxy forwarding.

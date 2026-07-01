@@ -108,6 +108,64 @@ def test_route_fast_does_not_call_rich_scorer(monkeypatch, tmp_path):
     assert router.route_fast("rewrite this text") == "fast_local"
 
 
+def test_route_fast_does_not_call_operator_or_reporting_paths(monkeypatch, tmp_path):
+    router = ModelRouter.from_config(_config_path(tmp_path))
+
+    blocked_paths = (
+        "hermes.plugins.model_router.receipts.decision_to_receipt",
+        "hermes.plugins.model_router.telemetry.replay_events",
+        "hermes.plugins.model_router.telemetry.review_queue",
+        "hermes.plugins.model_router.telemetry.usage_telemetry_summary",
+        "hermes.plugins.model_router.pricing_catalog.load_pricing_catalog",
+        "hermes.plugins.model_router.runtime_adapters.adapter_for_backend",
+        "hermes.plugins.model_router.runtime_adapters.runtime_state_for_backend",
+        "hermes.plugins.model_router.setup_assistant.scan_local_environment",
+        "hermes.plugins.model_router.model_registry.build_model_registry",
+        "hermes.plugins.model_router.workflow_benchmark.run_workflow_benchmarks",
+        "hermes.plugins.model_router.model_benchmark.plan_backend_benchmarks",
+        "hermes.plugins.model_router.model_benchmark.execute_benchmark_plan",
+        "hermes.plugins.model_router.eval_runner.execute_eval_run",
+        "hermes.plugins.model_router.eval_runner.run_backend_eval_request",
+        "hermes.plugins.model_router.eval_runner.eval_evidence_for_model",
+    )
+
+    def explode(*_args, **_kwargs):
+        raise AssertionError("route_fast touched a non-hot-path subsystem")
+
+    for path in blocked_paths:
+        monkeypatch.setattr(path, explode)
+
+    assert router.route_fast("rewrite this text") == "fast_local"
+    assert router.route_fast("fix the repo and run tests") == "code_agent"
+
+
+def test_route_diagnostics_do_not_call_external_operator_actions(monkeypatch, tmp_path):
+    router = ModelRouter.from_config(_config_path(tmp_path))
+
+    blocked_paths = (
+        "hermes.plugins.model_router.pricing_catalog.load_pricing_catalog",
+        "hermes.plugins.model_router.runtime_adapters.adapter_for_backend",
+        "hermes.plugins.model_router.runtime_adapters.runtime_state_for_backend",
+        "hermes.plugins.model_router.setup_assistant.scan_local_environment",
+        "hermes.plugins.model_router.workflow_benchmark.run_workflow_benchmarks",
+        "hermes.plugins.model_router.model_benchmark.plan_backend_benchmarks",
+        "hermes.plugins.model_router.model_benchmark.execute_benchmark_plan",
+        "hermes.plugins.model_router.eval_runner.execute_eval_run",
+        "hermes.plugins.model_router.eval_runner.run_backend_eval_request",
+    )
+
+    def explode(*_args, **_kwargs):
+        raise AssertionError("route diagnostics touched an operator action path")
+
+    for path in blocked_paths:
+        monkeypatch.setattr(path, explode)
+
+    decision = router.route("fix the repo and run tests")
+
+    assert decision.selected_engine == "code_agent"
+    assert decision.reasons
+
+
 def test_route_fast_honors_configured_provider_policy(tmp_path):
     path = _config_path(tmp_path)
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -141,9 +199,17 @@ def test_route_fast_source_has_no_hot_path_logging_or_scorer_call():
     source = "\n".join(inspect.getsource(obj) for obj in hot_path_objects)
 
     assert "score_prompt" not in source
+    assert "decision_to_receipt" not in source
     assert "logging" not in source
     assert "logger" not in source
     assert "pricing" not in source
+    assert "telemetry" not in source
+    assert "runtime_adapters" not in source
+    assert "scan_local_environment" not in source
+    assert "build_model_registry" not in source
+    assert "workflow_benchmark" not in source
+    assert "execute_benchmark_plan" not in source
+    assert "execute_eval_run" not in source
 
 
 def test_routing_policy_has_no_pricing_catalog_dependency():

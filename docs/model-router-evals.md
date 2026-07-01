@@ -32,6 +32,12 @@ evidence only. They should not automatically change `route_fast(...)`,
 `route(...)`, proxy forwarding, model assignments, provider policy, or runtime
 lifecycle.
 
+Evals are explicit, bounded operator actions. They do not run during setup,
+model discovery, model import, runtime detection, `route_fast(...)`,
+`route(...)`, proxy forwarding, settings page render, or default proxy
+operation. ModelRouter must not recursively benchmark every discovered
+GGUF/model file by default.
+
 ## Goals
 
 - Help operators compare configured model/backend suitability for real task
@@ -49,6 +55,10 @@ lifecycle.
   hosted models.
 - No automatic routing changes in the first version.
 - No hidden installs, downloads, runtime starts, model pulls, or config writes.
+- No implicit evals after setup, model discovery/import, runtime detection, or
+  route/proxy activity.
+- No recursive `--all-ggufs` or automatic benchmark sweep over discovered model
+  files.
 - No tool execution. Tool-use fixtures may check request/response shape, but
   ModelRouter must not run tools.
 - No live pricing fetches. Cost estimates use captured usage plus the local
@@ -80,6 +90,48 @@ Initial fixtures should cover common suitability boundaries:
 
 Fixtures can be checked in only when prompts are sanitized and stable. Operators
 may also keep local private fixture packs outside the repo.
+
+## Bounded Selection Model
+
+Eval execution must be scoped by the operator. The current MVP supports one
+configured backend and one selected model, with either a named fixture id or a
+named fixture category:
+
+```bash
+model-router eval run \
+  --config ~/.model-router/routing_proxy.yaml \
+  --backend fast \
+  --model local-fast-model \
+  --fixture strict_json_routing_control_decision
+
+model-router eval run \
+  --config ~/.model-router/routing_proxy.yaml \
+  --backend fast \
+  --model local-fast-model \
+  --fixture structured_output
+```
+
+Future comparison UX may add:
+
+```bash
+model-router eval run --models m1,m2,m3 --fixture structured_output
+model-router eval run --route code --fixture code_review_judgment
+model-router eval run --candidate-set local-small --all-fixtures --confirm-large-run
+```
+
+Those future forms should expand to an operator-visible plan before execution.
+They must not discover every local model file and benchmark it implicitly.
+
+Guarded broad runs:
+
+- `--all-fixtures` runs the full built-in fixture pack for the selected
+  backend/model only and requires `--confirm-large-run`.
+- `--all` is a compatibility alias for `--all-fixtures`; it is not an
+  all-model sweep.
+- `--all-ggufs`, recursive model-folder benchmarking, and implicit evals after
+  scan/import are intentionally unsupported.
+- Large runs should show an estimated request count, timeout budget, and
+  hosted/provider cost warning where practical.
 
 The initial built-in fixture pack is packaged as
 `hermes/plugins/model_router/data/eval_fixtures.yaml` and covers:
@@ -418,12 +470,15 @@ model-router eval run \
 model-router eval run \
   --config ~/.model-router/routing_proxy.yaml \
   --fixture structured_output \
+  --model local-fast-model \
   --backend fast
 
 model-router eval run \
   --config ~/.model-router/routing_proxy.yaml \
-  --all \
-  --backend fast
+  --all-fixtures \
+  --backend fast \
+  --model local-fast-model \
+  --confirm-large-run
 
 model-router eval report latest \
   --results ~/.model-router/evals/results.jsonl \
@@ -443,8 +498,10 @@ Rules:
 - `list` is read-only and does not print fixture prompt bodies.
 - `run` executes only the explicitly selected backend from `routing_proxy.yaml`.
 - `--model` overrides the configured backend model for that eval run only.
-- `--fixture` accepts either a fixture id or a category; `--all` runs the full
-  built-in fixture pack.
+- `--fixture` accepts either a fixture id or a category.
+- `--all-fixtures` runs the full built-in fixture pack for the selected
+  backend/model only and requires `--confirm-large-run`. `--all` is a guarded
+  compatibility alias, not an all-model sweep.
 - Results append JSONL records under `~/.model-router/evals/results.jsonl` by
   default.
 - Result records store hashes, scores, status, latency, usage fields when
@@ -459,8 +516,9 @@ Rules:
 
 Eval evidence is read-only in this phase. ModelRouter may surface cached eval
 summaries in diagnostics and operator UI, but it must not run evals or change
-routes while handling `route_fast(...)`, `route(...)`, proxy forwarding, or a
-normal routing decision.
+routes while handling setup, model discovery/import, runtime detection,
+`route_fast(...)`, `route(...)`, proxy forwarding, settings render, or a normal
+routing decision.
 
 Current advisory surfaces:
 
@@ -555,6 +613,7 @@ The current MVP includes:
   present/absent checks, strict JSON keys, bullet counts, line limits, and
   reasoning-leakage markers.
 - Explicit eval execution against a selected configured backend/model.
+- Full fixture runs are guarded by `--confirm-large-run`.
 - JSONL result storage with hashes, scores, latency, usage when available,
   status, and sanitized errors.
 - Privacy-safe `list`, `run`, `report`, and `evidence` CLI surfaces.
@@ -565,6 +624,8 @@ The current MVP includes:
 
 ## Remaining Gaps
 
+- Multi-model candidate comparison, route validation, and named candidate sets
+  are not wired yet.
 - Optional operator-local fixture packs are designed but not wired to the CLI.
 - Capability-aware skips such as `capability_gap` are deferred.
 - Tool-call shape fixtures are planned, but tools are not executed.

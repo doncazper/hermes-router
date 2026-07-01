@@ -301,6 +301,7 @@ def execute_eval_run(
     output_path: str | Path = DEFAULT_EVAL_RESULTS_PATH,
     timeout_seconds: float | None = None,
     run_id: str | None = None,
+    confirm_large_run: bool = False,
     runner: Callable[[EvalBackendRequest], EvalBackendResponse] | None = None,
 ) -> EvalRunExecution:
     config = load_proxy_config(config_path)
@@ -308,9 +309,17 @@ def execute_eval_run(
     selected_model = model or backend_config.model
     selected_engine = _selected_engine_for_backend(config, backend)
     fixtures = _fixtures_for_selector(fixture_selector, all_fixtures=all_fixtures)
+    request_timeout = timeout_seconds or backend_config.timeout_seconds
+    if all_fixtures and not confirm_large_run:
+        estimated_timeout = round(len(fixtures) * request_timeout, 2)
+        raise EvalFixtureError(
+            "running all built-in eval fixtures requires --confirm-large-run "
+            f"({len(fixtures)} backend requests; timeout budget up to "
+            f"{estimated_timeout}s). Evals are explicit operator actions and "
+            "do not sweep discovered models automatically."
+        )
     created_at = _now_iso()
     resolved_run_id = run_id or _new_run_id(created_at)
-    request_timeout = timeout_seconds or backend_config.timeout_seconds
     invoke = runner or run_backend_eval_request
     results = tuple(
         _run_fixture(
@@ -327,6 +336,19 @@ def execute_eval_run(
     )
     expanded_output = Path(output_path).expanduser()
     _append_eval_results(expanded_output, results)
+    notes = [
+        "Stored eval scores, hashes, latency, status, and usage only.",
+        "Raw prompts and raw model outputs were not retained.",
+        "Eval runs are explicit and do not change routing automatically.",
+        "Interpret scores as best on this fixture set/profile, not as a universal model ranking.",
+    ]
+    if all_fixtures:
+        estimated_timeout = round(len(fixtures) * request_timeout, 2)
+        notes.append(
+            f"Confirmed broad fixture run: {len(fixtures)} backend requests; "
+            f"timeout budget up to {estimated_timeout}s. Review provider or "
+            "runtime cost before hosted runs."
+        )
     return EvalRunExecution(
         run_id=resolved_run_id,
         created_at=created_at,
@@ -334,10 +356,7 @@ def execute_eval_run(
         backend=backend,
         model=selected_model,
         results=results,
-        notes=(
-            "Stored eval scores, hashes, latency, status, and usage only.",
-            "Raw prompts and raw model outputs were not retained.",
-        ),
+        notes=tuple(notes),
     )
 
 
@@ -536,7 +555,7 @@ def _fixtures_for_selector(
     if all_fixtures:
         return pack.fixtures
     if not selector:
-        raise EvalFixtureError("eval run requires --fixture or --all")
+        raise EvalFixtureError("eval run requires --fixture or --all-fixtures")
     by_id = {fixture.id: fixture for fixture in pack.fixtures}
     if selector in by_id:
         return (by_id[selector],)

@@ -25,7 +25,7 @@ The most promising improvements are:
 
 - Python: 3.11.15
 - Executable: `/tmp/model-router-venv/bin/python`
-- Working tree: `/Users/sambehdjou/Documents/GitHub/model-router`
+- Working tree: local ModelRouter checkout
 - Branch: `main`
 - Benchmark style: warmup, GC disabled during timed loops, 5 repeated samples
   for in-process calls, 8 repeated samples for CLI subprocess calls.

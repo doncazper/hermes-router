@@ -24,6 +24,9 @@ ModelRouter should work in three shapes:
 - Keep downloads, config writes, hosted-provider enablement, runtime starts,
   runtime stops, model load/unload, tool calls, and benchmark runs explicit and
   confirmation-gated where they mutate operator state.
+- Keep evals and model suitability checks bounded and opt-in. Do not
+  recursively benchmark every discovered GGUF/model file, and do not run evals
+  after scan/import/runtime detection unless the operator explicitly asks.
 - Treat runtime discovery, health, model lists, and loaded-model state as
   operator diagnostics, not routing-decision inputs.
 - Do not fetch live pricing during `route_fast(...)`, `route(...)`, proxy
