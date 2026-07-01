@@ -649,9 +649,14 @@ small local models.
 
 `/v1/models` returns ModelRouter proxy aliases and configured backend models
 with capability hints for chat completions, Responses, embeddings, completions,
-models, and planned Messages support. `/v1/messages` is intentionally returned
-as a shaped `unsupported_endpoint` error until Anthropic Messages compatibility
-has real capability plumbing.
+models, and planned Messages support. It also includes `capability_details`
+with supported, partial, unsupported, and deferred statuses when a configured
+backend has known endpoint limits. `/v1/messages` is intentionally returned as
+a shaped `unsupported_endpoint` error until Anthropic Messages compatibility has
+real capability plumbing. See the
+[local server compatibility matrix](docs/local-server-compatibility.md) for the
+current proxy contract across LM Studio, Ollama, llama.cpp, MLX-LM, LocalAI,
+vLLM, and hosted OpenAI-compatible backends.
 
 The configured `proxy.routing_profile` is applied to every decision-mode proxy
 request and is reported in `/health` plus the `X-ModelRouter-Profile` response
@@ -1538,6 +1543,7 @@ integration point.
 - [Product north star](docs/product-north-star.md)
 - [Product boundaries](docs/product-boundaries.md)
 - [LM Studio parity roadmap](docs/lm-studio-parity-roadmap.md)
+- [Local server compatibility matrix](docs/local-server-compatibility.md)
 - [Business model](docs/business-model.md)
 - [Production readiness](docs/production-readiness.md)
 - [Release checklist](docs/release-checklist.md)

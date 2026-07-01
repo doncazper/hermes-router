@@ -37,6 +37,16 @@ from hermes.plugins.model_router.scorer import score_prompt
 
 LOG = logging.getLogger("model-router-proxy")
 ROUTER_VERSION = "unknown"
+OPENAI_COMPAT_CAPABILITY_PATHS = (
+    ("chat_completions", "/chat/completions"),
+    ("responses", "/responses"),
+    ("embeddings", "/embeddings"),
+    ("completions", "/completions"),
+)
+MESSAGES_UNSUPPORTED_REASON = (
+    "/v1/messages is planned but not supported by this OpenAI-compatible "
+    "proxy yet."
+)
 try:
     ROUTER_VERSION = version("hermes-router")
 except PackageNotFoundError:  # pragma: no cover - editable metadata is present in tests.
@@ -1154,6 +1164,7 @@ def _models_response(config: RoutingProxyConfig) -> dict[str, Any]:
     seen: set[str] = set()
     data: list[dict[str, Any]] = []
     proxy_capabilities = _proxy_alias_capabilities(config)
+    proxy_capability_details = _proxy_alias_capability_details(config)
     for model_id in config.proxy.model_ids:
         if model_id in seen:
             continue
@@ -1164,6 +1175,7 @@ def _models_response(config: RoutingProxyConfig) -> dict[str, Any]:
                 "object": "model",
                 "owned_by": "model-router",
                 "capabilities": proxy_capabilities,
+                "capability_details": proxy_capability_details,
                 "modelrouter": {
                     "kind": "proxy_alias",
                     "routing_mode": config.proxy.routing_mode,
@@ -1184,6 +1196,7 @@ def _models_response(config: RoutingProxyConfig) -> dict[str, Any]:
                 "object": "model",
                 "owned_by": "model-router-backend",
                 "capabilities": _backend_capability_hints(backend),
+                "capability_details": _backend_capability_details(backend),
                 "modelrouter": {
                     "kind": "backend_model",
                     "backend": backend.name,
@@ -1198,37 +1211,108 @@ def _models_response(config: RoutingProxyConfig) -> dict[str, Any]:
 
 
 def _proxy_alias_capabilities(config: RoutingProxyConfig) -> dict[str, bool]:
-    backends = tuple(config.backends.values())
     return {
-        "chat_completions": any(
-            _backend_capability_hints(backend)["chat_completions"]
-            for backend in backends
-        ),
-        "responses": any(
-            _backend_capability_hints(backend)["responses"] for backend in backends
-        ),
-        "embeddings": any(
-            _backend_capability_hints(backend)["embeddings"] for backend in backends
-        ),
-        "completions": any(
-            _backend_capability_hints(backend)["completions"] for backend in backends
-        ),
-        "messages": False,
+        name: detail["status"] in {"supported", "partial"}
+        for name, detail in _proxy_alias_capability_details(config).items()
     }
+
+
+def _proxy_alias_capability_details(config: RoutingProxyConfig) -> dict[str, Any]:
+    details: dict[str, Any] = {}
+    backends = tuple(config.backends.values())
+    for capability_name, upstream_path in OPENAI_COMPAT_CAPABILITY_PATHS:
+        public_endpoint = _public_endpoint_for_upstream_path(upstream_path)
+        backend_details = [
+            _backend_capability_detail(backend, upstream_path)
+            for backend in backends
+        ]
+        supported_count = sum(
+            1 for detail in backend_details if detail["status"] == "supported"
+        )
+        if supported_count == len(backends):
+            details[capability_name] = _capability_detail(
+                "supported",
+                public_endpoint,
+            )
+        elif supported_count > 0:
+            details[capability_name] = _capability_detail(
+                "partial",
+                public_endpoint,
+                reason=(
+                    f"{supported_count}/{len(backends)} configured backends support "
+                    f"{public_endpoint}; route and backend policy still decide which "
+                    "backend receives a request."
+                ),
+            )
+        else:
+            reasons = sorted(
+                {
+                    str(detail["reason"])
+                    for detail in backend_details
+                    if detail.get("reason")
+                }
+            )
+            details[capability_name] = _capability_detail(
+                "unsupported",
+                public_endpoint,
+                reason="; ".join(reasons)
+                or f"No configured backend supports {public_endpoint}.",
+            )
+    details["models"] = _capability_detail("supported", "/v1/models")
+    details["messages"] = _capability_detail(
+        "deferred",
+        "/v1/messages",
+        reason=MESSAGES_UNSUPPORTED_REASON,
+    )
+    return details
 
 
 def _backend_capability_hints(backend: ProxyBackendConfig) -> dict[str, bool]:
     return {
-        "chat_completions": _backend_support_for_upstream_path(
-            backend,
-            "/chat/completions",
-        )[0],
-        "responses": _backend_support_for_upstream_path(backend, "/responses")[0],
-        "embeddings": _backend_support_for_upstream_path(backend, "/embeddings")[0],
-        "completions": _backend_support_for_upstream_path(backend, "/completions")[0],
-        "models": True,
-        "messages": False,
+        name: detail["status"] == "supported"
+        for name, detail in _backend_capability_details(backend).items()
     }
+
+
+def _backend_capability_details(backend: ProxyBackendConfig) -> dict[str, Any]:
+    details = {
+        capability_name: _backend_capability_detail(
+            backend,
+            upstream_path,
+        )
+        for capability_name, upstream_path in OPENAI_COMPAT_CAPABILITY_PATHS
+    }
+    details["models"] = _capability_detail("supported", "/v1/models")
+    details["messages"] = _capability_detail(
+        "deferred",
+        "/v1/messages",
+        reason=MESSAGES_UNSUPPORTED_REASON,
+    )
+    return details
+
+
+def _backend_capability_detail(
+    backend: ProxyBackendConfig,
+    upstream_path: str,
+) -> dict[str, Any]:
+    supported, reason = _backend_support_for_upstream_path(backend, upstream_path)
+    return _capability_detail(
+        "supported" if supported else "unsupported",
+        _public_endpoint_for_upstream_path(upstream_path),
+        reason=reason,
+    )
+
+
+def _capability_detail(
+    status: str,
+    endpoint: str,
+    *,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    detail: dict[str, Any] = {"status": status, "endpoint": endpoint}
+    if reason:
+        detail["reason"] = reason
+    return detail
 
 
 def _backend_support_for_upstream_path(
@@ -1240,8 +1324,7 @@ def _backend_support_for_upstream_path(
     if upstream_path == "/messages":
         return (
             False,
-            "/v1/messages is planned but not supported by this OpenAI-compatible "
-            "proxy yet.",
+            MESSAGES_UNSUPPORTED_REASON,
         )
     if backend.runtime.enabled and backend.runtime.kind == "mlx-lm":
         if upstream_path in {"/responses", "/embeddings", "/completions"}:

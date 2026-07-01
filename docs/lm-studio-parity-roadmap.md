@@ -117,7 +117,8 @@ claims:
 - **Parity requirement**: harden common OpenAI-compatible flows such as
   `/v1/models`, `/v1/chat/completions`, `/v1/responses`, streaming, tool calls,
   structured output, embeddings where supported, auth behavior, and consistent
-  error shapes.
+  error shapes. The current support matrix and endpoint non-goals live in
+  `docs/local-server-compatibility.md`.
 - **ModelRouter advantage opportunity**: provide one stable `/v1` endpoint over
   multiple local and hosted backends with policy, receipts, fallback, usage
   telemetry, and privacy-safe review.

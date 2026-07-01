@@ -726,9 +726,12 @@ For `/v1/embeddings`, ModelRouter extracts routing text only from string inputs
 or bounded string arrays, preserves the request body, and does not stream. For
 legacy `/v1/completions`, it routes from the `prompt` string or bounded string
 array and preserves streaming when the upstream supports it. `/v1/models` lists
-proxy aliases plus configured backend models with capability hints. `/v1/messages`
-returns a shaped `unsupported_endpoint` response; Anthropic Messages
-compatibility is planned but not silently bridged.
+proxy aliases plus configured backend models with boolean capability hints and
+`capability_details` status/reason metadata for partial, unsupported, or
+deferred endpoint support. `/v1/messages` returns a shaped
+`unsupported_endpoint` response; Anthropic Messages compatibility is planned but
+not silently bridged. The current endpoint contract is maintained in
+`docs/local-server-compatibility.md`.
 
 Managed local runtimes are an optional proxy feature, not part of
 `route_fast(...)`. A backend may declare an explicit argv-only runtime command,

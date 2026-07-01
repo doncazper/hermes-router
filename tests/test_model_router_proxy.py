@@ -488,6 +488,15 @@ def test_proxy_routes_to_backend_and_overrides_model(monkeypatch):
     assert _FakeAsyncClient.requests[0]["body"]["model"] == "fast-model"
 
 
+def test_proxy_auth_rejects_models_without_upstream_call(monkeypatch):
+    with _client(monkeypatch, _config(api_key="proxy-secret")) as client:
+        response = client.get("/v1/models")
+
+    assert response.status_code == 401
+    assert response.json()["error"]["type"] == "authentication_error"
+    assert _FakeAsyncClient.requests == []
+
+
 def test_proxy_manual_mode_forwards_default_backend_without_route_fast(
     monkeypatch,
     tmp_path,
@@ -834,6 +843,44 @@ def test_proxy_strips_tools_only_for_configured_backend(monkeypatch):
     assert deep_body["functions"] == [{"name": "legacy"}]
 
 
+def test_proxy_chat_preserves_structured_output_fields_for_capable_backend(monkeypatch):
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "patch_plan",
+            "schema": {
+                "type": "object",
+                "properties": {"summary": {"type": "string"}},
+                "required": ["summary"],
+                "additionalProperties": False,
+            },
+            "strict": True,
+        },
+    }
+
+    with _client(monkeypatch, _config()) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "model-router",
+                "messages": [{"role": "user", "content": "fix the repo"}],
+                "tools": [{"type": "function", "function": {"name": "run_tests"}}],
+                "tool_choice": "auto",
+                "response_format": response_format,
+            },
+        )
+
+    body = _FakeAsyncClient.requests[0]["body"]
+    assert response.status_code == 200
+    _assert_route_headers(response, engine="code_agent", backend="deep")
+    assert body["model"] == "deep-model"
+    assert body["tools"] == [
+        {"type": "function", "function": {"name": "run_tests"}}
+    ]
+    assert body["tool_choice"] == "auto"
+    assert body["response_format"] == response_format
+
+
 def test_proxy_responses_routes_to_backend_and_preserves_common_shape(monkeypatch):
     with _client(monkeypatch, _config()) as client:
         response = client.post(
@@ -1121,6 +1168,13 @@ def test_proxy_models_exposes_aliases_and_capability_hints(monkeypatch):
     assert models["model-router"]["capabilities"]["embeddings"] is True
     assert models["model-router"]["capabilities"]["completions"] is True
     assert models["model-router"]["capabilities"]["messages"] is False
+    assert models["model-router"]["capability_details"]["responses"] == {
+        "status": "supported",
+        "endpoint": "/v1/responses",
+    }
+    assert models["model-router"]["capability_details"]["messages"][
+        "status"
+    ] == "deferred"
     assert models["fast-model"]["modelrouter"] == {
         "kind": "backend_model",
         "backend": "fast",
@@ -1128,6 +1182,31 @@ def test_proxy_models_exposes_aliases_and_capability_hints(monkeypatch):
         "managed": False,
     }
     assert models["fast-model"]["capabilities"]["models"] is True
+    assert models["fast-model"]["capability_details"]["models"] == {
+        "status": "supported",
+        "endpoint": "/v1/models",
+    }
+
+
+def test_proxy_models_exposes_mlx_lm_unsupported_reasons(monkeypatch, tmp_path):
+    config = _config(fast_runtime=_managed_runtime(tmp_path, kind="mlx-lm"))
+
+    with _client(monkeypatch, config) as client:
+        response = client.get("/v1/models")
+
+    payload = response.json()
+    models = {item["id"]: item for item in payload["data"]}
+    alias_details = models["model-router"]["capability_details"]
+    fast_details = models["fast-model"]["capability_details"]
+    assert response.status_code == 200
+    assert models["model-router"]["capabilities"]["responses"] is True
+    assert alias_details["responses"]["status"] == "partial"
+    assert "1/2 configured backends support /v1/responses" in alias_details[
+        "responses"
+    ]["reason"]
+    assert models["fast-model"]["capabilities"]["responses"] is False
+    assert fast_details["responses"]["status"] == "unsupported"
+    assert "MLX-LM managed runtimes" in fast_details["responses"]["reason"]
 
 
 def test_proxy_uses_explicit_fallback_chain_on_upstream_5xx(monkeypatch):
