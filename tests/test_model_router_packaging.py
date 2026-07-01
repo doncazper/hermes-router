@@ -23,7 +23,7 @@ def test_pyproject_declares_generic_package_metadata():
 
     project = pyproject["project"]
     assert project["name"] == "hermes-router"
-    assert project["version"] == "0.7.1"
+    assert project["version"] == "0.7.2"
     assert project["license"] == "MIT"
     assert project["license-files"] == ["LICENSE"]
     assert (
