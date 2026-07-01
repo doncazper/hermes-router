@@ -102,19 +102,19 @@ The north-star product visual is intentionally directional:
 ## Architecture
 
 ```mermaid
-flowchart LR
+flowchart TB
   clients["Agents and OpenAI-compatible clients"] --> proxy["Local /v1 proxy"]
-  operator["Operator CLI / settings / TUI"] --> control["Routing and control plane"]
-  proxy --> control
-  control --> policy["Profiles, provider policy, safety gates"]
-  control --> receipts["Route receipts, telemetry, feedback, cost reports"]
-  control --> registry["Model registry and recommendations"]
-  operator --> runtime["Runtime adapters and explicit lifecycle actions"]
+  proxy --> control["Routing and control plane"]
+  operator["Operator CLI / settings / TUI"] --> control
+  control --> policy["Profiles / provider policy / safety gates"]
+  control --> receipts["Route receipts / telemetry / feedback / cost"]
+  control --> registry["Model registry / recommendations"]
+  operator --> runtime["Runtime adapters / explicit lifecycle"]
   runtime --> registry
-  policy --> backends["LM Studio, Ollama, llama.cpp, MLX, LocalAI, vLLM, hosted OpenAI-compatible backends"]
+  policy --> backends["LM Studio / Ollama / llama.cpp<br/>MLX / LocalAI / vLLM / hosted OpenAI-compatible"]
   proxy --> backends
-  harness["Host agent or Fusion-like harness"] -. "uses policy, receipts, telemetry" .-> proxy
-  harness -. "owns planning, tools, delegation, review" .-> clients
+  harness["Host agent or Fusion-like harness"] -. "policy, receipts, telemetry" .-> proxy
+  harness -. "planning, tools, delegation, review" .-> clients
 ```
 
 ## Use With Your Agent In 3 Minutes
