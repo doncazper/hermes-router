@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="540" viewBox="0 0 1200 540" role="img" aria-labelledby="title desc">
+  <title id="title">ModelRouter UI Modes</title>
+  <desc id="desc">Comparison of the full control center and compact standalone windowed mode.</desc>
+  <defs>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#0f172a" flood-opacity="0.12"/>
+    </filter>
+    <style>
+      .bg { fill: #f4f6f9; }
+      .window { fill: #fff; stroke: #d9e1ec; stroke-width: 1.5; filter: url(#shadow); }
+      .bar { fill: #f8fafc; stroke: #e6edf5; stroke-width: 1; }
+      .sidebar { fill: #f8fafc; stroke: #e6edf5; stroke-width: 1; }
+      .panel { fill: #fff; stroke: #dce3ec; stroke-width: 1.25; }
+      .soft { fill: #f6f8fb; stroke: #e6edf5; stroke-width: 1; }
+      .blue { fill: #eaf2ff; stroke: #1f6feb; stroke-width: 1.2; }
+      .green { fill: #eaf7ee; stroke: #24a148; stroke-width: 1; }
+      .yellow { fill: #fff6dc; stroke: #f5a400; stroke-width: 1; }
+      .text { fill: #111827; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .muted { fill: #617086; }
+      .label { font-size: 20px; font-weight: 760; }
+      .body { font-size: 14px; font-weight: 620; }
+      .small { font-size: 12px; font-weight: 560; }
+      .tiny { font-size: 10px; font-weight: 560; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1200" height="540"/>
+  <text x="46" y="48" class="text label">ModelRouter UI modes</text>
+  <text x="46" y="74" class="text muted body">Two alternate app states. The compact panel is standalone windowed mode, not a layer over the full control center.</text>
+
+  <g transform="translate(46 112)">
+    <text x="0" y="-18" class="text body">1. Full control center / main window</text>
+    <rect class="window" x="0" y="0" width="720" height="360" rx="10"/>
+    <rect class="bar" x="0" y="0" width="720" height="50" rx="10"/>
+    <circle cx="22" cy="25" r="6" fill="#ff5f57"/>
+    <circle cx="44" cy="25" r="6" fill="#febc2e"/>
+    <circle cx="66" cy="25" r="6" fill="#28c840"/>
+    <text x="98" y="30" class="text body">ModelRouter</text>
+    <text x="396" y="30" class="text small">Status: Running</text>
+    <text x="524" y="30" class="text small">Mode: Balanced</text>
+    <text x="635" y="30" class="text small">Compact</text>
+
+    <rect class="sidebar" x="0" y="50" width="108" height="310"/>
+    <text x="18" y="88" class="text small">Runtimes</text>
+    <text x="18" y="124" class="text small">Models</text>
+    <text x="18" y="160" class="text small">Routing</text>
+    <text x="18" y="196" class="text small">Telemetry</text>
+    <text x="18" y="320" class="text tiny muted">No chat surface</text>
+
+    <rect class="panel" x="126" y="70" width="390" height="78" rx="8"/>
+    <rect class="soft" x="144" y="92" width="78" height="32" rx="6"/>
+    <text x="158" y="112" class="text tiny">Request</text>
+    <text x="236" y="112" class="text tiny muted">-></text>
+    <rect class="blue" x="258" y="92" width="98" height="32" rx="6"/>
+    <text x="276" y="112" class="text tiny">Route</text>
+    <text x="370" y="112" class="text tiny muted">-></text>
+    <rect class="soft" x="392" y="92" width="94" height="32" rx="6"/>
+    <text x="408" y="112" class="text tiny">Backend</text>
+
+    <rect class="panel" x="126" y="166" width="390" height="170" rx="8"/>
+    <text x="144" y="192" class="text body">Routing map</text>
+    <rect class="soft" x="144" y="210" width="344" height="20" rx="4"/>
+    <rect class="blue" x="144" y="238" width="344" height="20" rx="4"/>
+    <rect class="soft" x="144" y="266" width="344" height="20" rx="4"/>
+    <rect class="soft" x="144" y="294" width="344" height="20" rx="4"/>
+
+    <rect class="panel" x="536" y="70" width="164" height="130" rx="8"/>
+    <text x="552" y="96" class="text body">Route receipt</text>
+    <text x="552" y="126" class="text tiny muted">Selected: code_agent</text>
+    <text x="552" y="150" class="text tiny muted">Backend: local</text>
+    <text x="552" y="174" class="text tiny muted">Safety: confirmed</text>
+
+    <rect class="panel" x="536" y="216" width="164" height="120" rx="8"/>
+    <text x="552" y="242" class="text body">Safety gates</text>
+    <rect class="green" x="552" y="260" width="126" height="20" rx="10"/>
+    <rect class="yellow" x="552" y="292" width="126" height="20" rx="10"/>
+  </g>
+
+  <g transform="translate(850 112)">
+    <text x="0" y="-18" class="text body">2. Compact minimal control panel / windowed mode</text>
+    <rect class="window" x="0" y="0" width="300" height="360" rx="10"/>
+    <rect class="bar" x="0" y="0" width="300" height="48" rx="10"/>
+    <circle cx="22" cy="24" r="6" fill="#ff5f57"/>
+    <circle cx="44" cy="24" r="6" fill="#febc2e"/>
+    <circle cx="66" cy="24" r="6" fill="#28c840"/>
+    <text x="92" y="30" class="text body">ModelRouter</text>
+
+    <rect class="soft" x="18" y="68" width="98" height="26" rx="6"/>
+    <text x="28" y="85" class="text tiny">127.0.0.1</text>
+    <rect class="green" x="128" y="68" width="70" height="26" rx="6"/>
+    <text x="142" y="85" class="text tiny">Running</text>
+    <rect class="blue" x="210" y="68" width="72" height="26" rx="6"/>
+    <text x="224" y="85" class="text tiny">Balanced</text>
+
+    <rect class="soft" x="18" y="116" width="68" height="32" rx="6"/>
+    <text x="30" y="136" class="text tiny">Request</text>
+    <text x="94" y="136" class="text tiny muted">-></text>
+    <rect class="blue" x="112" y="116" width="82" height="32" rx="6"/>
+    <text x="126" y="136" class="text tiny">route</text>
+    <text x="202" y="136" class="text tiny muted">-></text>
+    <rect class="soft" x="220" y="116" width="62" height="32" rx="6"/>
+    <text x="235" y="136" class="text tiny">OK</text>
+
+    <text x="18" y="180" class="text small muted">Selected</text>
+    <text x="184" y="180" class="text small">fast_local</text>
+    <text x="18" y="210" class="text small muted">Backend</text>
+    <text x="214" y="210" class="text small">fast</text>
+    <text x="18" y="240" class="text small muted">Privacy</text>
+    <text x="150" y="240" class="text small">configured</text>
+    <text x="18" y="270" class="text small muted">Safety</text>
+    <text x="176" y="270" class="text small">n/a</text>
+
+    <rect class="soft" x="18" y="296" width="54" height="32" rx="6"/>
+    <text x="33" y="316" class="text tiny">Full</text>
+    <rect class="soft" x="82" y="296" width="54" height="32" rx="6"/>
+    <text x="94" y="316" class="text tiny">Pause</text>
+    <rect class="soft" x="146" y="296" width="62" height="32" rx="6"/>
+    <text x="158" y="316" class="text tiny">Receipt</text>
+    <rect class="soft" x="218" y="296" width="64" height="32" rx="6"/>
+    <text x="228" y="316" class="text tiny">Safety</text>
+  </g>
+</svg>

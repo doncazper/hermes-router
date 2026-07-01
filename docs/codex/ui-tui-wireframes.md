@@ -31,6 +31,19 @@ Each tab has a specific job:
 | Logs | Proxy/settings/runtime log tails with safe copy/open actions. | `logs`, `backends`, `proxy` |
 | Settings | Proxy config, mode, policy, observability, verifier, installer status, catalog updates. | `proxy`, `installer`, `actions`, provider/backend policy state |
 
+## Window Modes
+
+The web UI has two alternate states:
+
+- Full control center/main window: the complete dashboard and settings surface.
+- Compact minimal control panel/windowed mode: a smaller standalone page/window
+  for quick status and safe controls.
+
+The compact control panel must not be drawn as a modal, overlay, child window, or
+floating element on top of the dashboard. When wireframes show the full and
+compact states near each other, treat them as a side-by-side comparison of
+modes, not as simultaneous in-app layers.
+
 ## Mock screenshot: Dashboard
 
 ```text
@@ -80,33 +93,67 @@ Each tab has a specific job:
 | Restart proxy | `proxy.restart` |
 | Label wrong route | `telemetry.feedback.write` |
 
+## Mock screenshot: Compact windowed mode
+
+This is a standalone smaller app surface, not a layer over the dashboard.
+
+```text
+┌──────────────────────────────────────┐
+│ ● ● ●  ModelRouter                 ⚙ │
+├──────────────────────────────────────┤
+│ 127.0.0.1:8082/v1  ● Running Balanced│
+│                                      │
+│ Request → reasoning_local → mlx → OK │
+│                                      │
+│ Selected        reasoning_local      │
+│ Backend         mlx-reasoning        │
+│ Privacy         local/provider policy│
+│ Safety          no confirmation      │
+│                                      │
+│ Recent                               │
+│ 10:42  fast_local      fast      84ms│
+│ 10:43  reasoning_local mlx      1.2s │
+│                                      │
+│ [Full] [Pause] [Receipt] [Providers] │
+│ Proxy running   Telemetry on          │
+└──────────────────────────────────────┘
+```
+
+### Compact window field mapping
+
+| Field/control | State/action |
+| --- | --- |
+| Endpoint | `proxy.endpoint` |
+| Running indicator | `proxy.state`, `proxy.pid` |
+| Profile | `proxy.routing_profile` |
+| Latest route/backend | `latest_receipt` |
+| Recent rows | privacy-safe `telemetry` summaries |
+| Pause proxy | confirmed `proxy.stop` |
+| Full | link to the full control center |
+
 ## Mock screenshot: Models tab
 
 ```text
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │ Models                                                        Scan  Discover │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│ Search models: [ qwen coder                         ] Runtime [Any ▾] Route [Coding ▾]
+│ Model operations                                                            │
+│ ┌ Installed ─────────────┐ ┌ Recommended ──────────┐ ┌ Downloads ─────────┐ │
+│ │ qwen3-4b · assigned 2  │ │ coder-7b · code_agent │ │ 1 planned · confirm│ │
+│ │ [Scan]                 │ │ Good fit              │ │ [Plan] [Download]  │ │
+│ └────────────────────────┘ └───────────────────────┘ └────────────────────┘ │
 │                                                                              │
-│ ┌ Installed ─┬ Discover ─┬ Recommended ─┬ Downloads ─┬ Assignments ────────┐ │
-│ │                                                                         │ │
-│ │ Installed models                                                        │ │
-│ │ ┌────────────────────────────┬──────────┬────────┬─────────┬──────────┐ │ │
-│ │ │ Model                      │ Source   │ Loaded │ Fit     │ Assigned │ │ │
-│ │ ├────────────────────────────┼──────────┼────────┼─────────┼──────────┤ │ │
-│ │ │ Qwen2.5-Coder-7B-GGUF      │ LMStudio │ yes    │ Great   │ coding   │ │ │
-│ │ │ Qwen3-4B-4bit              │ MLX      │ no     │ Good    │ balanced │ │ │
-│ │ │ bge-m3                     │ HF cache │ no     │ Great   │ research │ │ │
-│ │ └────────────────────────────┴──────────┴────────┴─────────┴──────────┘ │ │
-│ │                                                                         │ │
-│ │ Details: Qwen2.5-Coder-7B-GGUF                                          │ │
-│ │ Runtime compatibility: LM Studio, llama.cpp                             │ │
-│ │ Context: 32k    Quant: Q4_K_M    Local path: ~/.lmstudio/models/...     │ │
-│ │ Score: Great for coding because role match + benchmark pass             │ │
-│ │ [Load] [Unload] [Assign to route...] [Create alias...]                  │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
+│ ▸ Installed        3 local models                                            │
+│ ▸ Discover         12 catalog candidates                                     │
+│ ▸ Recommended      4 candidates; compact by default                          │
+│ ▸ Downloads        1 planned; expand for commands                            │
+│ ▸ Assignments      8 route bindings                                          │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
+
+Recommendation and download state should be compact by default. Expand a row
+only when the user chooses to inspect install details, alternatives, logs,
+commands, or download actions.
 
 ### Models tab field mapping
 

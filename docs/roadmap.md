@@ -542,8 +542,8 @@ Recommended tasks:
   through `/v1/chat/completions`, `/v1/responses`, streaming, fallback,
   `human_confirm`, backend policy rejection, and optional verifier modes.
 - Settings UI follow-through: dogfood the data-backed panels, verify the latest
-  route receipt/mini monitor/review queue are useful during real work, and keep
-  all write actions local and user-confirmed.
+  route receipt, compact standalone control panel, and review queue are useful
+  during real work, and keep all write actions local and user-confirmed.
 - Telemetry review queue: dogfood the `model-router telemetry review` flow for
   labeling wrong routes without exposing notes or prompt bodies by default.
 - Receipt calibration: dogfood the wrong-route next actions and promote stable

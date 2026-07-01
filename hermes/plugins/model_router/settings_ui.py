@@ -163,6 +163,10 @@ def create_settings_app(
     async def index() -> HTMLResponse:
         return HTMLResponse(render_dashboard_page(build_settings_state(paths, supervisor)))
 
+    @app.get("/compact", response_class=HTMLResponse)
+    async def compact() -> HTMLResponse:
+        return HTMLResponse(render_compact_page(build_settings_state(paths, supervisor)))
+
     @app.get("/api/state")
     async def api_state() -> JSONResponse:
         return JSONResponse(build_settings_state(paths, supervisor))
@@ -1019,6 +1023,9 @@ def render_dashboard_page(state: Mapping[str, Any]) -> str:
           <button class="icon-button" type="button" onclick="postAction('/api/doctor')">
             {_icon("pulse")}<span>Live</span>
           </button>
+          <a class="icon-button" href="/compact" aria-label="Open compact windowed mode">
+            {_icon("open")}<span>Compact</span>
+          </a>
           <button class="icon-only" type="button" aria-label="Toggle appearance">
             {_icon("moon")}
           </button>
@@ -1104,8 +1111,31 @@ def render_dashboard_page(state: Mapping[str, Any]) -> str:
     </main>
   </div>
 
-    {_mini_popup(state, endpoint, proxy_label, telemetry_state, profile_label)}
+  <script>{_dashboard_js()}</script>
+</body>
+</html>"""
 
+
+def render_compact_page(state: Mapping[str, Any]) -> str:
+    """Render the standalone compact control panel/windowed mode."""
+
+    proxy = state["proxy"]
+    observability = state["observability"]
+    proxy_process = state.get("proxy_process", {})
+    endpoint = escape(str(proxy.get("endpoint") or "http://127.0.0.1:8082/v1"))
+    profile_label = _profile_label(str(proxy.get("routing_profile") or "balanced"))
+    telemetry_state = "On" if observability.get("enabled") else "Off"
+    proxy_state = str(proxy_process.get("state") or "unknown").replace("_", " ").title()
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ModelRouter Compact</title>
+  <style>{_dashboard_css()}</style>
+</head>
+<body class="compact-body">
+  {_compact_control_panel(state, endpoint, proxy_state, telemetry_state, profile_label)}
   <script>{_dashboard_js()}</script>
 </body>
 </html>"""
@@ -1163,6 +1193,18 @@ button {
   cursor: pointer;
 }
 button:hover { border-color: #c4cedb; background: #f9fbfd; }
+button.icon-button, a.icon-button {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: var(--radius-sm);
+  min-height: 30px;
+  padding: 6px 10px;
+  font-weight: 650;
+}
+button.icon-button:hover, a.icon-button:hover {
+  border-color: #c4cedb;
+  background: #f9fbfd;
+}
 input, select, textarea {
   width: 100%;
   border: 1px solid var(--line);
@@ -1303,6 +1345,16 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
   padding: 0;
   display: inline-grid;
   place-items: center;
+}
+button.icon-only, a.icon-only {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: #25344c;
+}
+button.icon-only:hover, a.icon-only:hover {
+  border-color: #c4cedb;
+  background: #f9fbfd;
 }
 .health-strip { padding: 10px 14px 0 14px; }
 .health-title { font-weight: 720; }
@@ -1590,11 +1642,70 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
 .compact-actions {
   padding: 0;
 }
+.model-ops-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 0 14px 10px;
+}
+.model-op-row {
+  min-width: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: #fbfcfe;
+  padding: 8px 9px;
+  display: grid;
+  gap: 5px;
+}
+.model-op-heading {
+  min-width: 0;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+}
+.model-op-title {
+  color: #59687d;
+  font-size: 10px;
+  font-weight: 760;
+  text-transform: uppercase;
+}
+.model-op-meta {
+  color: #617086;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.model-op-main {
+  color: #172033;
+  font-size: 11px;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.model-op-detail {
+  color: #5d6b80;
+  font-size: 10.5px;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.model-op-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.model-op-actions button {
+  min-height: 24px;
+  padding: 3px 7px;
+  font-size: 10px;
+}
 .models-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  padding: 14px;
+  grid-template-columns: 1fr;
+  gap: 7px;
+  padding: 0 14px 14px;
 }
 .model-card {
   border: 1px solid var(--line-soft);
@@ -1602,10 +1713,35 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
   background: #fbfcfe;
   overflow: hidden;
 }
-.model-card h3 {
-  padding: 9px 10px;
-  border-bottom: 1px solid var(--line-soft);
+.model-card summary {
+  min-height: 38px;
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
   color: #273750;
+  list-style: none;
+}
+.model-card summary::-webkit-details-marker { display: none; }
+.model-card summary::after {
+  content: "Expand";
+  color: var(--accent-strong);
+  font-size: 10px;
+  font-weight: 720;
+}
+.model-card[open] summary {
+  border-bottom: 1px solid var(--line-soft);
+}
+.model-card[open] summary::after { content: "Collapse"; }
+.model-detail-title {
+  font-size: 12px;
+  font-weight: 740;
+}
+.model-detail-body {
+  max-height: 260px;
+  overflow: auto;
 }
 .model-card-wide {
   grid-column: 1 / -1;
@@ -1722,19 +1858,23 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
   gap: 6px;
   padding: 0;
 }
-.mini-popup {
-  position: fixed;
-  right: 28px;
-  bottom: 24px;
-  width: 286px;
+.compact-body {
+  min-width: 0;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: #eef2f7;
+}
+.compact-window {
+  width: min(360px, calc(100vw - 24px));
   background: rgba(255, 255, 255, .96);
   border: 1px solid #cfd7e3;
   border-radius: 8px;
   box-shadow: 0 24px 70px rgba(15, 23, 42, .23);
-  z-index: 50;
   overflow: hidden;
 }
-.mini-header {
+.compact-header {
   height: 34px;
   display: flex;
   align-items: center;
@@ -1742,15 +1882,15 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
   padding: 0 8px 0 10px;
   border-bottom: 1px solid var(--line-soft);
 }
-.mini-title { display: flex; align-items: center; gap: 8px; font-weight: 760; }
-.mini-title .traffic-lights { margin: 0; }
-.mini-body { padding: 8px 9px 9px; }
-.mini-chips, .mini-bottom {
+.compact-title { display: flex; align-items: center; gap: 8px; font-weight: 760; }
+.compact-title .traffic-lights { margin: 0; }
+.compact-body-content { padding: 8px 9px 9px; }
+.compact-chips, .compact-bottom {
   display: flex;
   gap: 6px;
 }
-.mini-chips { flex-wrap: nowrap; }
-.mini-chip {
+.compact-chips { flex-wrap: nowrap; }
+.compact-chip {
   min-height: 20px;
   border: 1px solid var(--line);
   border-radius: 5px;
@@ -1759,7 +1899,7 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
   font-size: 8.5px;
   white-space: nowrap;
 }
-.mini-flow {
+.compact-flow {
   display: grid;
   grid-template-columns: 46px 10px 62px 10px 54px 10px 54px;
   align-items: center;
@@ -1767,7 +1907,7 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
   margin: 8px 0;
   color: #526178;
 }
-.mini-box {
+.compact-box {
   border: 1px solid var(--line);
   border-radius: 5px;
   min-height: 24px;
@@ -1778,36 +1918,36 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
   font-weight: 700;
   color: #24344c;
 }
-.mini-box.selected { color: var(--accent-strong); background: #eef5ff; }
-.mini-summary {
+.compact-box.selected { color: var(--accent-strong); background: #eef5ff; }
+.compact-summary {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 4px 10px;
   font-size: 9.5px;
 }
-.mini-summary div {
+.compact-summary div {
   min-width: 0;
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
 }
-.mini-summary span {
+.compact-summary span {
   color: #5d6b80;
   font-weight: 680;
   white-space: nowrap;
 }
-.mini-summary strong { text-align: right; }
-.mini-summary span,
-.mini-summary strong {
+.compact-summary strong { text-align: right; }
+.compact-summary span,
+.compact-summary strong {
   white-space: nowrap;
 }
-.mini-recent {
+.compact-recent {
   margin-top: 8px;
   border-top: 1px solid var(--line-soft);
   padding-top: 6px;
 }
-.mini-recent-row {
+.compact-recent-row {
   display: grid;
   grid-template-columns: 34px 1fr 54px 36px;
   gap: 6px;
@@ -1815,13 +1955,14 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
   min-height: 18px;
   font-size: 9px;
 }
-.mini-actions {
+.compact-actions-grid {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
   gap: 5px;
   margin-top: 8px;
 }
-.mini-actions button {
+.compact-actions-grid a,
+.compact-actions-grid button {
   min-height: 34px;
   padding: 3px;
   display: grid;
@@ -1830,13 +1971,13 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
   color: #2d3b52;
   font-size: 9px;
 }
-.mini-bottom {
+.compact-bottom {
   border-top: 1px solid var(--line-soft);
   padding: 6px 8px;
   background: #fbfcfe;
   flex-wrap: nowrap;
 }
-.mini-bottom .mini-chip { background: #fff; }
+.compact-bottom .compact-chip { background: #fff; }
 .status-line { display: inline-flex; align-items: center; gap: 5px; }
 @media (max-width: 1180px) {
   body { min-width: 0; }
@@ -1846,12 +1987,11 @@ h3 { font-size: 12px; color: var(--muted); font-weight: 680; }
   .top-status { flex-wrap: wrap; }
   .flow { grid-template-columns: 1fr; }
   .flow-arrow { transform: rotate(90deg); min-height: 22px; }
-  .profile-row, .runtime-grid, .settings-grid, .review-form, .models-grid { grid-template-columns: 1fr; }
+  .profile-row, .runtime-grid, .settings-grid, .review-form, .models-grid, .model-ops-strip { grid-template-columns: 1fr; }
   .provider-list { border-right: 0; border-bottom: 1px solid var(--line); }
 }
 @media (max-width: 1500px) {
   .dashboard-grid { grid-template-columns: 1fr; padding-right: 16px; }
-  .mini-popup { position: static; width: auto; margin: 16px; }
 }
 """
 
@@ -2060,9 +2200,9 @@ document.querySelectorAll('.segment').forEach((button) => {
     button.setAttribute('aria-selected', 'true');
     const mode = button.dataset.profile || button.textContent.trim();
     const topMode = document.getElementById('top-mode');
-    const miniMode = document.getElementById('mini-mode');
+    const compactMode = document.getElementById('compact-mode');
     if (topMode) topMode.textContent = mode;
-    if (miniMode) miniMode.textContent = mode;
+    if (compactMode) compactMode.textContent = mode;
   });
 });
 document.querySelectorAll('[data-feedback]').forEach((button) => {
@@ -2414,6 +2554,7 @@ def _model_library_panel(state: Mapping[str, Any]) -> str:
           <button type="button" onclick="postAction('/api/download/plan').then(showModelAction)">Plan downloads</button>
         </div>
       </div>
+      {_model_ops_summary(library)}
       <div class="models-grid">
         {_installed_models_card(library)}
         {_discover_models_card(library)}
@@ -2423,6 +2564,121 @@ def _model_library_panel(state: Mapping[str, Any]) -> str:
       </div>
       <pre id="model-library-output" class="catalog-output">Model actions are plan-first. Downloads and assignments require confirmation.</pre>
     </section>"""
+
+
+def _model_ops_summary(library: Mapping[str, Any]) -> str:
+    installed = library.get("installed") if isinstance(library.get("installed"), list) else []
+    recommended = library.get("recommended") if isinstance(library.get("recommended"), list) else []
+    downloads = library.get("downloads") if isinstance(library.get("downloads"), list) else []
+    primary_installed = _first_mapping(installed)
+    primary_recommended = _first_mapping(recommended)
+    primary_download = _first_mapping(downloads)
+    return f"""<div class="model-ops-strip" aria-label="Model recommendation and download status">
+      {_model_inventory_summary(primary_installed, len(installed))}
+      {_model_recommendation_summary(primary_recommended, len(recommended))}
+      {_model_download_summary(primary_download, len(downloads))}
+    </div>"""
+
+
+def _model_inventory_summary(item: Mapping[str, Any] | None, count: int) -> str:
+    if item is None:
+        return _model_ops_tile(
+            "Installed",
+            "No local models found",
+            "Run a local scan or connect a runtime.",
+            "0 installed",
+        )
+    assigned = item.get("assigned_routes") if isinstance(item.get("assigned_routes"), list) else []
+    score = item.get("score") if isinstance(item.get("score"), Mapping) else {}
+    score_label = str(score.get("label") or "unscored")
+    return _model_ops_tile(
+        "Installed",
+        _short_model_id(str(item.get("model_id") or "")),
+        f"{str(item.get('source') or 'local')} · assigned {', '.join(str(route) for route in assigned) or 'none'}",
+        f"{count} installed · {score_label}",
+    )
+
+
+def _model_recommendation_summary(item: Mapping[str, Any] | None, count: int) -> str:
+    if item is None:
+        return _model_ops_tile(
+            "Recommended",
+            "No recommendation yet",
+            "Scan local models or inspect install prerequisites.",
+            "0 candidates",
+        )
+    score = item.get("score") if isinstance(item.get("score"), Mapping) else {}
+    routes = item.get("route_fit") if isinstance(item.get("route_fit"), list) else []
+    route_text = ", ".join(str(route) for route in routes) or "general"
+    score_text = str(item.get("score_label") or score.get("label") or "unscored")
+    return _model_ops_tile(
+        "Recommended",
+        _short_model_id(str(item.get("model_id") or "")),
+        f"{route_text} · {str(item.get('provider') or 'provider unknown')}",
+        f"{count} candidates · {score_text}",
+    )
+
+
+def _model_download_summary(item: Mapping[str, Any] | None, count: int) -> str:
+    if item is None:
+        return _model_ops_tile(
+            "Downloads",
+            "No download planned",
+            "Plan first; downloads never run silently.",
+            "0 planned",
+        )
+    route = str(item.get("route") or "")
+    model_id = str(item.get("model_id") or "")
+    route_js = escape(json.dumps(route))
+    model_js = escape(json.dumps(model_id))
+    actions = (
+        f'<div class="model-op-actions">'
+        f'<button type="button" onclick="planDownload({route_js}, {model_js})">Plan</button>'
+        f'<button type="button" class="danger-text" onclick="runDownload({route_js}, {model_js})">Download</button>'
+        f"</div>"
+    )
+    return _model_ops_tile(
+        "Downloads",
+        _short_model_id(model_id),
+        f"{route} · {str(item.get('status') or 'planned')}",
+        f"{count} planned · confirm required",
+        actions=actions,
+    )
+
+
+def _model_ops_tile(
+    label: str,
+    primary: str,
+    detail: str,
+    meta: str,
+    *,
+    actions: str = "",
+) -> str:
+    return f"""<div class="model-op-row">
+      <div class="model-op-heading">
+        <span class="model-op-title">{escape(label)}</span>
+        <span class="model-op-meta">{escape(meta)}</span>
+      </div>
+      <strong class="model-op-main">{escape(primary)}</strong>
+      <span class="model-op-detail">{escape(detail)}</span>
+      {actions}
+    </div>"""
+
+
+def _first_mapping(items: list[Any]) -> Mapping[str, Any] | None:
+    for item in items:
+        if isinstance(item, Mapping):
+            return item
+    return None
+
+
+def _short_model_id(model_id: str) -> str:
+    model_id = model_id.strip()
+    if not model_id:
+        return "none"
+    if len(model_id) <= 54:
+        return model_id
+    return f"{model_id[:26]}...{model_id[-24:]}"
 
 
 def _installed_models_card(library: Mapping[str, Any]) -> str:
@@ -2439,13 +2695,15 @@ def _installed_models_card(library: Mapping[str, Any]) -> str:
             'Run Scan local models, start Ollama/LM Studio, or place models under '
             '~/.model-router/models, ~/.lmstudio/models, ~/.ollama/models, or ~/models.</td></tr>'
         )
-    return f"""<div class="model-card">
-      <h3>Installed</h3>
-      <table class="data-table model-table">
-        <thead><tr><th>Model</th><th>Source</th><th>Runtime</th><th>Assigned</th><th>Score</th></tr></thead>
-        <tbody>{rows}</tbody>
-      </table>
-    </div>"""
+    return f"""<details class="model-card">
+      <summary><span class="model-detail-title">Installed</span><span class="muted">{len(installed)} local models</span></summary>
+      <div class="model-detail-body">
+        <table class="data-table model-table">
+          <thead><tr><th>Model</th><th>Source</th><th>Runtime</th><th>Assigned</th><th>Score</th></tr></thead>
+          <tbody>{rows}</tbody>
+        </table>
+      </div>
+    </details>"""
 
 
 def _installed_model_row(item: Mapping[str, Any]) -> str:
@@ -2483,13 +2741,15 @@ def _discover_models_card(library: Mapping[str, Any]) -> str:
     else:
         error = discover.get("error") or "Curated catalog did not return candidates."
         rows = f'<tr><td colspan="5" class="muted">{escape(str(error))}</td></tr>'
-    return f"""<div class="model-card">
-      <h3>Discover</h3>
-      <table class="data-table model-table">
-        <thead><tr><th>Model</th><th>Route</th><th>Runtime</th><th>Memory</th><th>Label</th></tr></thead>
-        <tbody>{rows}</tbody>
-      </table>
-    </div>"""
+    return f"""<details class="model-card">
+      <summary><span class="model-detail-title">Discover</span><span class="muted">{len(results)} catalog candidates</span></summary>
+      <div class="model-detail-body">
+        <table class="data-table model-table">
+          <thead><tr><th>Model</th><th>Route</th><th>Runtime</th><th>Memory</th><th>Label</th></tr></thead>
+          <tbody>{rows}</tbody>
+        </table>
+      </div>
+    </details>"""
 
 
 def _discover_model_row(item: Mapping[str, Any]) -> str:
@@ -2527,13 +2787,15 @@ def _recommended_models_card(library: Mapping[str, Any]) -> str:
             '<tr><td colspan="4" class="muted">No hardware-aware recommendations yet. '
             'Run Scan local models or check installer prerequisites.</td></tr>'
         )
-    return f"""<div class="model-card">
-      <h3>Recommended</h3>
-      <table class="data-table model-table">
-        <thead><tr><th>Model</th><th>Route</th><th>Score</th><th>Why</th></tr></thead>
-        <tbody>{rows}</tbody>
-      </table>
-    </div>"""
+    return f"""<details class="model-card">
+      <summary><span class="model-detail-title">Recommended</span><span class="muted">{len(recommended)} candidates; compact by default</span></summary>
+      <div class="model-detail-body">
+        <table class="data-table model-table">
+          <thead><tr><th>Model</th><th>Route</th><th>Score</th><th>Why</th></tr></thead>
+          <tbody>{rows}</tbody>
+        </table>
+      </div>
+    </details>"""
 
 
 def _recommended_model_row(item: Mapping[str, Any]) -> str:
@@ -2561,13 +2823,15 @@ def _downloads_models_card(library: Mapping[str, Any]) -> str:
             '<tr><td colspan="4" class="muted">No downloads planned. '
             'Use Plan downloads after scanning/recommendations; downloads never run silently.</td></tr>'
         )
-    return f"""<div class="model-card">
-      <h3>Downloads</h3>
-      <table class="data-table model-table">
-        <thead><tr><th>Model</th><th>Route</th><th>Status</th><th>Actions</th></tr></thead>
-        <tbody>{rows}</tbody>
-      </table>
-    </div>"""
+    return f"""<details class="model-card">
+      <summary><span class="model-detail-title">Downloads</span><span class="muted">{len(downloads)} planned; expand for commands</span></summary>
+      <div class="model-detail-body">
+        <table class="data-table model-table">
+          <thead><tr><th>Model</th><th>Route</th><th>Status</th><th>Actions</th></tr></thead>
+          <tbody>{rows}</tbody>
+        </table>
+      </div>
+    </details>"""
 
 
 def _download_state_row(item: Mapping[str, Any]) -> str:
@@ -2600,13 +2864,15 @@ def _assignments_models_card(library: Mapping[str, Any]) -> str:
         rows = (
             '<tr><td colspan="5" class="muted">No route assignments are available because no valid proxy config is loaded.</td></tr>'
         )
-    return f"""<div class="model-card model-card-wide">
-      <h3>Assignments</h3>
-      <table class="data-table model-table">
-        <thead><tr><th>Route</th><th>Backend</th><th>Current model</th><th>Assign model</th><th>Action</th></tr></thead>
-        <tbody>{rows}</tbody>
-      </table>
-    </div>"""
+    return f"""<details class="model-card model-card-wide">
+      <summary><span class="model-detail-title">Assignments</span><span class="muted">{len(assignments)} route bindings</span></summary>
+      <div class="model-detail-body">
+        <table class="data-table model-table">
+          <thead><tr><th>Route</th><th>Backend</th><th>Current model</th><th>Assign model</th><th>Action</th></tr></thead>
+          <tbody>{rows}</tbody>
+        </table>
+      </div>
+    </details>"""
 
 
 def _assignment_model_row(item: Mapping[str, Any]) -> str:
@@ -3285,7 +3551,7 @@ def _recent_requests_table(state: Mapping[str, Any]) -> str:
     </table>"""
 
 
-def _mini_popup(
+def _compact_control_panel(
     state: Mapping[str, Any],
     endpoint: str,
     proxy_state: str,
@@ -3300,37 +3566,37 @@ def _mini_popup(
     selected = str(receipt.get("selected") or "none")
     backend = str(receipt.get("backend") or "none")
     privacy = str(receipt.get("privacy") or "configured")
-    mini_recent = "\n".join(
-        f"""<div class="mini-recent-row"><span>{escape(str(row.get("time") or "—"))}</span><span>{escape(str(row.get("selected_engine") or ""))}</span><span>{escape(str(row.get("backend") or ""))}</span><span><i class="dot {escape(str(row.get("dot") or "yellow-dot"))}"></i>{escape(str(row.get("total_latency") or "n/a"))}</span></div>"""
+    compact_recent = "\n".join(
+        f"""<div class="compact-recent-row"><span>{escape(str(row.get("time") or "—"))}</span><span>{escape(str(row.get("selected_engine") or ""))}</span><span>{escape(str(row.get("backend") or ""))}</span><span><i class="dot {escape(str(row.get("dot") or "yellow-dot"))}"></i>{escape(str(row.get("total_latency") or "n/a"))}</span></div>"""
         for row in recent[:2]
         if isinstance(row, dict)
     )
-    if not mini_recent:
-        mini_recent = '<div class="mini-recent-row"><span>—</span><span>No telemetry yet</span><span>—</span><span>—</span></div>'
-    return f"""<aside class="mini-popup" aria-label="ModelRouter status controller">
-      <div class="mini-header">
-        <div class="mini-title">
+    if not compact_recent:
+        compact_recent = '<div class="compact-recent-row"><span>—</span><span>No telemetry yet</span><span>—</span><span>—</span></div>'
+    return f"""<section class="compact-window" aria-label="ModelRouter compact control panel">
+      <div class="compact-header">
+        <div class="compact-title">
           <div class="traffic-lights" aria-hidden="true">
             <span class="red"></span><span class="yellow"></span><span class="green"></span>
           </div>
           <span>ModelRouter</span>
         </div>
-        <button class="icon-only" type="button" aria-label="Mini settings">{_icon("gear")}</button>
+        <a class="icon-only" href="/" aria-label="Open full control center">{_icon("gear")}</a>
       </div>
-      <div class="mini-body">
-        <div class="mini-chips">
-          <span class="mini-chip">{endpoint.replace("http://", "")}</span>
-          <span class="mini-chip"><i class="dot {proxy_dot}"></i>{escape(proxy_state)}</span>
-          <span class="mini-chip accent" id="mini-mode">{profile_label}</span>
-          <span class="mini-chip"><i class="dot {telemetry_dot}"></i>{escape(telemetry_state)}</span>
+      <div class="compact-body-content">
+        <div class="compact-chips">
+          <span class="compact-chip">{endpoint.replace("http://", "")}</span>
+          <span class="compact-chip"><i class="dot {proxy_dot}"></i>{escape(proxy_state)}</span>
+          <span class="compact-chip accent" id="compact-mode">{profile_label}</span>
+          <span class="compact-chip"><i class="dot {telemetry_dot}"></i>{escape(telemetry_state)}</span>
         </div>
-        <div class="mini-flow">
-          <span class="mini-box">Request</span><span>→</span>
-          <span class="mini-box selected">{escape(selected)}</span><span>→</span>
-          <span class="mini-box">{escape(backend)}</span><span>→</span>
-          <span class="mini-box">Response</span>
+        <div class="compact-flow">
+          <span class="compact-box">Request</span><span>→</span>
+          <span class="compact-box selected">{escape(selected)}</span><span>→</span>
+          <span class="compact-box">{escape(backend)}</span><span>→</span>
+          <span class="compact-box">Response</span>
         </div>
-        <div class="mini-summary">
+        <div class="compact-summary">
           <div><span>Selected</span><strong class="linkish">{escape(selected)}</strong></div>
           <div><span>Routing latency</span><strong>{escape(str(receipt.get("route_latency") or "n/a"))}</strong></div>
           <div><span>Backend</span><strong>{escape(backend)}</strong></div>
@@ -3338,24 +3604,24 @@ def _mini_popup(
           <div><span>Privacy</span><strong class="linkish">{escape(privacy)}</strong></div>
           <div><span>Safety</span><strong>{escape(str(receipt.get("confirmation") or "n/a"))}</strong></div>
         </div>
-        <div class="mini-recent">
+        <div class="compact-recent">
           <h3>Recent</h3>
-          {mini_recent}
+          {compact_recent}
         </div>
-        <div class="mini-actions">
-          <button type="button" onclick="jumpTo('dashboard')">{_icon("open")}<span>Open Dashboard</span></button>
+        <div class="compact-actions-grid">
+          <a href="/">{_icon("open")}<span>Full</span></a>
           <button type="button" onclick="postAction('/api/proxy/stop', {{confirm: true}})">{_icon("pause")}<span>Pause Proxy</span></button>
-          <button type="button" onclick="jumpTo('receipt-title')">{_icon("document")}<span>Route Receipt</span></button>
-          <button type="button" onclick="jumpTo('providers')">{_icon("server")}<span>Providers</span></button>
-          <button type="button" onclick="jumpTo('safety')">{_icon("shield")}<span>Safety</span></button>
+          <a href="/#receipt-title">{_icon("document")}<span>Receipt</span></a>
+          <a href="/#providers">{_icon("server")}<span>Providers</span></a>
+          <a href="/#safety">{_icon("shield")}<span>Safety</span></a>
         </div>
       </div>
-      <div class="mini-bottom">
-        <span class="mini-chip"><i class="dot {proxy_dot}"></i>Proxy {escape(proxy_state)}</span>
-        <span class="mini-chip"><i class="dot {telemetry_dot}"></i>Telemetry {escape(telemetry_state)}</span>
-        <span class="mini-chip"><i class="dot green-dot"></i>No chat surface</span>
+      <div class="compact-bottom">
+        <span class="compact-chip"><i class="dot {proxy_dot}"></i>Proxy {escape(proxy_state)}</span>
+        <span class="compact-chip"><i class="dot {telemetry_dot}"></i>Telemetry {escape(telemetry_state)}</span>
+        <span class="compact-chip"><i class="dot green-dot"></i>No chat surface</span>
       </div>
-    </aside>"""
+    </section>"""
 
 
 def _icon(name: str) -> str:

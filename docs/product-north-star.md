@@ -2,11 +2,13 @@
 
 This is the current ModelRouter product north star:
 
-![ModelRouter product north star](assets/model-router-north-star.png)
+![ModelRouter UI modes](assets/model-router-ui-modes.svg)
 
 The image is directional product truth. It defines the product shape we are
 building toward, not a claim that every visible control or panel is fully
-implemented today.
+implemented today. When full and compact surfaces appear in the same visual, read
+them as a comparison of alternate modes. The compact surface is not an in-app
+overlay on the full control center.
 
 ## Product Identity
 
@@ -42,7 +44,19 @@ The product should make routing observable and controllable:
 
 ## Intended Surface
 
-The main settings surface should feel like a local proxy control center:
+ModelRouter has two alternate UI states, not a stacked parent/child interface:
+
+1. **Full control center/main window**: the main settings surface started by
+   `model-router settings`.
+2. **Compact minimal control panel/windowed mode**: a smaller standalone app
+   surface for quick proxy status, latest route, recent requests, and safe
+   controls when the operator does not want the full-screen dashboard.
+
+The compact panel is not a modal, overlay, child window, or layer floating over
+the main dashboard. If product material shows both states together, it should be
+captioned as a comparison of modes.
+
+The full control center should feel like a local proxy control center:
 
 - Local-only admin/config UI started by `model-router settings`.
 - Proxy status and endpoint visibility.
@@ -60,8 +74,15 @@ The main settings surface should feel like a local proxy control center:
   receipt JSON.
 - Safety panel for human-confirm gates.
 - Recent requests/telemetry panel with wrong-route feedback entry points.
-- Compact "Mini" monitor concept for status, recent routes, receipts,
-  providers, and safety without turning the product into chat.
+
+The compact windowed mode should feel like a standalone minimal control panel:
+
+- Local endpoint, proxy status, routing profile, and telemetry status.
+- Latest selected route/backend and high-level latency/safety/privacy state.
+- Recent route summaries without prompt bodies.
+- Quick links back to full control center sections.
+- Explicit, confirmed proxy controls only.
+- No chat surface and no prompt transcript surface.
 
 ## Implemented Today
 

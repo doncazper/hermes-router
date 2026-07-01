@@ -158,6 +158,9 @@ def test_settings_home_page_loads_without_chat_surface(tmp_path, monkeypatch):
     assert "showPricingStatus" in response.text
     assert "showPricingDiff" in response.text
     assert "applyPricingCatalog" in response.text
+    assert 'href="/compact"' in response.text
+    assert "Open compact windowed mode" in response.text
+    assert '<section class="compact-window"' not in response.text
     assert "No routing events yet" in response.text
     assert "Settings UI Follow-Through" in response.text
     assert "Telemetry Review" in response.text
@@ -173,6 +176,24 @@ def test_settings_home_page_loads_without_chat_surface(tmp_path, monkeypatch):
     assert "No chat surface" in response.text
     assert "chat transcript" not in response.text.lower()
     assert "textarea id=\"chat" not in response.text.lower()
+
+
+def test_compact_page_renders_standalone_control_panel(tmp_path, monkeypatch):
+    _init_config(tmp_path)
+    _stub_scan(monkeypatch)
+    app = settings_ui.create_settings_app(config_dir=tmp_path)
+
+    response = TestClient(app).get("/compact")
+
+    assert response.status_code == 200
+    assert "ModelRouter Compact" in response.text
+    assert 'class="compact-body"' in response.text
+    assert 'aria-label="ModelRouter compact control panel"' in response.text
+    assert 'href="/"' in response.text
+    assert "Full" in response.text
+    assert "No chat surface" in response.text
+    assert '<div class="dashboard-grid">' not in response.text
+    assert "overlay" not in response.text.lower()
 
 
 def test_settings_state_api_includes_models_and_downloads(tmp_path, monkeypatch):
@@ -319,6 +340,10 @@ def test_model_library_dashboard_renders_populated_surfaces(tmp_path, monkeypatc
     assert "Recommended" in html
     assert "Downloads" in html
     assert "Assignments" in html
+    assert 'class="model-ops-strip"' in html
+    assert "compact by default" in html
+    assert "expand for commands" in html
+    assert '<details class="model-card">' in html
     assert "mlx-community/Qwen3-4B-4bit" in html
     assert "Qwen2.5-Coder" in html
     assert "/api/model/assign-route" in html
