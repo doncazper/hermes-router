@@ -347,16 +347,20 @@ For local admin/config work, `model-router settings --config-dir ~/.model-router
 runs a localhost-only settings UI on `127.0.0.1:8099` by default. It can edit
 proxy config fields, run doctor, start/stop/restart the proxy as a child
 process, show the latest actual route receipt, render the routing map from the
-configured engine/backend/fallback policy, inspect recent telemetry, show local
+configured engine/backend/fallback policy, inspect model discovery and
+recommendations, plan explicit downloads, inspect recent telemetry, show local
 and workflow benchmark status, run confirmed local backend benchmarks, and write
 feedback labels. It is not a chat UI, does not submit user prompts, and does not
 display literal API keys or raw prompt text.
 
 The product north star in `docs/product-north-star.md` defines the intended UI
-shape: a local proxy control center for routing policy, runtime status, route
-receipts, safety gates, telemetry, and feedback labeling. It is directional
-product truth, not a guarantee that every pictured control is implemented in the
-current release.
+shape: a local AI control center and proxy routing plane for model discovery,
+recommendations, explicit downloads, routing policy, runtime status, route
+receipts, safety gates, telemetry, and feedback labeling. ModelRouter can be the
+integrated local surface for common workflows or sit above external runtimes
+such as LM Studio, Ollama, LocalAI, llama.cpp, MLX/MLX-LM, vLLM, and hosted
+providers. It is directional product truth, not a guarantee that every pictured
+control is implemented in the current release.
 
 Setup recommendations treat RAM as a fit/load gate, then use CPU architecture,
 CPU core count, Apple Silicon/Metal, CUDA/ROCm hints, runtime format, model

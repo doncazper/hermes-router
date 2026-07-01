@@ -282,6 +282,11 @@ entries:
     assert payload["model_library"]["installed"][0]["model_id"] == (
         "mlx-community/Qwen3-4B-4bit"
     )
+    assert payload["model_library"]["registry"]["count"] >= 1
+    assert any(
+        model["model_id"] == "mlx-community/Qwen3-4B-4bit"
+        for model in payload["model_library"]["registry"]["models"]
+    )
     assert payload["model_library"]["discover"]["source"] == "curated_catalog"
     assert payload["model_library"]["discover"]["results"]
     assert payload["model_library"]["recommended"]

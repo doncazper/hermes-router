@@ -11,6 +11,7 @@ from hermes.plugins.model_router.model_advisor import (
     load_model_catalog,
     score_catalog_model,
 )
+from hermes.plugins.model_router.model_registry import build_model_registry
 from hermes.plugins.model_router.proxy_config import RoutingProxyConfig
 
 
@@ -27,6 +28,10 @@ def build_model_library_state(
 
     local_scores = _local_scores_by_repo(recommendation)
     return {
+        "registry": build_model_registry(
+            proxy_config=config,
+            discovery=discovery,
+        ).to_dict(),
         "installed": _installed_models(config, discovery, local_scores),
         "discover": _discover_state(
             recommendation=recommendation,
@@ -373,4 +378,3 @@ def _local_dir_from_command(command: tuple[str, ...]) -> str | None:
 
 def _repo_slug(repo_id: str) -> str:
     return repo_id.replace("/", "--")
-

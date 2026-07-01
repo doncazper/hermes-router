@@ -1,8 +1,24 @@
 # ModelRouter
 
-ModelRouter is the open switchboard for AI model routing: one local
-OpenAI-compatible endpoint that routes each request to the right model, with
-receipts, safety gates, and full provider control.
+ModelRouter is a local AI control center and routing/control plane. It gives
+you one local OpenAI-compatible endpoint for model discovery, route-aware
+recommendations, explicit downloads, local runtime controls, request routing,
+route receipts, telemetry, safety gates, and provider policy.
+
+Use it as the main app for common local-model workflows, or put it above the
+tools you already use. ModelRouter can run a simple local setup itself, route to
+LM Studio or Ollama when those already manage your models, or sit above several
+local and hosted providers so agents get consistent policy, telemetry,
+cost/outcome visibility, receipts, and safety behavior from one local `/v1`
+surface.
+
+The market position is control without lock-in. If a local model app is already
+working for model search, chat, or runtime management, keep it. ModelRouter adds
+the routing/control layer around it: provider-neutral policy, route receipts,
+privacy-safe telemetry, manual feedback/outcome labels, pricing-catalog-based
+cost reporting, and safety gates. If you want one integrated local control
+center instead, ModelRouter can also cover discovery, recommendations,
+downloads, managed runtime lifecycle, proxy status, and routing.
 
 Simple work can go to fast local models, complex work to stronger reasoning
 models, fresh research to research tools, repo work to code-capable backends,
@@ -12,7 +28,18 @@ actions to human confirmation.
 ModelRouter is the routing/control layer, not the agent harness. A
 Fusion-like multi-agent system can use it for model and provider policy,
 receipts, telemetry, and safety gates, while the host agent remains responsible
-for task execution, context management, delegation, and final review.
+for task execution, context management, delegation, and final review. ModelRouter
+should wrap or supervise proven runtimes where possible rather than building a
+custom inference engine from scratch.
+
+See [Product boundaries](docs/product-boundaries.md) for the ownership model:
+what ModelRouter owns as a local control center, what external runtimes own, and
+what host agents own.
+
+For the local-model app roadmap, see
+[LM Studio parity roadmap](docs/lm-studio-parity-roadmap.md). LM Studio is the
+floor, not the ceiling: ModelRouter should be able to replace LM Studio for
+common local workflows while also working above or alongside it.
 
 ## Use With Your Agent In 3 Minutes
 
@@ -70,6 +97,62 @@ The normal onboarding loop is:
 3. Inspect receipts with `model-router decide --explain` or proxy telemetry
    before changing routing rules.
 
+## Use With or Instead Of Local Model Apps
+
+ModelRouter is compatible with local model apps and runtimes rather than
+hostile to them. Choose the shape that matches how you already work:
+
+### Use ModelRouter Alone
+
+Use this when you want one local app surface for a simple setup:
+
+```bash
+model-router init --preset llamacpp --auto-models --yes
+model-router settings --config-dir ~/.model-router
+model-router-proxy --config ~/.model-router/routing_proxy.yaml
+```
+
+ModelRouter can scan local model folders, recommend route-specific models, plan
+downloads before running them, start configured managed runtimes such as
+`llama-server` or `mlx_lm.server`, expose `http://127.0.0.1:8082/v1`, and route
+requests from agents or OpenAI-compatible clients.
+
+### Use ModelRouter With LM Studio
+
+Use this when LM Studio already manages your local models:
+
+```bash
+model-router init --preset lmstudio --yes
+model-router-proxy --config ~/.model-router/routing_proxy.yaml
+```
+
+Keep using LM Studio to download, load, and inspect models. Point ModelRouter at
+LM Studio's OpenAI-compatible server, then point agents at ModelRouter's local
+endpoint. ModelRouter adds routing profiles, provider/backend policy, receipts,
+telemetry, safety gates, and feedback/cost/outcome reporting around the LM
+Studio runtime.
+
+### Use ModelRouter Above Multiple Runtimes
+
+Use this when you have a mix of local and hosted backends:
+
+```yaml
+backends:
+  fast:
+    base_url: http://127.0.0.1:1234/v1     # LM Studio
+  balanced:
+    base_url: http://127.0.0.1:11434/v1   # Ollama
+  code:
+    base_url: http://127.0.0.1:8090/v1    # llama.cpp
+  reasoning:
+    base_url: https://your-gateway.example/v1
+```
+
+ModelRouter gives those runtimes one policy and reporting layer: route by task
+shape, constrain local-only or hosted-allowed modes, inspect why a backend was
+selected or rejected, label wrong routes, and review usage/cost/outcome
+telemetry without exposing raw prompts by default.
+
 Prefer a small local settings screen instead of editing YAML first:
 
 ```bash
@@ -86,7 +169,8 @@ route-to-model assignments.
 
 The current product north star is documented in
 [Product north star](docs/product-north-star.md): ModelRouter should feel like a
-local proxy control center with routing maps, runtime status, receipts, safety
+local AI control center and proxy routing plane with model discovery,
+recommendations, downloads, runtime status, routing maps, receipts, safety
 gates, telemetry, and feedback labeling, while remaining explicitly not a chat
 UI or agent workspace.
 
@@ -132,6 +216,8 @@ configured local model-server processes.
 | Productized receipts | `ModelRouter.route(prompt)` returns summary, reason codes, policy/fallback/safety explanations, and audit fields |
 | Plain-language profiles | `fast`, `balanced`, `quality`, `private`, and `safe` compile to routing constraints |
 | Provider policy controls | Versioned allowlists, denylists, local-only mode, and backend pools |
+| Local AI control center | Settings/TUI surfaces for model discovery, recommendations, downloads, runtime status, proxy controls, and telemetry |
+| Local app compatibility | Use ModelRouter alone, with LM Studio/Ollama, or above several local/hosted runtimes |
 | CLI tooling | `decide`, `workflow-benchmark`, `validate-config`, `dispatch-plan`, and `setup` commands |
 | Local/API flexibility | YAML routing targets for local models, hosted APIs, vision, image generation, and custom adapters |
 | Safety boundaries | High-risk or invalid requests fail closed to `human_confirm` |
@@ -151,10 +237,14 @@ configured local model-server processes.
 - Offline workflow benchmarks for release-friendly routing correctness reports.
 - YAML-driven engine catalog; model names are not hardcoded throughout the
   router.
-- OpenAI-compatible proxy for agents that only know how to call a local AI
-  endpoint.
+- OpenAI-compatible proxy for agents and clients that only know how to call a
+  local AI endpoint.
 - First-run `model-router init` for local proxy configs.
 - Opt-in managed local runtimes for `llama-server` and `mlx_lm.server`.
+- Local control-center workflows for model discovery, recommendations, explicit
+  downloads, runtime status, proxy controls, and telemetry.
+- Provider-neutral runtime support for LM Studio, Ollama, LocalAI, llama.cpp,
+  MLX/MLX-LM, vLLM, OpenAI-compatible gateways, and hosted providers.
 - Optional terminal control center with `model-router tui`.
 - User-configurable routing targets for local models, hosted APIs, web/RAG
   tools, vision, image generation, or custom adapters.
@@ -167,7 +257,8 @@ configured local model-server processes.
 ## Project Status
 
 ModelRouter is a lean production-ready decision layer when embedded through
-the initialized Python API. The stable surface today is:
+the initialized Python API, and a growing local AI control center when used
+through the proxy/settings/TUI surfaces. The stable surface today is:
 
 - `ModelRouter.route_fast(...)` for production routing.
 - `ModelRouter.route(...)` for diagnostic and audit receipts.
@@ -1445,6 +1536,9 @@ integration point.
 
 - [Model router details](docs/model-router.md)
 - [Product north star](docs/product-north-star.md)
+- [Product boundaries](docs/product-boundaries.md)
+- [LM Studio parity roadmap](docs/lm-studio-parity-roadmap.md)
+- [Business model](docs/business-model.md)
 - [Production readiness](docs/production-readiness.md)
 - [Release checklist](docs/release-checklist.md)
 - [Upgrade and uninstall](docs/upgrade-uninstall.md)
@@ -1487,5 +1581,6 @@ integration point.
 - Use labeled real-world routing logs as release-blocking regression checks.
 - Document security/privacy expectations for logs, proxy auth, process commands,
   and local network exposure.
-- Keep the local admin UI aligned with the product north star: a proxy control
-  center, not chat, not an agent workspace, and not a prompt transcript product.
+- Keep the local admin UI aligned with the product north star: a local AI
+  control center and routing plane, not chat, not an agent workspace, and not a
+  prompt transcript product.

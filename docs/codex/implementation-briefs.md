@@ -4,7 +4,14 @@ These briefs are intended for one focused implementation session at a time. They
 
 ## Shared constraints
 
-- Preserve ModelRouter as a local proxy router and admin control center.
+- Preserve ModelRouter as a local AI control center and proxy routing/control
+  plane.
+- Support common local-model workflows through explicit model discovery,
+  recommendations, downloads, configured runtime controls, local endpoint
+  exposure, and request routing.
+- Integrate with proven runtimes such as LM Studio, Ollama, LocalAI, llama.cpp,
+  MLX/MLX-LM, vLLM, generic OpenAI-compatible backends, and hosted providers
+  instead of building a custom inference engine.
 - Keep the current settings UI visual style.
 - Use shared backend state/actions for the web UI and TUI.
 - Require explicit confirmation for config writes, runtime process changes, downloads, benchmarks, and proxy restarts.

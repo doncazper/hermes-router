@@ -3,14 +3,23 @@
 ## Positioning
 
 ModelRouter should not become a hidden multi-agent orchestrator. Its stronger
-lane is the open switchboard: one local OpenAI-compatible endpoint, transparent
-routing, explicit safety gates, user-owned providers, and replayable evidence
-for every routing change.
+lane is the local AI control center and open switchboard: one local
+OpenAI-compatible endpoint, model discovery, recommendations, explicit
+downloads, configured runtime controls, transparent routing, explicit safety
+gates, user-owned providers, and replayable evidence for every routing change.
 
 That lane can still support Fusion-like products. A host harness can use
 ModelRouter as its routing and policy control plane, then keep task execution,
 context management, sidekick delegation, monitoring, and final review in the
 host application where those responsibilities are visible and testable.
+
+That lane can also support users who want a single local-model operations
+surface without lock-in. ModelRouter may replace a separate local-model app for
+common workflows such as scanning models, assigning routes, approving downloads,
+starting or stopping configured local model servers, exposing a local `/v1`
+endpoint, and routing requests. It should also integrate cleanly with LM Studio,
+Ollama, LocalAI, llama.cpp servers, MLX/MLX-LM, vLLM, generic
+OpenAI-compatible services, and hosted providers.
 
 The goal of this plan is to take the best product lessons from hosted
 orchestration systems without giving up ModelRouter's core promises:
@@ -18,16 +27,19 @@ orchestration systems without giving up ModelRouter's core promises:
 - Deterministic default routing.
 - Local-first operation.
 - User-owned model and provider policy.
+- One integrated local control center without runtime lock-in.
 - Receipts and telemetry instead of black-box decisions.
 - Clear separation between routing policy and agent orchestration.
 - Optional execution features outside `route_fast(...)`.
 - Human confirmation for high-risk actions.
+- Runtime integration over custom inference-engine reinvention.
 
 The canonical local UI direction is captured in
 `docs/product-north-star.md`. Future settings work should move toward that
-local proxy control-center shape: route map, runtime status, receipts, safety
-gates, telemetry, and feedback labeling, without adding chat, agent behavior, or
-silent config changes.
+local AI control-center shape: model discovery, recommendations, explicit
+downloads, route map, runtime status, receipts, safety gates, telemetry, and
+feedback labeling, without adding chat, agent behavior, custom inference-engine
+work, or silent config changes.
 
 A future session-aware routing extension is sketched in
 `docs/session-aware-routing.md`. It keeps phase-boundary re-routing as an
@@ -38,12 +50,16 @@ Cost reporting follows the same switchboard boundary. ModelRouter can record
 actual upstream usage, accept manual outcome labels, and estimate reporting cost
 from `docs/pricing-catalog.md` local metadata. It must not turn live pricing into
 a hidden routing dependency or use estimated cost as an inferred task outcome.
+The broader product ownership boundary is documented in
+`docs/product-boundaries.md`.
 
 ## Non-Goals
 
 - Do not add hidden planner-worker-synthesizer behavior to the default proxy.
 - Do not make ModelRouter responsible for task execution, context management,
   worker delegation, or final agent review.
+- Do not build a custom inference engine from scratch when proven local or
+  hosted runtimes can be integrated through explicit adapters.
 - Do not add LLM classification to the production path without the replay gates
   in `docs/advanced-routing.md`.
 - Do not silently enable hosted providers, downloads, benchmarks, or verifier
@@ -319,10 +335,10 @@ Done when:
 Goal: make the product promise obvious.
 
 Status: implemented for docs and onboarding language. The README opens with the
-open-switchboard promise, the first-run flow explains profile/provider/receipt
-steps, and production docs preserve the boundary between routing, proxy
-forwarding, optional verification, workflow benchmarks, catalog maintenance,
-and future adapter execution.
+local AI control-center and open-switchboard promise, the first-run flow
+explains profile/provider/receipt steps, and production docs preserve the
+boundary between routing, proxy forwarding, optional verification, workflow
+benchmarks, catalog maintenance, and future adapter execution.
 
 Adopt this message in docs and release copy:
 
@@ -332,12 +348,25 @@ OpenAI-compatible endpoint that routes each request to the right model, with
 receipts, safety gates, and full provider control.
 ```
 
+For UI, onboarding, and release copy, also use this control-center framing:
+
+```text
+ModelRouter is a local AI control center and routing/control plane: one
+integrated local surface for model discovery, recommendations, explicit
+downloads, runtime controls, a local OpenAI-compatible endpoint, routing
+receipts, telemetry, and safety gates, without locking users into one runtime.
+```
+
 Implementation notes:
 
 - Keep the README proxy-first.
 - Explain profiles before engine internals.
 - Put receipts and provider control near the top-level value proposition.
 - Avoid claiming ModelRouter is a general multi-agent system.
+- Avoid claiming benchmark parity, cost reductions, or superiority over local
+  model apps such as LM Studio.
+- Explain that ModelRouter integrates with proven runtimes rather than building
+  a custom inference engine.
 - Show how ModelRouter can route to local models, hosted APIs, code agents, web
   research, vision, image generation, and future custom backends.
 

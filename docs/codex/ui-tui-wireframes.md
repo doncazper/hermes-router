@@ -1,6 +1,6 @@
 # UI and TUI wireframes
 
-These are implementation wireframes, not decorative mockups. The current settings UI style should stay: light surface, sticky topbar, compact cards, plain tables, conservative accent color, explicit save/start/restart actions, and privacy-first text. The goal is to add LM-Studio-like simplicity around model discovery, settings, and model selection without copying LM Studio's layout wholesale.
+These are implementation wireframes, not decorative mockups. The current settings UI style should stay: light surface, sticky topbar, compact cards, plain tables, conservative accent color, explicit save/start/restart actions, and privacy-first text. The goal is to make ModelRouter feel like one local AI control center for proxy status, routing mode, active backend/model, local runtime status, model library, route-aware recommendations, explicit downloads, telemetry/cost/outcome/catalog coverage, safety/policy state, and request routing, while still integrating with external runtimes instead of copying LM Studio's layout wholesale or replacing proven inference servers.
 
 ## Shared UI rules
 
@@ -10,6 +10,16 @@ These are implementation wireframes, not decorative mockups. The current setting
 4. Any config write, download, runtime load/unload, benchmark execution, or proxy process change requires confirmation.
 5. Web UI and TUI use the same state and action layer.
 6. Basic router mode must be visible everywhere routing decisions are visible.
+7. Runtime controls must distinguish ModelRouter-managed processes from
+   external runtimes such as LM Studio, Ollama, LocalAI, llama.cpp, MLX/MLX-LM,
+   vLLM, generic OpenAI-compatible services, and hosted providers.
+8. Do not imply ModelRouter builds its own inference engine; adapter capability
+   gaps and unsupported actions must be visible.
+9. Recommendation and download surfaces are operational controls. Keep them
+   compact by default and expand only for install details, alternatives, logs,
+   or confirmed download actions.
+10. Chat/playground surfaces, if added later, are secondary to control-plane
+   operations and must not dominate the main viewport.
 
 ## Web UI navigation
 
@@ -23,11 +33,11 @@ Each tab has a specific job:
 
 | Tab | Purpose | Must be fully wired to |
 | --- | --- | --- |
-| Dashboard | Fast operational overview: endpoint, proxy state, mode, latest receipt, health, next actions. | `proxy`, `latest_receipt`, `telemetry`, `backends`, `actions` |
+| Dashboard | Fast operational overview: endpoint, proxy state, routing mode, active backend/model, runtime health, telemetry/catalog coverage, safety/policy, latest receipt, next actions. | `proxy`, `latest_receipt`, `telemetry`, `backends`, `actions` |
 | Models | Installed models, discover/search, route recommendations, downloads, route assignment. | `model_library`, `model_aliases`, `routes`, `backends`, `actions` |
 | Routing | Smart-router route map and basic-router model mapping. | `proxy.routing_mode`, `routes`, `model_aliases`, `backends`, `actions` |
-| Runtimes | LM Studio/Ollama/MLX/llama.cpp/LocalAI status, loaded models, runtime controls. | `backends`, `actions`, `logs` |
-| Telemetry | Recent requests, route counts, fallback counts, feedback labels, wrong-route queue. | `telemetry`, `latest_receipt`, `actions` |
+| Runtimes | LM Studio/Ollama/MLX/llama.cpp/LocalAI/vLLM status, loaded models, runtime controls. | `backends`, `actions`, `logs` |
+| Telemetry | Recent requests, route counts, usage, cost/outcome labels, catalog coverage, fallback counts, wrong-route queue. | `telemetry`, `latest_receipt`, `actions` |
 | Logs | Proxy/settings/runtime log tails with safe copy/open actions. | `logs`, `backends`, `proxy` |
 | Settings | Proxy config, mode, policy, observability, verifier, installer status, catalog updates. | `proxy`, `installer`, `actions`, provider/backend policy state |
 
@@ -51,6 +61,10 @@ modes, not as simultaneous in-app layers.
 │ ModelRouter                 Endpoint http://127.0.0.1:8082/v1     ● Running │
 │ Dashboard  Models  Routing  Runtimes  Telemetry  Logs  Settings             │
 ├──────────────────────────────────────────────────────────────────────────────┤
+│ Status: proxy running · mode decision · balanced → ollama → qwen3:4b         │
+│ Runtime: reachable · telemetry on · catalog coverage medium · safety normal  │
+│ [Start/Stop proxy] [Run doctor] [Copy endpoint] [Review coverage gaps]       │
+│                                                                              │
 │ Mode                                                                    Save │
 │ ┌ Smart router ─────────┐  ┌ Manual backend ───────┐  ┌ Model aliases ─────┐ │
 │ │ ● Decision layer on   │  │ ○ No classification   │  │ ○ Client model map │ │
@@ -85,6 +99,10 @@ modes, not as simultaneous in-app layers.
 | Running indicator | `proxy.state`, `proxy.pid` |
 | Mode cards | `proxy.routing_mode`, `proxy.decision_layer_enabled` |
 | Profile | `proxy.routing_profile` |
+| Active backend/model | latest route and `proxy.default_backend`/`proxy.default_model` fallback |
+| Runtime health | `backends[].health`, `backends[].runtime` |
+| Telemetry/catalog coverage | `telemetry.catalog_coverage`, usage/cost/outcome summary fields |
+| Safety/policy state | provider/backend policy state and `proxy.safety_gate_mode` |
 | Default backend | `proxy.default_backend` |
 | Alias count | count of enabled `model_aliases` |
 | Latest receipt | `latest_receipt` |
@@ -101,7 +119,11 @@ This is a standalone smaller app surface, not a layer over the dashboard.
 ┌──────────────────────────────────────┐
 │ ● ● ●  ModelRouter                 ⚙ │
 ├──────────────────────────────────────┤
-│ 127.0.0.1:8082/v1  ● Running Balanced│
+│ 127.0.0.1:8082/v1  ● Running decision│
+│                                      │
+│ Active balanced → ollama → qwen3:4b  │
+│ Runtime reachable  Telemetry on      │
+│ Catalog medium     Safety normal     │
 │                                      │
 │ Request → reasoning_local → mlx → OK │
 │                                      │
@@ -126,6 +148,11 @@ This is a standalone smaller app surface, not a layer over the dashboard.
 | Endpoint | `proxy.endpoint` |
 | Running indicator | `proxy.state`, `proxy.pid` |
 | Profile | `proxy.routing_profile` |
+| Routing mode | `proxy.routing_mode`, `proxy.decision_layer_enabled` |
+| Active backend/model | latest route/backend/model or configured default |
+| Runtime status | selected backend health/runtime status |
+| Telemetry/catalog state | usage/cost/outcome/catalog coverage summary |
+| Safety/policy state | safety gate and provider/backend policy summary |
 | Latest route/backend | `latest_receipt` |
 | Recent rows | privacy-safe `telemetry` summaries |
 | Pause proxy | confirmed `proxy.stop` |
@@ -137,11 +164,9 @@ This is a standalone smaller app surface, not a layer over the dashboard.
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │ Models                                                        Scan  Discover │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│ Model operations                                                            │
-│ ┌ Installed ─────────────┐ ┌ Recommended ──────────┐ ┌ Downloads ─────────┐ │
-│ │ qwen3-4b · assigned 2  │ │ coder-7b · code_agent │ │ 1 planned · confirm│ │
-│ │ [Scan]                 │ │ Good fit              │ │ [Plan] [Download]  │ │
-│ └────────────────────────┘ └───────────────────────┘ └────────────────────┘ │
+│ Model operations: Installed 3 · Recommended 4 · Downloads 1 planned         │
+│ Active: balanced → ollama → qwen3:4b · code → llama.cpp → coder.gguf        │
+│ [Scan] [Discover] [Plan downloads] [Assign selected]                         │
 │                                                                              │
 │ ▸ Installed        3 local models                                            │
 │ ▸ Discover         12 catalog candidates                                     │
@@ -151,9 +176,10 @@ This is a standalone smaller app surface, not a layer over the dashboard.
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Recommendation and download state should be compact by default. Expand a row
-only when the user chooses to inspect install details, alternatives, logs,
-commands, or download actions.
+Recommendation and download state should be compact by default: show route,
+model, fit label, runtime compatibility, eligibility, status, and next action in
+rows. Expand a row only when the user chooses to inspect install details,
+alternatives, logs, commands, or download actions.
 
 ### Models tab field mapping
 
@@ -290,6 +316,8 @@ Required behavior:
 - If a runtime cannot load/unload models through an API, the button is disabled with a reason.
 - If a runtime is managed by ModelRouter, start/stop controls call the managed runtime manager.
 - If a runtime is external, show exact external command or docs hint where known.
+- If a runtime owns inference, ModelRouter should show status and supported
+  adapter controls rather than pretending to execute the model itself.
 
 ## Mock screenshot: Settings tab
 

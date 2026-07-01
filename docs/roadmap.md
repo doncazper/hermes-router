@@ -5,6 +5,123 @@ a ready-to-paste prompt that asks Codex to implement or coordinate the work,
 then end with a checkpoint: either fix issues in a small incremental release or
 move to the next milestone.
 
+## Integrated Local AI Control-Center Roadmap
+
+This staged roadmap makes the one-app path concrete without implying lock-in.
+ModelRouter can replace common LM Studio-like workflows when an operator wants
+one local surface, and it should also integrate cleanly with existing LM Studio,
+Ollama, LocalAI, llama.cpp, MLX/MLX-LM, vLLM, generic OpenAI-compatible, and
+hosted-provider setups.
+
+For the detailed local-model app parity matrix, see
+`docs/lm-studio-parity-roadmap.md`. The product stance is: LM Studio is the
+floor, not the ceiling. Parity features should make common workflows feel
+complete, while ModelRouter differentiators remain routing policy, receipts,
+telemetry, safety gates, cost/outcome reporting, catalog coverage, and
+multi-runtime coordination.
+
+The stages keep three responsibilities separate:
+
+- **Routing policy**: model/provider/backend selection, safety gates, receipts,
+  telemetry, cost/outcome reporting, and the OpenAI-compatible proxy endpoint.
+- **Local runtime management**: explicit lifecycle, readiness, logs, model
+  visibility, and supported runtime actions for configured local backends.
+- **Agent orchestration**: planning, tool use, context management, delegation,
+  synthesis, and final review, owned by host agents rather than ModelRouter.
+
+### Stage 1: Current Control Plane
+
+Status: implemented across the routing/proxy/policy/telemetry/catalog work.
+
+The one-app path today is a local control center for routing and operations:
+run `model-router settings`, inspect the local endpoint, choose decision/manual
+routing behavior, configure provider/backend policy, route through
+`model-router-proxy`, inspect receipts, review telemetry, label outcomes, and
+use catalog coverage/cost-confidence reporting. This is already useful for
+agents and clients that need one stable `/v1` endpoint with transparent policy.
+
+External-runtime compatibility remains explicit: LM Studio, Ollama, LocalAI,
+llama.cpp, MLX/MLX-LM, vLLM, generic OpenAI-compatible services, and hosted
+providers are configured as backends. ModelRouter routes to them and records
+policy/telemetry around them; it does not claim to replace their inference
+engines or hide their capability limits.
+
+Boundary: routing policy, proxy forwarding, telemetry, route receipts, pricing
+catalog reporting, and safety gates are ModelRouter responsibilities. Runtime
+execution belongs to the selected backend. Task execution and orchestration
+belong to the host agent.
+
+### Stage 2: Near-Term Local Runtime Manager
+
+Goal: make common local-runtime workflows manageable from ModelRouter without
+turning runtime management into routing policy.
+
+The one-app path should cover the common operator loop: detect configured local
+runtimes, show reachability/readiness, start or stop ModelRouter-managed
+processes, surface known external-runtime commands, expose safe logs, and make
+port/model/config problems obvious. This can replace common LM Studio-like
+server-control workflows for users who want one local control center.
+
+External-runtime compatibility stays first-class. For external LM Studio,
+Ollama, LocalAI, llama.cpp, MLX/MLX-LM, vLLM, or hosted setups, ModelRouter
+should show status and supported actions where APIs or CLIs allow them, and
+show disabled controls with reasons where they do not. It should not auto-start
+arbitrary external services or require users to move models into ModelRouter
+storage.
+
+Boundary: the runtime manager can own explicit lifecycle actions for configured
+managed processes and status/advice for external runtimes. It must not change
+route decisions, silently mutate config, download models, enable hosted
+providers, or perform agent work.
+
+### Stage 3: Mid-Term Model Library And Operations
+
+Goal: make model discovery, downloads, assignments, health checks, and logs feel
+like one coherent local operations surface.
+
+The one-app path should let operators scan installed models, browse curated
+discover candidates, compare route-aware recommendations, plan downloads before
+running them, assign models to routes or aliases, inspect backend/model health,
+see capability gaps, and open privacy-safe logs. This is the point where
+ModelRouter can cover many everyday local-model app workflows while preserving
+its routing/control-plane identity.
+
+External-runtime compatibility remains part of every view. Installed models can
+come from LM Studio storage, Ollama tags, Hugging Face cache, configured model
+paths, managed llama.cpp/MLX processes, LocalAI, vLLM, or custom
+OpenAI-compatible backends. Assignments should target runtime-specific model ids
+honestly, and unsupported load/unload/download actions should be disabled with
+clear reasons.
+
+Boundary: model library and assignments inform routing and proxy config, but
+they do not make benchmark/performance claims without evidence, do not fetch
+live pricing during routing, and do not orchestrate tasks. Downloads, config
+writes, benchmark runs, runtime changes, and hosted-provider use remain
+explicit operator actions.
+
+### Stage 4: Later Team And Organization Governance
+
+Goal: extend the same local control-plane model to teams without changing the
+single-user local-first default.
+
+Later governance can add central policy distribution, shared provider/backend
+allowlists and denylists, audit export, signed config/catalog provenance,
+organization-level telemetry exports, SSO, and RBAC. This should help teams
+standardize how agents and local runtimes are used without turning ModelRouter
+into a hosted orchestrator by default.
+
+External-runtime compatibility should remain visible in governance. Policies
+should be able to describe allowed LM Studio, Ollama, LocalAI, llama.cpp,
+MLX/MLX-LM, vLLM, generic OpenAI-compatible, and hosted-provider backends
+without forcing a ModelRouter-only runtime path. Audit exports should report
+selected route/backend/model, policy decisions, receipts, telemetry aggregates,
+catalog coverage, and outcome labels without raw prompts unless explicitly
+configured.
+
+Boundary: governance owns policy, auditability, access control, and reporting.
+It must not imply benchmark superiority, cost reductions, hidden worker
+delegation, live pricing in routing, or centralized task orchestration.
+
 ## Milestone 1: v0.5 Release Polish
 
 Goal: make the current local proxy beta cleanly releasable.
@@ -385,14 +502,15 @@ Next:
 
 ## Milestone 12: Local Admin Settings UI
 
-Goal: make ModelRouter easier to configure and dogfood visually while keeping
-it a proxy/router, not a chat app or agent.
+Goal: make ModelRouter easier to configure and dogfood visually as a local AI
+control center and proxy/router, not a chat app or agent.
 
 Product north star: `docs/product-north-star.md` is the canonical UI direction.
-Future settings work should move toward the screenshot's local proxy control
-center: status, modes, route map, provider/runtime controls, receipts, safety
-gates, telemetry, and feedback labeling. The screenshot is directional product
-truth, not a claim that every visible feature is implemented today.
+Future settings work should move toward the screenshot's local AI control
+center: model discovery, recommendations, explicit downloads, status, modes,
+route map, provider/runtime controls, receipts, safety gates, telemetry, and
+feedback labeling. The screenshot is directional product truth, not a claim that
+every visible feature is implemented today.
 
 Status: implemented. `model-router settings` starts a localhost-only FastAPI
 admin UI, defaulting to `127.0.0.1:8099`, with server-rendered pages and
@@ -462,10 +580,10 @@ Tracks:
   updates only after confirmation. Done for `model-router catalog
   status|diff|apply`, no-network defaults, backups, migration logs, settings
   status visibility, and tests.
-- Product language and onboarding that position ModelRouter as the open
-  switchboard for AI model routing, not a hidden multi-agent system. Done for
-  the README promise, first-run profile/provider/receipt loop, and production
-  boundary language.
+- Product language and onboarding that position ModelRouter as a local AI
+  control center and open switchboard for AI model routing, not a hidden
+  multi-agent system. Done for the README promise, first-run
+  profile/provider/receipt loop, and production boundary language.
 
 Done when:
 
@@ -525,6 +643,8 @@ Do not add hidden orchestration, default hosted-provider calls, automatic
 downloads, runtime auto-start, verifier calls, prompt logging, webchat, or agent
 surfaces while doing this work. Keep `route_fast(...)` deterministic and keep
 safety gates explicit.
+Do not build a custom inference engine when existing runtimes can be integrated
+through explicit adapters.
 
 ## Next Planned Work After Milestone 14
 
@@ -565,6 +685,12 @@ Imported planning docs:
 Goal: turn the local admin dashboard into a real product control plane that can
 power the web UI, future TUI, installer, admin API, and routing-mode expansion
 from one shared state/action layer.
+
+Product stance: users can choose ModelRouter as one integrated local AI control
+center for common workflows, or keep LM Studio, Ollama, LocalAI, llama.cpp,
+MLX/MLX-LM, vLLM, generic OpenAI-compatible backends, and hosted providers as
+external runtimes underneath it. The shared control plane should make those
+choices visible without lock-in.
 
 Key product decision: the deterministic decision router remains the default, but
 the decision layer must become optional. Users should be able to run ModelRouter
@@ -613,3 +739,5 @@ Guardrails:
 - No silent downloads, hosted-provider enablement, config writes, runtime
   process changes, benchmark runs, or prompt display.
 - Non-decision modes must not call `route_fast(...)`.
+- Do not build custom inference-engine behavior when proven runtimes expose a
+  safe adapter or proxy boundary.

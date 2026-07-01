@@ -2,13 +2,16 @@
 
 ## Purpose
 
-The model router is a deterministic decision layer for agent prompts. It
-scores an incoming prompt, selects an engine category, and emits a receipt that
-explains the decision.
+The model router is a local AI control center and deterministic routing/control
+plane. At the routing layer, it scores an incoming prompt, selects an engine
+category, and emits a receipt that explains the decision. Around that layer, the
+proxy/settings/TUI surfaces help users discover models, review
+recommendations, plan explicit downloads, control configured local runtimes,
+expose a local OpenAI-compatible endpoint, and inspect telemetry.
 
-This milestone does not execute prompts, call model providers, perform web
-research, run code, send messages, delete files, purchase anything, or dispatch
-to an agent. It only decides.
+The core routing decision path does not execute prompts, call model providers,
+perform web research, run code, send messages, delete files, purchase anything,
+or dispatch to an agent. It only decides.
 
 That makes ModelRouter a control layer for host agents, not a replacement for
 them. A Fusion-like multi-agent harness could call ModelRouter for model and
@@ -16,16 +19,29 @@ provider policy, route receipts, telemetry, and safety gates, but the host
 harness owns task execution, persistent context, worker delegation, monitoring,
 and final review.
 
+ModelRouter can be the single local control surface for common local-model
+workflows, but it is runtime-neutral. It should work alongside or above LM
+Studio, Ollama, LocalAI, llama.cpp servers, MLX/MLX-LM, vLLM, generic
+OpenAI-compatible backends, and hosted providers. It should not build a custom
+inference engine from scratch when proven runtimes can be wrapped, supervised,
+or integrated through explicit adapters.
+
 ## Product Truth
 
-ModelRouter's current product north star is a local proxy control center, not a
-chat UI or agent workspace. The admin surface should make routing policy,
-runtime status, safety gates, route receipts, telemetry, model/runtime controls,
-and wrong-route feedback visible while preserving privacy-safe defaults.
+ModelRouter's current product north star is a local AI control center and proxy
+routing plane, not a chat UI or agent workspace. The admin surface should make
+model discovery, recommendations, explicit downloads, routing policy, runtime
+status, safety gates, route receipts, telemetry, model/runtime controls, and
+wrong-route feedback visible while preserving privacy-safe defaults.
 
 The product should stay transparent about that boundary: it can make routing
 decisions observable and enforce provider/safety policy for external agents, but
 it should not hide a planner-worker system inside the proxy.
+
+Users should be able to choose one integrated control center without lock-in:
+ModelRouter can handle the common discover/recommend/download/runtime/proxy
+loop itself, or sit above existing local-model apps and provider gateways.
+The product ownership model is documented in `docs/product-boundaries.md`.
 
 See `docs/product-north-star.md` for the canonical north-star screenshot and
 the implemented/in-progress/future split.
@@ -309,6 +325,24 @@ Recommendation JSON includes `fit_score`, `runtime_match_score`,
 `benchmark_score`, `overall_score`, labels such as `recommended`,
 `fits_but_likely_slow`, `too_large`, `needs_runtime`, and
 `benchmark_recommended`, plus human-readable reasons and warnings.
+
+The model-library foundation now has a durable local registry concept in
+`hermes.plugins.model_router.model_registry`. The registry records known models
+from the router engine catalog, proxy backend config, local setup discovery,
+explicit user-declared models, and caller-supplied runtime discovery results.
+Each `KnownModel` record is JSON-safe and can carry provider, runtime, model id,
+source, local path, format, context length, quantization, size, license,
+install/download state, health/load state, tags, capabilities, routing
+eligibility, backend, and assigned routes.
+
+This registry is a control-center and reporting primitive, not a routing hot
+path dependency. It does not fetch models, call runtime APIs by itself, download
+files, mutate config, or change `route_fast(...)` decisions. Runtime adapters or
+host/admin surfaces may pass already-discovered model ids into the registry,
+but discovery remains explicit and outside the routing decision path. That lets
+ModelRouter move toward LM Studio-level model-library ownership while staying
+provider-neutral and compatible with LM Studio, Ollama, LocalAI, llama.cpp,
+MLX/MLX-LM, vLLM, hosted providers, and generic OpenAI-compatible runtimes.
 
 Optional local backend benchmarks are explicit:
 

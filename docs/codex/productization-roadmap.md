@@ -6,9 +6,17 @@ planning truth. The full shared admin state/action contract lives in
 
 ## Product Move
 
-ModelRouter should remain a local OpenAI-compatible proxy router and admin
-control center, not a chat UI and not an agent workspace. Its default mode should
-remain the deterministic decision router.
+ModelRouter should remain a local AI control center and OpenAI-compatible proxy
+routing/control plane, not a chat UI and not an agent workspace. Its default
+mode should remain the deterministic decision router.
+
+For common local-model workflows, ModelRouter should be able to serve as the
+integrated surface for discovery, recommendations, explicit downloads,
+configured runtime start/stop, a local `/v1` endpoint, routing, receipts, and
+telemetry. It should also work alongside or above LM Studio, Ollama, LocalAI,
+llama.cpp servers, MLX/MLX-LM, vLLM, generic OpenAI-compatible backends, and
+hosted providers. The point is control without lock-in, not replacing proven
+runtimes with a custom inference engine.
 
 The new product direction is to make the decision layer optional. Users should
 be able to run ModelRouter as:
@@ -25,6 +33,13 @@ This matters because it turns ModelRouter from a clever router into a practical
 local model gateway: the same endpoint can support smart routing, manual model
 selection, aliases, health, telemetry, runtime controls, and model management.
 
+The main control-center viewport should prioritize operational state: proxy
+status, routing mode, active backend/model, local runtime status, model library
+summary, compact recommendation/download state, telemetry/cost/outcome/catalog
+coverage, and safety/policy state. Recommendation and download panels should
+feel like routine controls, not hero surfaces. Chat or playground features, if
+they ever appear, should remain secondary to control-plane operations.
+
 ## Guardrails
 
 - Decision mode remains the default and must not regress.
@@ -34,6 +49,9 @@ selection, aliases, health, telemetry, runtime controls, and model management.
 - Every visible UI/TUI value must come from shared state, a real action result,
   a useful empty state, or a disabled control with a concrete reason.
 - Every mutating action requires explicit user confirmation.
+- Default layouts should be dense and operational: avoid oversized cards for
+  recommendation/download state, routine runtime controls, or telemetry
+  summaries.
 - No silent model downloads.
 - No silent hosted-provider enablement.
 - No silent config writes.
@@ -41,6 +59,8 @@ selection, aliases, health, telemetry, runtime controls, and model management.
 - No silent benchmark execution.
 - No raw prompt display unless prompt capture is explicitly configured.
 - Keep optional compatibility work outside `route_fast(...)`.
+- Do not build a custom inference engine from scratch when explicit adapters to
+  proven runtimes are sufficient.
 
 ## Imported Contract
 

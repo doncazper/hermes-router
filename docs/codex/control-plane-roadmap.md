@@ -4,11 +4,30 @@
 
 ModelRouter started as a lightweight decision layer for agents: one local OpenAI-compatible endpoint where Hermes or another agent sends a request and ModelRouter chooses the right model, tool-capable backend, or confirmation gate.
 
-The product is now growing toward a local control plane that also needs the approachable operational flow users expect from tools like LM Studio: model discovery, model selection, runtime health, settings, logs, downloads, and server controls. The goal is not to copy LM Studio. The goal is to keep ModelRouter's unique routing brain while adding enough model-management and installer polish that users can run it without editing YAML first.
+The product is now growing toward a local AI control center and routing/control plane that also needs the approachable operational flow users expect from local-model apps: model discovery, model selection, recommendations, runtime health, settings, logs, downloads, server controls, a local OpenAI-compatible endpoint, and request routing. The goal is not to copy LM Studio or claim superiority over it. The goal is to keep ModelRouter's unique routing brain while adding enough model-management and installer polish that users can run common local-model workflows without editing YAML first.
+
+The staged product path is summarized in
+`docs/roadmap.md#integrated-local-ai-control-center-roadmap`.
+The detailed local-model app parity path is
+`docs/lm-studio-parity-roadmap.md`; LM Studio is the floor, not the ceiling.
 
 ## Product positioning
 
-**LM Studio runs and manages local models. ModelRouter decides and controls where AI traffic goes.**
+**ModelRouter is the local AI control center for routing and policy, and it integrates with the runtimes users choose.**
+
+For common workflows, users should be able to use one ModelRouter surface to
+discover models, review route-aware recommendations, approve downloads, manage
+configured local runtime processes, expose a local `/v1` endpoint, and route
+requests. For users who already rely on another runtime or UI, ModelRouter
+should sit alongside or above it without lock-in.
+
+The main UI should behave like an operations control center. The first viewport
+should make proxy status, routing mode, active backend/model, local runtime
+status, model library state, compact recommendation/download state,
+telemetry/cost/outcome/catalog coverage, and safety/policy state easy to scan.
+Recommendations, downloads, and runtime actions are operational controls, not
+marketing or hero panels. Chat/playground flows, if they are ever added, should
+stay secondary to the control-plane workflow.
 
 ModelRouter should become the local AI traffic controller:
 
@@ -26,16 +45,17 @@ ModelRouter proxy + control plane
         +--> MLX-LM
         +--> llama.cpp
         +--> LocalAI
-        +--> hosted OpenAI-compatible gateways
+        +--> vLLM / hosted OpenAI-compatible gateways
         +--> code agents
         +--> RAG / embedding services
         +--> vision / image-generation backends
         +--> human_confirm
 ```
 
-## Current parity targets to keep in mind
+## Current reference targets to keep in mind
 
-Use these as parity references, not as UI cloning targets:
+Use these as workflow references, not as benchmark claims, superiority claims,
+or UI cloning targets:
 
 - LM Studio docs describe model search/download via Hugging Face, local chat, MCP, OpenAI-like local endpoints, and local model/config management: https://lmstudio.ai/docs/app
 - LM Studio's OpenAI compatibility includes `/v1/models`, `/v1/responses`, `/v1/chat/completions`, `/v1/embeddings`, and `/v1/completions`: https://lmstudio.ai/docs/developer/openai-compat
@@ -172,6 +192,10 @@ ModelRouter should have four official surfaces:
 5. **Basic router mode is not second-class.** It must have headers, telemetry, receipts, config validation, UI/TUI controls, tests, and docs.
 6. **Model library is route-aware.** Marketplace/discover results are not just a list of models; they show fit for fast/balanced/reasoning/code/research/vision/image routes.
 7. **Runtime adapters are explicit.** LM Studio, Ollama, MLX-LM, llama.cpp, LocalAI, and generic OpenAI-compatible backends report capability differences honestly.
+8. **No custom inference engine.** Prefer proven runtimes and explicit adapters over building model execution from scratch.
+9. **Operational density first.** Recommendation/download state, runtime
+   status, telemetry, and policy controls should be compact by default and
+   expand only when the operator asks for details or confirmed actions.
 
 ## Milestone overview
 
