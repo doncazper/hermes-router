@@ -39,7 +39,11 @@ Before pushing a public-preview readiness commit:
 3. Capture screenshots from a sanitized config directory, not a real user
    config with private paths, API keys, prompts, or local secrets.
 4. Store public images under `docs/assets/` or `docs/assets/screenshots/`.
-5. Confirm compact mode is presented as a standalone smaller app surface, not
+5. Use `docs/assets/social-preview.png` for GitHub's repository social preview
+   image. It is derived from the sanitized full control-center screenshot.
+   GitHub currently exposes this as a Settings UI upload; the checked-in PNG is
+   sized to 1280x640 and kept under 1 MB.
+6. Confirm compact mode is presented as a standalone smaller app surface, not
    an overlay on the full control center.
 
 ## Hot-Path Boundaries

@@ -1,40 +1,25 @@
 # ModelRouter
 
+![ModelRouter control center preview](docs/assets/social-preview.png)
+
 ModelRouter is a local AI control center and routing/control plane. It gives
-you one local OpenAI-compatible endpoint for model discovery, route-aware
-recommendations, explicit downloads, local runtime controls, request routing,
-route receipts, telemetry, safety gates, and provider policy.
+agents one local OpenAI-compatible `/v1` endpoint for model/provider policy,
+route receipts, telemetry, cost/outcome visibility, runtime status, and safety
+gates.
 
-Use it as the main app for common local-model workflows, or put it above the
-tools you already use. ModelRouter can run a simple local setup itself, route to
-LM Studio or Ollama when those already manage your models, or sit above several
-local and hosted providers so agents get consistent policy, telemetry,
-cost/outcome visibility, receipts, and safety behavior from one local `/v1`
-surface.
+Use ModelRouter as a simple integrated local-model control center, or put it
+above the tools you already use. It can work with LM Studio, Ollama, llama.cpp,
+MLX/MLX-LM, LocalAI, vLLM, internal gateways, and hosted OpenAI-compatible
+providers without locking you into one runtime.
 
-The market position is control without lock-in. If a local model app is already
-working for model search, chat, or runtime management, keep it. ModelRouter adds
-the routing/control layer around it: provider-neutral policy, route receipts,
-privacy-safe telemetry, manual feedback/outcome labels, pricing-catalog-based
-cost reporting, and safety gates. If you want one integrated local control
-center instead, ModelRouter can also cover discovery, recommendations,
-downloads, managed runtime lifecycle, proxy status, and routing.
-
-Simple work can go to fast local models, complex work to stronger reasoning
-models, fresh research to research tools, repo work to code-capable backends,
-screenshots to vision/OCR, image requests to image generation, and risky
-actions to human confirmation.
-
-ModelRouter is the routing/control layer, not the agent harness. A
-Fusion-like multi-agent system can use it for model and provider policy,
-receipts, telemetry, and safety gates, while the host agent remains responsible
-for task execution, context management, delegation, and final review. ModelRouter
-should wrap or supervise proven runtimes where possible rather than building a
-custom inference engine from scratch.
-
-Runtime discovery and lifecycle controls are operator surfaces. They do not
-change routing decisions, and neither `route_fast(...)` nor normal proxy
-forwarding requires runtime adapters to be available.
+- Run common local-model operations: discover models, review recommendations,
+  plan downloads, inspect runtime health, and start configured local endpoints.
+- Route requests by task shape: fast local work, coding, reasoning, research,
+  vision/OCR, image generation, and human-confirmation paths.
+- Inspect every decision with transparent policy, receipts, privacy-safe
+  telemetry, manual outcome labels, pricing catalog coverage, and safety gates.
+- Keep host agents in charge of planning, tools, context, delegation, execution,
+  and final review.
 
 See [Product boundaries](docs/product-boundaries.md) for the ownership model:
 what ModelRouter owns as a local control center, what external runtimes own, and
@@ -55,6 +40,20 @@ ModelRouter is a public developer-preview project. The most mature surface is
 the deterministic local routing/control path; the broader control-center and
 runtime-management experience is intentionally growing behind explicit operator
 actions, adapter contracts, and preview-safe docs.
+
+The market position is control without lock-in. If a local model app is already
+working for model search, chat, or runtime management, keep it. ModelRouter adds
+the routing/control layer around it. If you want one integrated local control
+center instead, ModelRouter can also cover discovery, recommendations,
+downloads, managed runtime lifecycle, proxy status, and routing.
+
+ModelRouter is the routing/control layer, not the agent harness. A Fusion-like
+multi-agent system can use it for model and provider policy, receipts,
+telemetry, and safety gates, while the host agent remains responsible for task
+execution, context management, delegation, and final review. Runtime discovery
+and lifecycle controls are operator surfaces; they do not change routing
+decisions, and neither `route_fast(...)` nor normal proxy forwarding requires
+runtime adapters to be available.
 
 What works today:
 
